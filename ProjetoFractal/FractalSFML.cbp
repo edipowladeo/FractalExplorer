@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<CodeBlocks_project_file>
+	<FileVersion major="1" minor="6" />
+	<Project>
+		<Option title="FractalSFML" />
+		<Option pch_mode="2" />
+		<Option compiler="gcc" />
+		<Build>
+			<Target title="Debug">
+				<Option output="bin/Debug/FractalSFML" prefix_auto="1" extension_auto="1" />
+				<Option object_output="obj/Debug/" />
+				<Option type="1" />
+				<Option compiler="gcc" />
+				<Compiler>
+					<Add option="-g" />
+				</Compiler>
+			</Target>
+			<Target title="Release">
+				<Option output="bin/Release/FractalSFML" prefix_auto="1" extension_auto="1" />
+				<Option object_output="obj/Release/" />
+				<Option type="1" />
+				<Option compiler="gcc" />
+				<Compiler>
+					<Add option="-O2" />
+				</Compiler>
+				<Linker>
+					<Add option="-s" />
+				</Linker>
+			</Target>
+		</Build>
+		<Compiler>
+			<Add option="-Wall" />
+			<Add option="-fexceptions" />
+		</Compiler>
+		<Unit filename="CCronometro.cpp" />
+		<Unit filename="CCronometro.h" />
+		<Unit filename="CFuncoes.cpp" />
+		<Unit filename="CFuncoes.h" />
+		<Unit filename="CPrograma.cpp" />
+		<Unit filename="CPrograma.h" />
+		<Unit filename="CTarefaAlocarCelula.cpp" />
+		<Unit filename="CTarefaAlocarCelula.h" />
+		<Unit filename="Ccelula.cpp" />
+		<Unit filename="Ccelula.h" />
+		<Unit filename="Ccoordenadas.cpp" />
+		<Unit filename="Ccoordenadas.h" />
+		<Unit filename="Cjanela.cpp" />
+		<Unit filename="Cjanela.h" />
+		<Unit filename="Cpaleta.cpp" />
+		<Unit filename="Cpaleta.h" />
+		<Unit filename="Csubcamada.cpp" />
+		<Unit filename="Csubcamada.h" />
+		<Unit filename="CtarefaBack.cpp" />
+		<Unit filename="CtarefaBack.h" />
+		<Unit filename="CtarefaFront.cpp" />
+		<Unit filename="CtarefaFront.h" />
+		<Unit filename="DebugObjects.cpp" />
+		<Unit filename="DebugObjects.h" />
+		<Unit filename="PropriedadesJanela.cpp" />
+		<Unit filename="PropriedadesJanela.h" />
+		<Unit filename="Untitled1" />
+		<Unit filename="global_headers.h" />
+		<Unit filename="main.cpp" />
+		<Unit filename="palettes.cpp" />
+		<Unit filename="palettes.h" />
+		<Extensions>
+			<code_completion />
+			<envvars />
+			<debugger />
+		</Extensions>
+	</Project>
+</CodeBlocks_project_file>
