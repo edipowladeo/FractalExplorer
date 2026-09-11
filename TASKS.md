@@ -2,25 +2,38 @@
 
 Fila de trabalho do rewrite do FractalExplorer em Rust. A ordem de `TODO` é deliberada: agentes devem atuar sempre na primeira tarefa e nunca puxar itens diretamente de `BACKLOG`.
 
+## Decisões de arquitetura
+
+- **Fractal inicial:** Mandelbrot.
+- **Orquestrador:** Rust.
+- **Processador:** arquitetura plugável e multiplataforma.
+- **Primeiro processador:** CPU Rust usando `f64`.
+- **Renderizador:** arquitetura plugável e multiplataforma.
+- **Primeiro renderizador:** biblioteca Rust para Windows usando sprites.
+- **Processadores no backlog:** GPGPU com OpenCL e GPGPU com Metal.
+- **Renderizadores no backlog:** WebGL, macOS, Android e iOS.
+
+Estas decisões definem a primeira fatia vertical, mas não antecipam a implementação dos itens em `BACKLOG`.
+
 ## TODO
 
-### T001 — Definir contratos do núcleo e a estratégia de testes
+### T001 — Primeira fatia vertical: Mandelbrot CPU `f64` e biblioteca Windows com sprites
 
-- **Objetivo:** transformar os requisitos levantados nas referências legadas em contratos verificáveis para o núcleo Rust, começando por representação numérica, ponto no plano complexo, câmera, fórmula de escape-time e resultado de iteração.
-- **Critérios de aceitação:** contratos documentados; casos-limite identificados; estratégia de testes unitários, propriedades e referências numéricas definida; escopo de qualquer agrupamento com esta tarefa confirmado pelo usuário antes da implementação.
+- **Objetivo:** definir os contratos do núcleo e entregar um caminho executável mínimo para renderizar Mandelbrot com processador CPU Rust `f64`, orquestrado em Rust, e apresentá-lo por uma biblioteca Rust para Windows usando sprites.
+- **Critérios de aceitação:** contratos documentados; estratégia de testes unitários, propriedades e referências numéricas definida; CPU `f64` determinística; biblioteca Windows com sprites consumindo a saída do processador; escopo confirmado antes da implementação.
 - **TDD:** iniciar com testes RED para os contratos escolhidos, depois GREEN e REFACTOR.
 - **Dependências:** nenhuma.
 
 ## BACKLOG
 
-### T002 — Criar o workspace Rust e os módulos iniciais do core
+### T002 — Extrair e estabilizar o workspace Rust e os módulos do core
 
 - Definir a estrutura de crates/módulos compartilhados e comandos de build/teste.
 - Depende de T001.
 
-### T003 — Implementar o motor CPU determinístico
+### T003 — Ampliar o processador CPU determinístico
 
-- Renderizar amostras do plano complexo em uma representação independente de plataforma.
+- Expandir o processador CPU `f64` inicial para uma representação independente de plataforma.
 - Incluir cancelamento e comportamento determinístico para permitir conformance tests.
 - Depende de T001 e T002.
 
@@ -44,25 +57,45 @@ Fila de trabalho do rewrite do FractalExplorer em Rust. A ordem de `TODO` é del
 - Comparar resultados CPU e futuros backends em pontos e imagens representativos.
 - Depende de T003, T005 e T006.
 
-### T008 — Avaliar backend WebGL e abstração de renderização
+### T008 — Adicionar processador GPGPU com OpenCL
 
-- Selecionar a arquitetura e validar a primeira integração multiplataforma.
+- Implementar OpenCL como processador plugável e comparar sua saída com a referência CPU.
 - Depende de T007.
 
-### T009 — Avaliar backend Metal e targets desktop/mobile
+### T009 — Adicionar processador GPGPU com Metal
 
-- Validar limites de portabilidade, ciclo de vida e recuperação de recursos.
-- Depende de T008.
+- Implementar Metal como processador plugável e comparar sua saída com a referência CPU.
+- Depende de T007.
 
-### T010 — Investigar deep zoom e precisão arbitrária
+### T010 — Adicionar renderizador WebGL
+
+- Integrar o contrato de renderização plugável ao alvo WebGL.
+- Depende de T007.
+
+### T011 — Adicionar renderizador macOS
+
+- Implementar o alvo macOS respeitando o contrato plugável.
+- Depende de T007.
+
+### T012 — Adicionar renderizador Android
+
+- Implementar o alvo Android e validar ciclo de vida e recuperação de recursos.
+- Depende de T007.
+
+### T013 — Adicionar renderizador iOS
+
+- Implementar o alvo iOS respeitando o contrato plugável.
+- Depende de T007.
+
+### T014 — Investigar deep zoom e precisão arbitrária
 
 - Avaliar aritmética de precisão estendida, perturbation e aceleração; não assumir que os wrappers legados já resolvem o problema.
 - Depende de T001 e T007.
 
-### T011 — Adicionar persistência, importação e exportação
+### T015 — Adicionar persistência, importação e exportação
 
 - Locais/configurações salvos, importação de coordenadas e exportação de imagem/vídeo.
-- Depende de T004 e T008.
+- Depende de T004 e T010.
 
 ## DONE
 
