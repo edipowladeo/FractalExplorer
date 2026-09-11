@@ -17,11 +17,11 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## TODO
 
-### T001 — Primeira fatia vertical: Mandelbrot CPU `f64` e biblioteca Windows com sprites
+### T001 — Desenhar um sprite na tela e exibi-lo
 
-- **Objetivo:** definir os contratos do núcleo e entregar um caminho executável mínimo para renderizar Mandelbrot com processador CPU Rust `f64`, orquestrado em Rust, e apresentá-lo por uma biblioteca Rust para Windows usando sprites.
-- **Critérios de aceitação:** contratos documentados; estratégia de testes unitários, propriedades e referências numéricas definida; CPU `f64` determinística; biblioteca Windows com sprites consumindo a saída do processador; escopo confirmado antes da implementação.
-- **TDD:** iniciar com testes RED para os contratos escolhidos, depois GREEN e REFACTOR.
+- **Objetivo:** criar a primeira janela/renderizador Rust para Windows, desenhar um sprite e exibi-lo na tela como prova mínima do pipeline gráfico.
+- **Critérios de aceitação:** aplicação Rust inicia uma janela Windows; um sprite é criado, carregado e desenhado; o sprite fica visivelmente exibido; a integração gráfica tem verificação manual documentada; a lógica testável possui testes automatizados.
+- **TDD:** iniciar com testes RED para a lógica testável do sprite/pipeline, depois GREEN e REFACTOR; registrar a verificação manual da janela como parte da evidência.
 - **Dependências:** nenhuma.
 
 ## BACKLOG
