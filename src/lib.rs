@@ -1,0 +1,77 @@
+//! Primitives shared by the first Windows sprite renderer.
+
+/// A small, packed RGBA sprite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sprite {
+    width: usize,
+    height: usize,
+    pixels: Vec<u32>,
+}
+
+impl Sprite {
+    /// Creates a solid-color sprite.
+    pub fn solid(width: usize, height: usize, color: u32) -> Self {
+        assert!(width > 0 && height > 0, "a sprite must have a size");
+        Self {
+            width,
+            height,
+            pixels: vec![color; width * height],
+        }
+    }
+
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    pub fn pixels(&self) -> &[u32] {
+        &self.pixels
+    }
+
+    /// Copies the sprite into a framebuffer, clipping pixels outside its bounds.
+    pub fn draw_into(&self, framebuffer: &mut [u32], framebuffer_width: usize, x: isize, y: isize) {
+        let framebuffer_height = framebuffer.len() / framebuffer_width;
+        for sprite_y in 0..self.height {
+            for sprite_x in 0..self.width {
+                let target_x = x + sprite_x as isize;
+                let target_y = y + sprite_y as isize;
+                if target_x >= 0
+                    && target_y >= 0
+                    && (target_x as usize) < framebuffer_width
+                    && (target_y as usize) < framebuffer_height
+                {
+                    let source = sprite_y * self.width + sprite_x;
+                    let target = target_y as usize * framebuffer_width + target_x as usize;
+                    framebuffer[target] = self.pixels[source];
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Sprite;
+
+    #[test]
+    fn creates_a_solid_sprite_with_expected_size_and_pixels() {
+        let sprite = Sprite::solid(2, 3, 0x00ff00);
+
+        assert_eq!(sprite.width(), 2);
+        assert_eq!(sprite.height(), 3);
+        assert_eq!(sprite.pixels(), &[0x00ff00; 6]);
+    }
+
+    #[test]
+    fn draws_sprite_at_position_and_clips_to_framebuffer() {
+        let sprite = Sprite::solid(2, 2, 0xabcdef);
+        let mut framebuffer = vec![0; 3 * 3];
+
+        sprite.draw_into(&mut framebuffer, 3, -1, 1);
+
+        assert_eq!(framebuffer, vec![0, 0, 0, 0xabcdef, 0, 0, 0xabcdef, 0, 0]);
+    }
+}

@@ -23,6 +23,7 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - **Critérios de aceitação:** aplicação Rust inicia uma janela Windows; um sprite é criado, carregado e desenhado; o sprite fica visivelmente exibido; a integração gráfica tem verificação manual documentada; a lógica testável possui testes automatizados.
 - **TDD:** iniciar com testes RED para a lógica testável do sprite/pipeline, depois GREEN e REFACTOR; registrar a verificação manual da janela como parte da evidência.
 - **Dependências:** nenhuma.
+- **Progresso:** implementação inicial criada em `src/lib.rs` e `src/main.rs`; RED/GREEN, refactor e verificação visual estão pendentes porque `cargo`/`rustc` não estão disponíveis neste ambiente.
 
 ## BACKLOG
 
