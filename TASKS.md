@@ -21,6 +21,19 @@ _Nenhuma tarefa ativa._
 
 ## BACKLOG
 
+### T022 — Diagnosticar alinhamento das camadas com envelopes de tiles
+
+- Adicionar retângulos de debug ao redor dos tiles.
+- Usar uma cor aleatória por camada, consistente para todos os tiles daquela camada.
+- Verificar visualmente se as camadas se alinham como níveis equivalentes de uma quadtree.
+- Usar o diagnóstico para orientar a futura conversão de coordenadas da camada pela câmera.
+
+### T021 — Resolver desalinhamento de tiles usando tipos pequenos
+
+- Investigar e corrigir o desalinhamento entre camadas sem implementar conversão de cada tile do plano complexo para a tela durante o desenho.
+- Reavaliar a solução atual de posicionamento relativo mantendo o custo e a representação numérica reduzidos quando possível.
+- Usar sempre o menor tipo numérico adequado para índices, dimensões e posições de tela, sem alterar desnecessariamente os tipos de coordenadas complexas.
+
 ### T020 — Cobrir invariantes da sequência de camadas
 
 - Validar a sequência completa de zooms, por exemplo `8, 4, 2, 1`.

@@ -15,6 +15,7 @@ pub struct AppConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct OrchestratorConfig {
+    pub workers: usize,
     pub tile: TileConfig,
 }
 
@@ -63,6 +64,7 @@ impl Default for AppConfig {
 impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
+            workers: 8,
             tile: TileConfig::default(),
         }
     }
@@ -154,6 +156,11 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::AppConfig;
+
+    #[test]
+    fn uses_eight_workers_by_default() {
+        assert_eq!(AppConfig::default().orchestrator.workers, 8);
+    }
 
     #[test]
     fn loads_window_size_and_debug_from_toml() {

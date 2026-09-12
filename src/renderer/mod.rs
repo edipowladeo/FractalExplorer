@@ -162,7 +162,13 @@ pub fn run(
             .iter()
             .enumerate()
             .map(|(index, layer)| {
-                format_layer_overlay(index, layer.zoom(), layer.column_count(), layer.row_count())
+                format_layer_overlay(
+                    index,
+                    layer.zoom(),
+                    delta_exponent(layer.delta()),
+                    layer.column_count(),
+                    layer.row_count(),
+                )
             })
             .collect();
         let first_overlay_y = height.saturating_sub(24 + overlays.len() * 8 + 4) as i32;
@@ -184,7 +190,14 @@ pub fn run(
                 layer
                     .pending_work_positions()
                     .into_iter()
-                    .map(move |(row, column)| format_worker_queue_line(layer_index, row, column))
+                    .map(move |(row, column)| {
+                        format_worker_queue_line(
+                            layer_index,
+                            row,
+                            column,
+                            delta_exponent(layer.delta()),
+                        )
+                    })
             })
             .collect();
         for (line, queue_line) in queue_lines.iter().enumerate() {
@@ -195,6 +208,17 @@ pub fn run(
                 x,
                 8 + line as i32 * 8,
                 queue_line,
+                0xffffff,
+            );
+        }
+        for (line, worker) in orchestrator.worker_statuses().iter().enumerate() {
+            let worker_line = format_worker_status_line(worker.id, worker.tile.as_ref());
+            draw_text(
+                &mut framebuffer,
+                screen_size,
+                8,
+                8 + line as i32 * 8,
+                &worker_line,
                 0xffffff,
             );
         }
@@ -309,12 +333,34 @@ fn format_coordinates(point: ComplexPoint<f64>) -> String {
     format!("x: {:.15}   y: {:.15}", point.x, point.y)
 }
 
-fn format_layer_overlay(index: usize, zoom: f64, columns: usize, rows: usize) -> String {
-    format!("Camada {index}: zoom={zoom:.3} {columns}x{rows} tiles")
+fn format_layer_overlay(
+    index: usize,
+    zoom: f64,
+    delta: f64,
+    columns: usize,
+    rows: usize,
+) -> String {
+    format!("Camada {index}: zoom={zoom:.3} delta={delta:.3} {columns}x{rows} tiles")
 }
 
-fn format_worker_queue_line(layer: usize, row: usize, column: usize) -> String {
-    format!("Camada={layer} pos {row}x{column}")
+fn format_worker_queue_line(layer: usize, row: usize, column: usize, delta: f64) -> String {
+    format!("Camada={layer} pos {row}x{column} delta={delta:.3}")
+}
+
+fn delta_exponent(delta: f64) -> f64 {
+    -delta.log2()
+}
+
+fn format_worker_status_line(id: usize, tile: Option<&crate::orchestrator::WorkerTile>) -> String {
+    match tile {
+        Some(tile) => format!(
+            "Worker {id}: tile pos {:.3}x{:.3} delta={:.3}",
+            tile.coordinate.x,
+            tile.coordinate.y,
+            delta_exponent(tile.delta)
+        ),
+        None => format!("Worker {id}: ocioso"),
+    }
 }
 
 fn draw_status_bar(framebuffer: &mut [u32], size: ScreenSize, text: &str) {
@@ -485,7 +531,7 @@ fn rainbow_color(iterations: u64, palette_period: f64) -> u32 {
 mod tests {
     use super::{
         allocation_screen_rect, draw_rectangle_outline, format_coordinates, format_layer_overlay,
-        format_worker_queue_line, sprite_from_tile, Palette, ScreenRect,
+        format_worker_queue_line, format_worker_status_line, sprite_from_tile, Palette, ScreenRect,
     };
     use crate::geometry::{ComplexPoint, ScreenSize};
     use crate::{Mandelbrot, Orchestrator, Tile};
@@ -531,14 +577,31 @@ mod tests {
     #[test]
     fn formats_layer_overlay_with_grid_dimensions() {
         assert_eq!(
-            format_layer_overlay(2, 4.0, 3, 4),
-            "Camada 2: zoom=4.000 3x4 tiles"
+            format_layer_overlay(2, 4.0, 0.005, 3, 4),
+            "Camada 2: zoom=4.000 delta=0.005 3x4 tiles"
         );
     }
 
     #[test]
     fn formats_worker_queue_line_with_layer_and_tile_position() {
-        assert_eq!(format_worker_queue_line(1, 2, 4), "Camada=1 pos 2x4");
+        assert_eq!(
+            format_worker_queue_line(1, 2, 4, 0.005),
+            "Camada=1 pos 2x4 delta=0.005"
+        );
+    }
+
+    #[test]
+    fn formats_worker_status_with_tile_position_and_delta() {
+        let tile = crate::orchestrator::WorkerTile {
+            coordinate: ComplexPoint::new(-2.0, 3.0),
+            delta: 0.5,
+        };
+
+        assert_eq!(
+            format_worker_status_line(2, Some(&tile)),
+            "Worker 2: tile pos -2.000x3.000 delta=1.000"
+        );
+        assert_eq!(format_worker_status_line(3, None), "Worker 3: ocioso");
     }
 
     #[test]
