@@ -2,6 +2,13 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "Executar FractalExplorer (rápido)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "cargo run --bin sprite-demo",
+      "cwd": "${workspaceFolder}"
+    },
+    {
       "name": "Depurar FractalExplorer",
       "type": "lldb",
       "request": "launch",
