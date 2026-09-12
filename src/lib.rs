@@ -7,7 +7,7 @@ pub mod orchestrator;
 pub mod renderer;
 
 pub use calculator::Mandelbrot;
-pub use orchestrator::{IterationBuffer, Orchestrator, RenderConfig};
+pub use orchestrator::{IterationBuffer, Orchestrator, RenderConfig, Tile, TileStatus};
 
 /// A small, packed RGBA sprite.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -9,6 +9,20 @@ use std::path::Path;
 pub struct AppConfig {
     pub debug_global: bool,
     pub renderer: RendererConfig,
+    pub orchestrator: OrchestratorConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct OrchestratorConfig {
+    pub tile: TileConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct TileConfig {
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -37,6 +51,24 @@ impl Default for AppConfig {
         Self {
             debug_global: false,
             renderer: RendererConfig::default(),
+            orchestrator: OrchestratorConfig::default(),
+        }
+    }
+}
+
+impl Default for OrchestratorConfig {
+    fn default() -> Self {
+        Self {
+            tile: TileConfig::default(),
+        }
+    }
+}
+
+impl Default for TileConfig {
+    fn default() -> Self {
+        Self {
+            width: 800,
+            height: 600,
         }
     }
 }
@@ -138,6 +170,8 @@ mod tests {
         assert_eq!(config.renderer.effective_allocation_ratio(), 0.5);
         assert_eq!(config.renderer.palette, crate::renderer::Palette::Rainbow);
         assert_eq!(config.renderer.palette_period, 5.0);
+        assert_eq!(config.orchestrator.tile.width, 800);
+        assert_eq!(config.orchestrator.tile.height, 600);
         assert_eq!(
             config.renderer.starting_point_coordinates().unwrap(),
             crate::geometry::ComplexPoint::new(-0.743643887037151, 0.131825904205330)

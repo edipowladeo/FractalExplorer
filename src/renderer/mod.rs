@@ -1,6 +1,6 @@
 use crate::config::RendererConfig;
 use crate::geometry::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
-use crate::{IterationBuffer, Sprite};
+use crate::{IterationBuffer, Sprite, Tile};
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -48,14 +48,38 @@ pub fn sprite_from_iterations(
     Sprite::from_pixels(image.width(), image.height(), pixels)
 }
 
+fn sprite_from_tile(
+    tile: &Tile,
+    max_iterations: u64,
+    palette: Palette,
+    palette_period: f64,
+) -> Sprite {
+    let iteration_storage = tile.iterations();
+    let iterations = iteration_storage
+        .lock()
+        .expect("tile iterations mutex poisoned");
+    let pixels = iterations
+        .iter()
+        .map(|&iteration| color(iteration, max_iterations, palette, palette_period))
+        .collect();
+    Sprite::from_pixels(tile.width() as usize, tile.height() as usize, pixels)
+}
+
 /// Displays one rendered sprite in a native window.
-pub fn run(image: IterationBuffer, config: &RendererConfig) -> Result<(), minifb::Error> {
-    let width = image.width();
-    let height = image.height();
-    let sprite = sprite_from_iterations(&image, config.palette, config.palette_period);
+pub fn run(tile: &Tile, config: &RendererConfig) -> Result<(), minifb::Error> {
+    let width = config.width;
+    let height = config.height;
+    let sprite = sprite_from_tile(
+        tile,
+        config.max_iterations as u64,
+        config.palette,
+        config.palette_period,
+    );
     let mut framebuffer = vec![0x101820; width * height];
-    sprite.draw_into(&mut framebuffer, width, 0, 0);
     let screen_size = ScreenSize::new(width, height);
+    let tile_x = (width as isize - tile.width() as isize) / 2;
+    let tile_y = (height as isize - tile.height() as isize) / 2;
+    sprite.draw_into(&mut framebuffer, width, tile_x, tile_y);
     let allocation = allocation_screen_rect(screen_size, config.effective_allocation_ratio());
     let window_envelope = window_envelope(screen_size);
     if config.debug.show_allocation_envelope {
@@ -272,7 +296,7 @@ fn glyph(character: char) -> Option<[u8; 7]> {
     Some(glyph)
 }
 
-fn color(iterations: u32, max_iterations: u32, palette: Palette, palette_period: f64) -> u32 {
+fn color(iterations: u64, max_iterations: u64, palette: Palette, palette_period: f64) -> u32 {
     if iterations == max_iterations {
         return 0;
     }
@@ -283,12 +307,12 @@ fn color(iterations: u32, max_iterations: u32, palette: Palette, palette_period:
     }
 }
 
-fn shade_color(iterations: u32, max_iterations: u32) -> u32 {
+fn shade_color(iterations: u64, max_iterations: u64) -> u32 {
     let shade = 255 - (iterations * 255 / max_iterations);
-    (shade << 16) | (shade << 8) | 0xff
+    ((shade << 16) | (shade << 8) | 0xff) as u32
 }
 
-fn rainbow_color(iterations: u32, palette_period: f64) -> u32 {
+fn rainbow_color(iterations: u64, palette_period: f64) -> u32 {
     assert!(palette_period > 0.0, "palette_period must be positive");
     let hue = (0.7 + iterations as f64 / palette_period).rem_euclid(1.0);
     let sector = hue * 6.0;

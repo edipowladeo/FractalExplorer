@@ -1,6 +1,4 @@
-use fractal_explorer::{
-    config::AppConfig, geometry::ComplexPoint, Mandelbrot, Orchestrator, RenderConfig,
-};
+use fractal_explorer::{config::AppConfig, geometry::ComplexPoint, Mandelbrot, Orchestrator, Tile};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load("config.toml").unwrap_or_default();
@@ -12,9 +10,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Aviso: {error}; usando centro inicial (0, 0)");
             ComplexPoint::new(0.0, 0.0)
         });
-    let image = Orchestrator::new(Mandelbrot::new(config.renderer.max_iterations)).render(
-        RenderConfig::centered_at(config.renderer.width, config.renderer.height, 4.0, center),
+    let tile = Tile::new(
+        center,
+        config.orchestrator.tile.width,
+        config.orchestrator.tile.height,
+        4.0 / config.renderer.width as f64,
     );
-    fractal_explorer::renderer::run(image, &config.renderer)?;
+    Orchestrator::new(Mandelbrot::new(config.renderer.max_iterations)).render_tile(&tile);
+    fractal_explorer::renderer::run(&tile, &config.renderer)?;
     Ok(())
 }

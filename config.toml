@@ -7,10 +7,14 @@ height = 600
 max_iterations = 10000
 allocation_ratio = 1
 #palette = "shade"
-palette_period = 5.0
-starting_point = "x=-0.750, y=0.0"
+palette_period = 50.0
+starting_point = "x=-1.50, y=0.0"
 
 [renderer.debug]
 reduced_viewport = true
 reduced_viewport_allocation_ratio = 0.7
 show_allocation_envelope = true
+
+[orchestrator.tile]
+width = 800
+height = 600
