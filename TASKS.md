@@ -21,6 +21,24 @@ _Nenhuma tarefa ativa._
 
 ## BACKLOG
 
+### T020 — Cobrir invariantes da sequência de camadas
+
+- Validar a sequência completa de zooms, por exemplo `8, 4, 2, 1`.
+- Garantir que cada camada adjacente tenha exatamente o dobro ou a metade do zoom e do delta da ponta anterior.
+- Verificar ausência de zooms repetidos após zoom in/out, retração e expansão.
+
+### T019 — Verificar camada vazia no ciclo de retração e expansão
+
+- Avaliar se aplicar a ordem de retração às camadas e aos tiles pode deixar uma camada com zero tiles.
+- Validar o ciclo: retrair → verificar se ficou vazia → criar uma camada com um tile → expandir.
+- Confirmar que a mesma sequência é segura tanto para `TiledInfiniteCanvas`/camadas quanto para `TileLayer`/tiles.
+
+### T018 — Revisar invariância do pivô no zoom
+
+- Revisar o fluxo de zoom para garantir que o ponto do plano complexo sob o cursor permaneça na mesma posição do botão do mouse durante a operação.
+- Verificar a interação entre conversão tela/plano, transformação da camada, expansão/desalocação de tiles e processamento assíncrono.
+- Criar testes que cubram zoom in/out, múltiplas operações e cursor fora do centro.
+
 ### T003 — Ampliar o processador CPU determinístico
 
 - Expandir o processador CPU `f64` inicial para uma representação independente de plataforma.
