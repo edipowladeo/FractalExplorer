@@ -1,7 +1,11 @@
 # Configuração principal do FractalExplorer.
-debug = true
+debug_global = true
 
 [renderer]
 width = 800
 height = 600
 max_iterations = 256
+
+[renderer.debug]
+reduced_viewport = true
+reduced_viewport_ratio = 0.5
