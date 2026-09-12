@@ -8,6 +8,8 @@ pub mod orchestrator;
 pub mod renderer;
 
 pub use calculator::Mandelbrot;
+pub use calculator::MandelbrotFixed;
+pub use fixed::Fixed;
 pub use orchestrator::{Orchestrator, Tile, TileStatus};
 
 /// A small, packed RGBA sprite.

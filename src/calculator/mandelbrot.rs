@@ -1,6 +1,44 @@
+use crate::Fixed;
+
 /// CPU Mandelbrot calculator using `f64` coordinates.
 pub struct Mandelbrot {
     max_iterations: u32,
+}
+
+/// CPU Mandelbrot calculator using a signed fixed-point coordinate type.
+pub struct MandelbrotFixed<const N: usize> {
+    max_iterations: u32,
+}
+
+impl<const N: usize> MandelbrotFixed<N> {
+    pub fn new(max_iterations: u32) -> Self {
+        assert!(max_iterations > 0, "max_iterations must be positive");
+        Self { max_iterations }
+    }
+
+    /// Returns the iteration at which `c` escapes, or the limit if it does not.
+    pub fn escape_iterations(&self, real: Fixed<N>, imaginary: Fixed<N>) -> u32 {
+        let zero = Fixed::zero();
+        let escape_radius_squared = Fixed::from_i64(4);
+        let mut z_real = zero;
+        let mut z_imaginary = zero;
+
+        for iteration in 0..self.max_iterations {
+            let magnitude_squared = z_real.square().add(z_imaginary.square());
+            if magnitude_squared.compare(escape_radius_squared).is_gt() {
+                return iteration;
+            }
+
+            let next_real = z_real.square().sub(z_imaginary.square()).add(real);
+            z_imaginary = z_real
+                .mul(z_imaginary)
+                .mul(Fixed::from_i64(2))
+                .add(imaginary);
+            z_real = next_real;
+        }
+
+        self.max_iterations
+    }
 }
 
 impl Mandelbrot {
@@ -34,7 +72,22 @@ impl Mandelbrot {
 
 #[cfg(test)]
 mod tests {
-    use super::Mandelbrot;
+    use super::{Mandelbrot, MandelbrotFixed};
+    use crate::Fixed;
+
+    #[test]
+    fn fixed_origin_is_inside_the_set() {
+        let fractal = MandelbrotFixed::<2>::new(32);
+
+        assert_eq!(fractal.escape_iterations(Fixed::zero(), Fixed::zero()), 32);
+    }
+
+    #[test]
+    fn fixed_point_outside_the_set_escapes() {
+        let fractal = MandelbrotFixed::<2>::new(32);
+
+        assert!(fractal.escape_iterations(Fixed::from_i64(2), Fixed::zero()) < 32);
+    }
 
     #[test]
     fn origin_is_inside_the_set() {
