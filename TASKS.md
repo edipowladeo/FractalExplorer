@@ -87,6 +87,12 @@ _Nenhuma tarefa ativa._
 - Locais/configurações salvos, importação de coordenadas e exportação de imagem/vídeo.
 - Depende de T004 e T010.
 
+### T016 — Substituir glyph bitmap temporário da barra de status
+
+- Avaliar substituir o `glyph` bitmap implementado no renderer por uma biblioteca de fonte bitmap, um renderer com suporte nativo a texto ou widgets nativos da plataforma.
+- Preservar a barra de status e sua atualização em tempo real durante a migração.
+- Depende da estabilização da barra de status.
+
 ## DONE
 
 ### T001 — Desenhar um sprite na tela e exibi-lo
