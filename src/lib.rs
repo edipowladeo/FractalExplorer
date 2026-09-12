@@ -2,6 +2,7 @@
 
 pub mod calculator;
 pub mod config;
+pub mod fixed;
 pub mod geometry;
 pub mod orchestrator;
 pub mod renderer;
