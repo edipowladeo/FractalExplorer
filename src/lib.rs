@@ -1,12 +1,12 @@
 //! Primitives shared by the first Windows sprite renderer.
 
+pub mod calculator;
 pub mod config;
 pub mod geometry;
-mod mandelbrot;
-mod orchestrator;
+pub mod orchestrator;
 pub mod renderer;
 
-pub use mandelbrot::Mandelbrot;
+pub use calculator::Mandelbrot;
 pub use orchestrator::{IterationBuffer, Orchestrator, RenderConfig};
 
 /// A small, packed RGBA sprite.
