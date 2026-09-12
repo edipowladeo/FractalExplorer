@@ -60,14 +60,6 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - **Evidências:** análise registrada em
   `PLANO_IMPLEMENTACAO_MULTIPRECISAO.md`; nenhum teste pesado executado nesta
   etapa.
-### T020 — Integrar multiprecisão na camada e corrigir navegação
-
-- Fazer todos os tiles criados pela `TileLayer` respeitarem `rendering_method` e
-  `perturbation_fallback`.
-- Corrigir expansão/recomposição da camada durante pan e zoom, preservando a
-  coordenada complexa sob o cursor.
-- Validar com TDD, registrar testes e validação manual da aplicação.
-
 ## BACKLOG
 
 ### T027 — Representar `delta` como expoente inteiro positivo
@@ -191,6 +183,21 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - Depende da estabilização da barra de status.
 
 ## DONE
+
+### T020 — Integrar multiprecisão na camada e corrigir navegação
+
+- **Resultado:** a integração foi preservada para a reconstrução histórica; a
+  implementação compatível com o canvas atual será reaplicada pelo merge
+  `4bc041b`.
+
+### T020 — Integrar multiprecisão na camada e corrigir navegação
+
+- **Resultado:** `Orchestrator::from_config` aplica `multiprecision` ou
+  `perturbation` a todos os tiles, inclusive os criados por expansão; o loop do
+  renderer processa pan/zoom antes de recalcular cobertura e renderização.
+- **Evidências:** RED confirmou a ausência do orquestrador configurável;
+  GREEN passou com 44 testes, `cargo check --bin sprite-demo`, `cargo fmt` e
+  `git diff --check`. A validação visual da navegação fica a cargo do usuário.
 
 ### T019 — Implementar núcleo `Fixed<N>` com limbs `u64`
 
