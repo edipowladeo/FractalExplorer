@@ -60,6 +60,14 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - **Evidências:** análise registrada em
   `PLANO_IMPLEMENTACAO_MULTIPRECISAO.md`; nenhum teste pesado executado nesta
   etapa.
+### T020 — Integrar multiprecisão na camada e corrigir navegação
+
+- Fazer todos os tiles criados pela `TileLayer` respeitarem `rendering_method` e
+  `perturbation_fallback`.
+- Corrigir expansão/recomposição da camada durante pan e zoom, preservando a
+  coordenada complexa sob o cursor.
+- Validar com TDD, registrar testes e validação manual da aplicação.
+
 ## BACKLOG
 
 ### T027 — Representar `delta` como expoente inteiro positivo
