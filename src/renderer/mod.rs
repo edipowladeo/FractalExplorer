@@ -1,6 +1,6 @@
 use crate::config::RendererConfig;
 use crate::geometry::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
-use crate::{IterationBuffer, Sprite, Tile};
+use crate::{Sprite, Tile};
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -32,20 +32,6 @@ impl<'de> Deserialize<'de> for Palette {
             }
         }
     }
-}
-
-/// Converts calculator results into display pixels.
-pub fn sprite_from_iterations(
-    image: &IterationBuffer,
-    palette: Palette,
-    palette_period: f64,
-) -> Sprite {
-    let pixels = image
-        .iterations()
-        .iter()
-        .map(|&iterations| color(iterations, image.max_iterations(), palette, palette_period))
-        .collect();
-    Sprite::from_pixels(image.width(), image.height(), pixels)
 }
 
 fn sprite_from_tile(
@@ -334,17 +320,17 @@ fn rainbow_color(iterations: u64, palette_period: f64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        allocation_screen_rect, draw_rectangle_outline, format_coordinates, sprite_from_iterations,
+        allocation_screen_rect, draw_rectangle_outline, format_coordinates, sprite_from_tile,
         Palette, ScreenRect,
     };
     use crate::geometry::{ComplexPoint, ScreenSize};
-    use crate::{Mandelbrot, Orchestrator, RenderConfig};
+    use crate::{Mandelbrot, Orchestrator, Tile};
 
     #[test]
-    fn converts_iteration_buffer_to_a_sprite() {
-        let image =
-            Orchestrator::new(Mandelbrot::new(32)).render(RenderConfig::centered(3, 3, 4.0));
-        let sprite = sprite_from_iterations(&image, Palette::Shade, 5.0);
+    fn converts_tile_iterations_to_a_sprite() {
+        let tile = Tile::new(ComplexPoint::new(0.0, 0.0), 3, 3, 1.0);
+        Orchestrator::new(Mandelbrot::new(32)).render_tile(&tile);
+        let sprite = sprite_from_tile(&tile, 32, Palette::Shade, 5.0);
 
         assert_eq!((sprite.width(), sprite.height()), (3, 3));
         assert_eq!(sprite.pixels()[4], 0);
