@@ -131,6 +131,49 @@ impl<const N: usize> MandelbrotFixed<N> {
         }
     }
 
+    pub fn select_reference_grid(
+        &self,
+        min_real: Fixed<N>,
+        max_real: Fixed<N>,
+        min_imaginary: Fixed<N>,
+        max_imaginary: Fixed<N>,
+        grid_size: usize,
+    ) -> ReferenceOrbit<N> {
+        assert!(grid_size > 0, "reference grid must have a size");
+        let grid_size_value = grid_size as f64;
+        let real_step = max_real
+            .sub(min_real)
+            .mul(Fixed::from_f64(1.0 / grid_size_value));
+        let imaginary_step = max_imaginary
+            .sub(min_imaginary)
+            .mul(Fixed::from_f64(1.0 / grid_size_value));
+        let mut best = None;
+
+        for row in 0..grid_size {
+            let normalized_y = (row as f64 + 0.5) / grid_size_value;
+            let imaginary =
+                min_imaginary.add(imaginary_step.mul(Fixed::from_f64(row as f64 + 0.5)));
+            for column in 0..grid_size {
+                let normalized_x = (column as f64 + 0.5) / grid_size_value;
+                let real = min_real.add(real_step.mul(Fixed::from_f64(column as f64 + 0.5)));
+                let iterations = self.escape_iterations(real, imaginary);
+                let distance = (normalized_x - 0.5).powi(2) + (normalized_y - 0.5).powi(2);
+                if best
+                    .as_ref()
+                    .map(|(_, best_iterations, best_distance)| {
+                        iterations > *best_iterations
+                            || (iterations == *best_iterations && distance < *best_distance)
+                    })
+                    .unwrap_or(true)
+                {
+                    best = Some((self.reference_orbit(real, imaginary), iterations, distance));
+                }
+            }
+        }
+
+        best.expect("reference grid must produce a candidate").0
+    }
+
     pub fn perturbation_iterations(
         &self,
         real: Fixed<N>,
@@ -334,6 +377,21 @@ mod tests {
 
         assert_eq!(without_fallback, vec![None]);
         assert_eq!(with_fallback, vec![Some(32)]);
+    }
+
+    #[test]
+    fn reference_grid_selects_a_valid_high_precision_orbit() {
+        let fractal = MandelbrotFixed::<2>::new(32);
+        let orbit = fractal.select_reference_grid(
+            Fixed::from_f64(-2.0),
+            Fixed::from_f64(1.0),
+            Fixed::from_f64(-1.0),
+            Fixed::from_f64(1.0),
+            3,
+        );
+
+        assert!(!orbit.real.is_empty());
+        assert!(orbit.valid_iterations <= 32);
     }
 
     #[test]

@@ -60,21 +60,6 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - **Evidências:** análise registrada em
   `PLANO_IMPLEMENTACAO_MULTIPRECISAO.md`; nenhum teste pesado executado nesta
   etapa.
-### T019 — Implementar núcleo `Fixed<N>` com limbs `u64`
-
-- Começar pelo ciclo TDD de `Fixed<1>`, `Fixed<2>` e `Fixed<N>`.
-- Registrar RED/GREEN/REFACTOR e os testes executados nesta tarefa.
-- Depende da investigação concluída em T018.
-- **Progresso:** núcleo `Fixed<N>` e `MandelbrotFixed<N>` implementados; testes
-  unitários do módulo `fixed` (5) e do calculador Mandelbrot (4) passaram.
-- A geração de tile full multiprecision foi adicionada e seu teste de grade
-  `3x3` passou sem coordenadas `f64`.
-- A órbita de referência, a perturbação e `perturbation_fallback` foram
-  adicionados; 3 testes de perturbação/configuração passaram. O default mantém
-  o fallback desligado para exibir artefatos instáveis.
-- O `main` agora seleciona `f64`, `multiprecision` ou `perturbation` pela
-  configuração e `N` controla a escala fracionária (`32 * N` bits).
-
 ## BACKLOG
 
 ### T027 — Representar `delta` como expoente inteiro positivo
@@ -198,6 +183,18 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - Depende da estabilização da barra de status.
 
 ## DONE
+
+### T019 — Implementar núcleo `Fixed<N>` com limbs `u64`
+
+- **Resultado:** implementados `Fixed<1>`, `Fixed<2>` e `Fixed<N>` com limbs
+  `u64`, escala fracionária `32 * N`, cálculo Mandelbrot direto por pixel,
+  órbita de referência, seleção em grade, perturbação e fallback configurável.
+- **Configuração:** `renderer.rendering_method` aceita `f64`,
+  `multiprecision` e `perturbation`; `renderer.perturbation_fallback` começa
+  desabilitado para preservar artefatos instáveis.
+- **Evidências:** `cargo test` passou com 28 testes; `cargo check --bin
+  sprite-demo` passou; `cargo fmt` e `git diff --check` passaram. A validação
+  visual da janela fica a cargo do usuário.
 
 ### T018 — Investigar e planejar a multiprecisão u64
 
