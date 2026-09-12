@@ -17,7 +17,20 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## TODO
 
-_Nenhuma tarefa ativa._
+### T018 — Investigar e planejar a multiprecisão u64
+
+- Investigar `fractalExplorer_kotlin2026` e registrar os caminhos de
+  multiprecisão direta e perturbação.
+- Definir o plano para `Fixed<1>`, `Fixed<2>` e `Fixed<N>` com limbs `u64`.
+- Trazer snippets, decisões de representação, riscos e estratégia de testes
+  para `PLANO_IMPLEMENTACAO_MULTIPRECISAO.md`.
+- Registrar que o fallback da perturbação será configurável e começará
+  desabilitado por padrão para permitir a inspeção dos artefatos instáveis.
+- **Critérios de aceitação:** investigação registrada; full multiprecision,
+  órbita de referência e perturbação identificadas; plano TDD definido.
+- **Evidências:** análise registrada em
+  `PLANO_IMPLEMENTACAO_MULTIPRECISAO.md`; nenhum teste pesado executado nesta
+  etapa.
 
 ## BACKLOG
 
