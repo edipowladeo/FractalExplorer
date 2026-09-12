@@ -65,6 +65,20 @@ pub fn run_with_updates(
     receiver: Receiver<RendererConfig>,
 ) -> Result<(), minifb::Error> {
     let mut config = initial_config.clone();
+    loop {
+        match run_window_session(tile, &config, &receiver)? {
+            Some(next_config) => config = next_config,
+            None => return Ok(()),
+        }
+    }
+}
+
+fn run_window_session(
+    tile: &Tile,
+    initial_config: &RendererConfig,
+    receiver: &Receiver<RendererConfig>,
+) -> Result<Option<RendererConfig>, minifb::Error> {
+    let mut config = initial_config.clone();
     let width = config.width;
     let height = config.height;
     let screen_size = ScreenSize::new(width, height);
@@ -84,6 +98,8 @@ pub fn run_with_updates(
             if can_apply_live_update(width, height, &next_config) {
                 config = next_config;
                 changed = true;
+            } else {
+                return Ok(Some(next_config));
             }
         }
         if changed {
@@ -103,7 +119,7 @@ pub fn run_with_updates(
         window.update_with_buffer(&framebuffer, width, height)?;
     }
 
-    Ok(())
+    Ok(None)
 }
 
 fn render_frame(tile: &Tile, config: &RendererConfig, screen_size: ScreenSize) -> Vec<u32> {

@@ -21,7 +21,7 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 - **Critérios de aceitação:** descobrir propriedades escalares da configuração recursivamente; gerar checkbox para booleanos e spinner para inteiros/pontos flutuantes; permitir alterar os controles numéricos e booleanos; manter propriedades não suportadas visíveis como somente leitura.
 - **Dependências:** T001 e T002.
-- **Progresso:** modelo dinâmico, controles `egui/eframe` e canal de atualizações para o renderer implementados; alteração de dimensões permanece bloqueada até recriação segura da janela.
+- **Progresso:** modelo dinâmico, controles `egui/eframe`, canal de atualizações e recriação da janela para mudanças de dimensão implementados.
 - **Evidências:** RED/GREEN dos ciclos de descoberta, edição e compatibilidade do renderer; `cargo test` com 20 testes e `cargo check --features native-ui` aprovados; falta validação visual no Windows.
 
 ## BACKLOG
