@@ -33,6 +33,39 @@ mod tests {
     }
 
     #[test]
+    fn destroyed_tile_is_removed_from_pending_work_queue() {
+        let tile = Arc::new(Tile::new(
+            crate::geometry::ComplexPoint::new(0.0, 0.0),
+            1,
+            1,
+            1.0,
+        ));
+        let queue = super::TileWorkQueue::new();
+
+        queue.enqueue(Arc::clone(&tile), 2, 4);
+
+        assert!(queue.remove_tile(&tile));
+        assert!(queue.pop_front().is_none());
+    }
+
+    #[test]
+    fn destroying_a_layer_deactivates_its_work_queue() {
+        let layer = TileLayer::new(
+            crate::geometry::ComplexPoint::new(0.0, 0.0),
+            2,
+            2,
+            1.0,
+            crate::geometry::ScreenPoint::new(0, 0),
+            1.0,
+        );
+        let queue = Arc::clone(&layer.work_queue);
+
+        assert!(queue.is_active());
+        drop(layer);
+        assert!(!queue.is_active());
+    }
+
+    #[test]
     fn layer_position_is_redirected_to_the_top_left_tile() {
         let tile = Arc::new(Tile::new(
             crate::geometry::ComplexPoint::new(-2.0, 3.0),
@@ -78,6 +111,17 @@ mod tests {
         wait_for_completion(&tile);
         assert_eq!(tile.status(), TileStatus::Completed);
         assert_eq!(tile.iterations().lock().unwrap()[4], 32u64);
+    }
+
+    #[test]
+    fn orchestrator_exposes_the_worker_pool() {
+        let orchestrator = Orchestrator::new(Mandelbrot::new(32));
+
+        assert_eq!(orchestrator.worker_statuses().len(), 8);
+        assert!(orchestrator
+            .worker_statuses()
+            .iter()
+            .all(|worker| worker.tile.is_none()));
     }
 
     #[test]
@@ -339,6 +383,12 @@ pub struct TileLayer {
     screen_position: crate::geometry::ScreenPoint,
     zoom: f64,
     work_queue: Arc<TileWorkQueue>,
+}
+
+impl Drop for TileLayer {
+    fn drop(&mut self) {
+        self.work_queue.deactivate();
+    }
 }
 
 /// Ordered collection of fractal layers at progressively smaller apparent pixels.
@@ -722,8 +772,12 @@ impl TileLayer {
         let (left, top, right, bottom) = bounds;
         let (tile_width, tile_height) = self.tile_screen_size();
 
+        let queue = Arc::clone(&self.work_queue);
         while self.column_count() > 1 && self.screen_position.x + tile_width as i32 - 1 < left {
             for row in &mut self.tiles {
+                if let Some(tile) = row.front() {
+                    queue.remove_tile(tile);
+                }
                 row.pop_front();
             }
             self.screen_position.x += tile_width as i32;
@@ -732,16 +786,29 @@ impl TileLayer {
             && self.screen_position.x + (self.column_count() as i32 - 1) * tile_width as i32 > right
         {
             for row in &mut self.tiles {
+                if let Some(tile) = row.back() {
+                    queue.remove_tile(tile);
+                }
                 row.pop_back();
             }
         }
         while self.row_count() > 1 && self.screen_position.y + tile_height as i32 - 1 < top {
+            if let Some(row) = self.tiles.front() {
+                for tile in row {
+                    queue.remove_tile(tile);
+                }
+            }
             self.tiles.pop_front();
             self.screen_position.y += tile_height as i32;
         }
         while self.row_count() > 1
             && self.screen_position.y + (self.row_count() as i32 - 1) * tile_height as i32 > bottom
         {
+            if let Some(row) = self.tiles.back() {
+                for tile in row {
+                    queue.remove_tile(tile);
+                }
+            }
             self.tiles.pop_back();
         }
     }
@@ -864,43 +931,88 @@ impl Tile {
 
 /// Dispatches tiles to the calculator.
 pub struct Orchestrator {
-    layer_queues: Arc<Mutex<VecDeque<Arc<TileWorkQueue>>>>,
+    layer_queues: Arc<Mutex<VecDeque<RegisteredQueue>>>,
     available: Arc<Condvar>,
     stop_worker: Arc<AtomicBool>,
-    worker: Option<JoinHandle<()>>,
+    worker_statuses: Arc<Mutex<Vec<WorkerStatus>>>,
+    workers: Vec<JoinHandle<()>>,
+}
+
+struct RegisteredQueue {
+    queue: Arc<TileWorkQueue>,
+    zoom: f64,
+}
+
+pub const DEFAULT_WORKER_COUNT: usize = 8;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkerTile {
+    pub coordinate: crate::geometry::ComplexPoint<f64>,
+    pub delta: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkerStatus {
+    pub id: usize,
+    pub tile: Option<WorkerTile>,
 }
 
 impl Orchestrator {
     pub fn new(calculator: crate::Mandelbrot) -> Self {
+        Self::with_worker_count(calculator, DEFAULT_WORKER_COUNT)
+    }
+
+    pub fn with_worker_count(calculator: crate::Mandelbrot, worker_count: usize) -> Self {
+        assert!(worker_count > 0, "worker count must be positive");
         let layer_queues = Arc::new(Mutex::new(VecDeque::new()));
+        let calculator = Arc::new(calculator);
         let available = Arc::new(Condvar::new());
         let stop_worker = Arc::new(AtomicBool::new(false));
-        let worker_queues = Arc::clone(&layer_queues);
-        let worker_available = Arc::clone(&available);
-        let worker_stop = Arc::clone(&stop_worker);
-        let worker = thread::spawn(move || {
-            while let Some(tile) = next_tile(&worker_queues, &worker_available, &worker_stop) {
-                calculate_tile(&calculator, &tile);
-            }
-        });
+        let worker_statuses = Arc::new(Mutex::new(
+            (0..worker_count)
+                .map(|id| WorkerStatus { id, tile: None })
+                .collect::<Vec<_>>(),
+        ));
+        let mut workers = Vec::with_capacity(worker_count);
+        for worker_id in 0..worker_count {
+            let worker_queues = Arc::clone(&layer_queues);
+            let worker_available = Arc::clone(&available);
+            let worker_stop = Arc::clone(&stop_worker);
+            let worker_states = Arc::clone(&worker_statuses);
+            let worker_calculator = Arc::clone(&calculator);
+            workers.push(thread::spawn(move || {
+                while let Some(queued) = next_tile(&worker_queues, &worker_available, &worker_stop)
+                {
+                    worker_states.lock().expect("worker status mutex poisoned")[worker_id].tile =
+                        Some(WorkerTile {
+                            coordinate: queued.tile.coordinate().clone(),
+                            delta: queued.tile.delta(),
+                        });
+                    calculate_tile(&worker_calculator, &queued.tile);
+                    worker_states.lock().expect("worker status mutex poisoned")[worker_id].tile =
+                        None;
+                }
+            }));
+        }
 
         Self {
             layer_queues,
             available,
             stop_worker,
-            worker: Some(worker),
+            worker_statuses,
+            workers,
         }
     }
 
     pub fn render_tile(&self, tile: &Arc<Tile>) {
         let queue = Arc::new(TileWorkQueue::new());
-        self.register_queue(Arc::clone(&queue));
+        self.register_queue(Arc::clone(&queue), 0.0);
         queue.enqueue(Arc::clone(tile), 0, 0);
         self.available.notify_one();
     }
 
     pub fn render_layer(&self, layer: &TileLayer) {
-        self.register_queue(Arc::clone(&layer.work_queue));
+        self.register_queue(Arc::clone(&layer.work_queue), layer.zoom());
         for (row_index, row) in layer.tiles.iter().enumerate() {
             for (column_index, tile) in row.iter().enumerate() {
                 layer
@@ -911,17 +1023,32 @@ impl Orchestrator {
         self.available.notify_one();
     }
 
-    fn register_queue(&self, queue: Arc<TileWorkQueue>) {
+    pub fn worker_statuses(&self) -> Vec<WorkerStatus> {
+        self.worker_statuses
+            .lock()
+            .expect("worker status mutex poisoned")
+            .clone()
+    }
+
+    fn register_queue(&self, queue: Arc<TileWorkQueue>, zoom: f64) {
         let mut queues = self
             .layer_queues
             .lock()
             .expect("layer queue mutex poisoned");
-        if !queues
-            .iter()
-            .any(|registered| Arc::ptr_eq(registered, &queue))
+        if let Some(registered) = queues
+            .iter_mut()
+            .find(|registered| Arc::ptr_eq(&registered.queue, &queue))
         {
-            queues.push_back(queue);
+            registered.zoom = zoom;
+        } else {
+            queues.push_back(RegisteredQueue { queue, zoom });
         }
+        queues.make_contiguous().sort_by(|left, right| {
+            right
+                .zoom
+                .partial_cmp(&left.zoom)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         self.available.notify_one();
     }
 }
@@ -930,7 +1057,7 @@ impl Drop for Orchestrator {
     fn drop(&mut self) {
         self.stop_worker.store(true, Ordering::Release);
         self.available.notify_all();
-        if let Some(worker) = self.worker.take() {
+        for worker in self.workers.drain(..) {
             worker.join().expect("tile worker panicked");
         }
     }
@@ -944,16 +1071,33 @@ struct QueuedTile {
 
 struct TileWorkQueue {
     pending: Mutex<VecDeque<QueuedTile>>,
+    active: AtomicBool,
 }
 
 impl TileWorkQueue {
     fn new() -> Self {
         Self {
             pending: Mutex::new(VecDeque::new()),
+            active: AtomicBool::new(true),
         }
     }
 
+    fn is_active(&self) -> bool {
+        self.active.load(Ordering::Acquire)
+    }
+
+    fn deactivate(&self) {
+        self.active.store(false, Ordering::Release);
+        self.pending
+            .lock()
+            .expect("tile queue mutex poisoned")
+            .clear();
+    }
+
     fn enqueue(&self, tile: Arc<Tile>, row: usize, column: usize) {
+        if !self.is_active() {
+            return;
+        }
         if tile
             .status
             .compare_exchange(
@@ -971,12 +1115,18 @@ impl TileWorkQueue {
         }
     }
 
-    fn pop_front(&self) -> Option<Arc<Tile>> {
+    fn pop_front(&self) -> Option<QueuedTile> {
         self.pending
             .lock()
             .expect("tile queue mutex poisoned")
             .pop_front()
-            .map(|queued| queued.tile)
+    }
+
+    fn remove_tile(&self, target: &Arc<Tile>) -> bool {
+        let mut pending = self.pending.lock().expect("tile queue mutex poisoned");
+        let original_len = pending.len();
+        pending.retain(|queued| !Arc::ptr_eq(&queued.tile, target));
+        pending.len() != original_len
     }
 
     fn pending_positions(&self) -> Vec<(usize, usize)> {
@@ -990,15 +1140,20 @@ impl TileWorkQueue {
 }
 
 fn next_tile(
-    queues: &Mutex<VecDeque<Arc<TileWorkQueue>>>,
+    queues: &Mutex<VecDeque<RegisteredQueue>>,
     available: &Condvar,
     stop: &AtomicBool,
-) -> Option<Arc<Tile>> {
+) -> Option<QueuedTile> {
     let mut queues_guard = queues.lock().expect("layer queue mutex poisoned");
     loop {
-        for queue in queues_guard.iter() {
-            if let Some(tile) = queue.pop_front() {
-                return Some(tile);
+        for registered in queues_guard.iter() {
+            if !registered.queue.is_active() {
+                continue;
+            }
+            if let Some(tile) = registered.queue.pop_front() {
+                if registered.queue.is_active() {
+                    return Some(tile);
+                }
             }
         }
         if stop.load(Ordering::Acquire) {
