@@ -1,4 +1,4 @@
-use fractal_explorer::Sprite;
+use fractal_explorer::Mandelbrot;
 use minifb::{Key, Window, WindowOptions};
 
 const WIDTH: usize = 640;
@@ -12,11 +12,10 @@ fn main() -> Result<(), minifb::Error> {
         WindowOptions::default(),
     )?;
 
-    let sprite = Sprite::solid(128, 128, 0x00a8ff);
+    let fractal = Mandelbrot::new(256);
+    let sprite = fractal.render(WIDTH, HEIGHT, 4.0);
     let mut framebuffer = vec![0x101820; WIDTH * HEIGHT];
-    let x = (WIDTH - sprite.width()) as isize / 2;
-    let y = (HEIGHT - sprite.height()) as isize / 2;
-    sprite.draw_into(&mut framebuffer, WIDTH, x, y);
+    sprite.draw_into(&mut framebuffer, WIDTH, 0, 0);
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         window.update_with_buffer(&framebuffer, WIDTH, HEIGHT)?;

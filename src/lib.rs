@@ -1,5 +1,9 @@
 //! Primitives shared by the first Windows sprite renderer.
 
+mod mandelbrot;
+
+pub use mandelbrot::Mandelbrot;
+
 /// A small, packed RGBA sprite.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sprite {
@@ -9,14 +13,24 @@ pub struct Sprite {
 }
 
 impl Sprite {
-    /// Creates a solid-color sprite.
-    pub fn solid(width: usize, height: usize, color: u32) -> Self {
+    /// Creates a sprite from a row-major pixel buffer.
+    pub fn from_pixels(width: usize, height: usize, pixels: Vec<u32>) -> Self {
         assert!(width > 0 && height > 0, "a sprite must have a size");
+        assert_eq!(
+            pixels.len(),
+            width * height,
+            "pixel buffer has the wrong size"
+        );
         Self {
             width,
             height,
-            pixels: vec![color; width * height],
+            pixels,
         }
+    }
+
+    /// Creates a solid-color sprite.
+    pub fn solid(width: usize, height: usize, color: u32) -> Self {
+        Self::from_pixels(width, height, vec![color; width * height])
     }
 
     pub fn width(&self) -> usize {

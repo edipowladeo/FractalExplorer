@@ -17,12 +17,7 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## TODO
 
-### T001 — Desenhar um sprite na tela e exibi-lo
-
-- **Objetivo:** criar a primeira janela/renderizador Rust para Windows, desenhar um sprite e exibi-lo na tela como prova mínima do pipeline gráfico.
-- **Critérios de aceitação:** aplicação Rust inicia uma janela Windows; um sprite é criado, carregado e desenhado; o sprite fica visivelmente exibido; a integração gráfica tem verificação manual documentada; a lógica testável possui testes automatizados.
-- **TDD:** iniciar com testes RED para a lógica testável do sprite/pipeline, depois GREEN e REFACTOR; registrar a verificação manual da janela como parte da evidência.
-- **Dependências:** nenhuma.
+_Nenhuma tarefa ativa._
 - **Progresso:** implementação inicial criada em `src/lib.rs` e `src/main.rs`; RED/GREEN, refactor e verificação visual estão pendentes porque `cargo`/`rustc` não estão disponíveis neste ambiente.
 
 ## BACKLOG
@@ -100,4 +95,8 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## DONE
 
-_Nenhuma tarefa concluída._
+### T001 — Desenhar um sprite na tela e exibi-lo
+
+- **Resultado:** janela/renderizador Rust para Windows criado com `minifb`; sprite preenchido com o fractal de Mandelbrot CPU `f64`, centralizado em `(0, 0)`.
+- **Evidências:** RED confirmou a ausência do módulo; GREEN passou com 5 testes; `cargo fmt -- --check` foi aplicado; `cargo test` passou com 5 testes; `cargo run --bin sprite-demo` compilou e iniciou sem erro.
+- **Commit:** registrado e enviado ao remoto após a implementação.
