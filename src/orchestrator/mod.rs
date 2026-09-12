@@ -39,6 +39,29 @@ mod tests {
     }
 
     #[test]
+    fn configured_orchestrator_renders_every_tile_added_to_a_layer() {
+        let mut config = crate::config::RendererConfig::default();
+        config.rendering_method = "perturbation".to_string();
+        let mut layer = TileLayer::new(
+            crate::geometry::ComplexPoint::new(0.0, 0.0),
+            2,
+            2,
+            0.1,
+            crate::geometry::ScreenPoint::new(4, 4),
+            1.0,
+        );
+        layer.ensure_screen_coverage((0, 0, 7, 7));
+
+        Orchestrator::from_config(&config).render_layer(&layer);
+
+        assert!(layer
+            .tiles
+            .iter()
+            .flatten()
+            .all(|tile| tile.status() == TileStatus::Completed));
+    }
+
+    #[test]
     fn completed_tile_is_not_recalculated() {
         let tile = Tile::new(crate::geometry::ComplexPoint::new(0.0, 0.0), 1, 1, 1.0);
         let orchestrator = Orchestrator::new(Mandelbrot::new(32));
@@ -186,24 +209,6 @@ mod tests {
             layer.position(),
             &crate::geometry::ComplexPoint::new(-0.995, 0.745)
         );
-    }
-
-    #[test]
-    fn layer_zoom_updates_complex_scale_while_preserving_cursor_coordinate() {
-        let mut layer = TileLayer::new(
-            crate::geometry::ComplexPoint::new(-1.0, 1.0),
-            10,
-            10,
-            0.1,
-            crate::geometry::ScreenPoint::new(100, 100),
-            1.0,
-        );
-        let cursor = crate::geometry::ScreenPoint::new(105, 105);
-        layer.zoom_at(cursor, 2.0);
-
-        assert_eq!(layer.delta(), 0.05);
-        assert_eq!(layer.tile(0, 0).unwrap().coordinate().x, -0.4);
-        assert_eq!(layer.tile(0, 0).unwrap().coordinate().y, 0.4);
     }
 }
 

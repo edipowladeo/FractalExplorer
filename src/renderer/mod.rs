@@ -72,20 +72,6 @@ pub fn run(
     let mut input = InputState::new();
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
-        let mut framebuffer = vec![0x101820; width * height];
-        layer.trim_outside_allocation((
-            deallocation.left,
-            deallocation.top,
-            deallocation.right,
-            deallocation.bottom,
-        ));
-        layer.ensure_screen_coverage((
-            allocation.left,
-            allocation.top,
-            allocation.right,
-            allocation.bottom,
-        ));
-        orchestrator.render_layer(layer);
         let mouse_position = window
             .get_mouse_pos(MouseMode::Clamp)
             .map(|(x, y)| ScreenPoint::new(x.round() as i32, y.round() as i32));
@@ -116,6 +102,21 @@ pub fn run(
                 }
             }
         }
+
+        let mut framebuffer = vec![0x101820; width * height];
+        layer.trim_outside_allocation((
+            deallocation.left,
+            deallocation.top,
+            deallocation.right,
+            deallocation.bottom,
+        ));
+        layer.ensure_screen_coverage((
+            allocation.left,
+            allocation.top,
+            allocation.right,
+            allocation.bottom,
+        ));
+        orchestrator.render_layer(layer);
         if let Some(cursor) = mouse_position {
             let complex = window_envelope.screen_to_complex(cursor, screen_size);
             draw_status_bar(&mut framebuffer, screen_size, &format_coordinates(complex));
