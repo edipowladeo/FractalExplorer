@@ -19,6 +19,7 @@ Estas instruções se aplicam a todo agente que atuar neste repositório.
 3. Antes de iniciar a primeira tarefa, analisar as demais tarefas em `TODO` e confirmar com o usuário se alguma deve ser agrupada com ela. Não iniciar a implementação até essa confirmação quando houver um agrupamento plausível.
 4. Se `TODO` estiver vazio, não puxar tarefas de `BACKLOG` automaticamente; pedir ao usuário para promover explicitamente uma tarefa para `TODO`.
 5. Manter a ordem das tarefas e registrar dependências ou decisões relevantes na própria tarefa.
+6. Toda nova tarefa solicitada pelo usuário deve ser tratada como se tivesse sido adicionada ao final de `TODO`: analisar seu agrupamento com a primeira tarefa ativa, executar seguindo o fluxo TDD e registrá-la em `DONE` assim que os critérios de conclusão forem atendidos.
 
 ## Atualização da lista
 
