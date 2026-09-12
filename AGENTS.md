@@ -21,6 +21,13 @@ Estas instruções se aplicam a todo agente que atuar neste repositório.
 5. Manter a ordem das tarefas e registrar dependências ou decisões relevantes na própria tarefa.
 6. Toda nova tarefa solicitada pelo usuário deve ser tratada como se tivesse sido adicionada ao início de `TODO`, tornando-se a primeira tarefa ativa: analisar seu agrupamento com as demais tarefas, executar seguindo o fluxo TDD e registrá-la em `DONE` assim que os critérios de conclusão forem atendidos.
 
+## Testes e validação manual
+
+1. Escrever testes ao longo da implementação e executar os testes unitários rápidos durante os ciclos RED e GREEN.
+2. Não executar verificações pesadas, benchmarks ou validações demoradas sem solicitação explícita do usuário.
+3. Ao terminar uma implementação, quando possível, apenas disparar a execução da aplicação para que o usuário faça a validação manual.
+4. Registrar no `TASKS.md` quais testes unitários foram executados e quais verificações manuais ficaram a cargo do usuário.
+
 ## Atualização da lista
 
 - Usar `TASKS.md` como fonte da fila de trabalho.
