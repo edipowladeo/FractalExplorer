@@ -60,6 +60,11 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - **Evidências:** análise registrada em
   `PLANO_IMPLEMENTACAO_MULTIPRECISAO.md`; nenhum teste pesado executado nesta
   etapa.
+### T019 — Implementar núcleo `Fixed<N>` com limbs `u64`
+
+- Começar pelo ciclo TDD de `Fixed<1>`, `Fixed<2>` e `Fixed<N>`.
+- Registrar RED/GREEN/REFACTOR e os testes executados nesta tarefa.
+- Depende da investigação concluída em T018.
 
 ## BACKLOG
 
