@@ -9,7 +9,7 @@ pub mod renderer;
 
 pub use calculator::Mandelbrot;
 pub use input::{InputEvent, InputState};
-pub use orchestrator::{Orchestrator, Tile, TileSprite, TileStatus};
+pub use orchestrator::{Orchestrator, Tile, TileLayer, TileSprite, TileStatus};
 
 /// A small, packed RGBA sprite.
 #[derive(Debug, Clone, PartialEq, Eq)]
