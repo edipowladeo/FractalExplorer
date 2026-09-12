@@ -16,6 +16,7 @@ pub struct RendererConfig {
     pub width: usize,
     pub height: usize,
     pub max_iterations: u32,
+    pub allocation_ratio: f64,
     pub debug: RendererDebugConfig,
 }
 
@@ -23,7 +24,7 @@ pub struct RendererConfig {
 #[serde(default)]
 pub struct RendererDebugConfig {
     pub reduced_viewport: bool,
-    pub reduced_viewport_ratio: f64,
+    pub reduced_viewport_allocation_ratio: f64,
 }
 
 impl Default for AppConfig {
@@ -41,6 +42,7 @@ impl Default for RendererConfig {
             width: 640,
             height: 480,
             max_iterations: 256,
+            allocation_ratio: 1.2,
             debug: RendererDebugConfig::default(),
         }
     }
@@ -50,23 +52,18 @@ impl Default for RendererDebugConfig {
     fn default() -> Self {
         Self {
             reduced_viewport: false,
-            reduced_viewport_ratio: 1.0,
+            reduced_viewport_allocation_ratio: 0.5,
         }
     }
 }
 
 impl RendererConfig {
-    pub fn effective_viewport(&self) -> (usize, usize) {
-        if !self.debug.reduced_viewport {
-            return (self.width, self.height);
+    pub fn effective_allocation_ratio(&self) -> f64 {
+        if self.debug.reduced_viewport {
+            self.debug.reduced_viewport_allocation_ratio
+        } else {
+            self.allocation_ratio
         }
-
-        let ratio = self.debug.reduced_viewport_ratio;
-        assert!(ratio > 0.0, "reduced_viewport_ratio must be positive");
-        (
-            ((self.width as f64 * ratio).round() as usize).max(1),
-            ((self.height as f64 * ratio).round() as usize).max(1),
-        )
     }
 }
 
@@ -90,10 +87,11 @@ mod tests {
             [renderer]
             width = 800
             height = 600
+            allocation_ratio = 1.2
 
             [renderer.debug]
             reduced_viewport = true
-            reduced_viewport_ratio = 0.5
+            reduced_viewport_allocation_ratio = 0.5
             "#,
         )
         .unwrap();
@@ -103,7 +101,7 @@ mod tests {
         assert_eq!(config.renderer.height, 600);
         assert_eq!(config.renderer.max_iterations, 256);
         assert!(config.renderer.debug.reduced_viewport);
-        assert_eq!(config.renderer.debug.reduced_viewport_ratio, 0.5);
-        assert_eq!(config.renderer.effective_viewport(), (400, 300));
+        assert_eq!(config.renderer.debug.reduced_viewport_allocation_ratio, 0.5);
+        assert_eq!(config.renderer.effective_allocation_ratio(), 0.5);
     }
 }
