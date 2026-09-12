@@ -8,6 +8,10 @@ max_iterations = 256
 allocation_ratio = 1
 rendering_method = "perturbation"
 perturbation_fallback = false
+deallocation_ratio = 0.8
+max_apparent_pixel_size_exponent = 3
+min_apparent_pixel_size = 0.8
+zoom_multiplier = 1.1
 #palette = "shade"
 palette_period = 50.0
 starting_point = "x=-1.50, y=0.0"
@@ -18,5 +22,5 @@ reduced_viewport_allocation_ratio = 0.7
 show_allocation_envelope = true
 
 [orchestrator.tile]
-width = 200
-height = 150
+width = 30
+height = 20

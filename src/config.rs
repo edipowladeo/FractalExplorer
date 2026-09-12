@@ -32,6 +32,10 @@ pub struct RendererConfig {
     pub height: usize,
     pub max_iterations: u32,
     pub allocation_ratio: f64,
+    pub deallocation_ratio: f64,
+    pub max_apparent_pixel_size_exponent: i32,
+    pub min_apparent_pixel_size: f64,
+    pub zoom_multiplier: f64,
     pub palette: Palette,
     pub palette_period: f64,
     pub starting_point: String,
@@ -82,6 +86,10 @@ impl Default for RendererConfig {
             height: 480,
             max_iterations: 256,
             allocation_ratio: 1.2,
+            deallocation_ratio: 0.8,
+            max_apparent_pixel_size_exponent: 3,
+            min_apparent_pixel_size: 0.8,
+            zoom_multiplier: 1.1,
             palette: Palette::Rainbow,
             palette_period: 5.0,
             starting_point: "x=0.0, y=0.0".to_string(),
@@ -103,6 +111,10 @@ impl Default for RendererDebugConfig {
 }
 
 impl RendererConfig {
+    pub fn max_apparent_pixel_size(&self) -> f64 {
+        2.0_f64.powi(self.max_apparent_pixel_size_exponent)
+    }
+
     pub fn starting_point_coordinates(&self) -> Result<crate::geometry::ComplexPoint<f64>, String> {
         let (x_text, y_text) = self.starting_point.split_once(',').ok_or_else(|| {
             "starting_point deve usar o formato 'x=<valor>, y=<valor>'".to_string()
@@ -129,6 +141,11 @@ impl RendererConfig {
             self.allocation_ratio
         }
     }
+
+    pub fn effective_deallocation_ratio(&self) -> f64 {
+        self.deallocation_ratio
+            .max(self.effective_allocation_ratio())
+    }
 }
 
 impl AppConfig {
@@ -152,6 +169,10 @@ mod tests {
             width = 800
             height = 600
             allocation_ratio = 1.2
+            deallocation_ratio = 0.8
+            max_apparent_pixel_size_exponent = 3
+            min_apparent_pixel_size = 0.8
+            zoom_multiplier = 1.1
             palette = "rainbow"
             palette_period = 5.0
             starting_point = "x=-0.743643887037151, y=0.131825904205330"
@@ -177,6 +198,12 @@ mod tests {
         assert_eq!(config.renderer.palette_period, 5.0);
         assert_eq!(config.renderer.rendering_method, "f64");
         assert!(config.renderer.perturbation_fallback);
+        assert_eq!(config.renderer.deallocation_ratio, 0.8);
+        assert_eq!(config.renderer.max_apparent_pixel_size_exponent, 3);
+        assert_eq!(config.renderer.max_apparent_pixel_size(), 8.0);
+        assert_eq!(config.renderer.min_apparent_pixel_size, 0.8);
+        assert_eq!(config.renderer.effective_deallocation_ratio(), 0.8);
+        assert_eq!(config.renderer.zoom_multiplier, 1.1);
         assert_eq!(config.orchestrator.tile.width, 800);
         assert_eq!(config.orchestrator.tile.height, 600);
         assert_eq!(
@@ -188,5 +215,22 @@ mod tests {
     #[test]
     fn perturbation_fallback_is_disabled_by_default() {
         assert!(!AppConfig::default().renderer.perturbation_fallback);
+    }
+
+    #[test]
+    fn deallocation_ratio_silently_uses_allocation_ratio_when_smaller() {
+        let config: super::RendererConfig =
+            toml::from_str("allocation_ratio = 1.2\ndeallocation_ratio = 0.5").unwrap();
+
+        assert_eq!(config.effective_deallocation_ratio(), 1.2);
+    }
+
+    #[test]
+    fn uses_default_apparent_pixel_size_limits() {
+        let config = super::RendererConfig::default();
+
+        assert_eq!(config.max_apparent_pixel_size_exponent, 3);
+        assert_eq!(config.max_apparent_pixel_size(), 8.0);
+        assert_eq!(config.min_apparent_pixel_size, 0.8);
     }
 }

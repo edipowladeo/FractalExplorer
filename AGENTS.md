@@ -2,6 +2,18 @@
 
 Estas instruções se aplicam a todo agente que atuar neste repositório.
 
+## Controle global de HIL
+
+- [x] HIL tests
+
+Este é o único checkbox de HIL do repositório e é controlado exclusivamente pelo usuário.
+
+- Quando estiver marcado, o agente deve disparar a aplicação ao concluir uma alteração funcional nova e estável, para que o usuário faça a validação manual.
+- Uma alteração estável é aquela que concluiu RED, GREEN e REFACTOR, com os testes passando.
+- Alterações sem mudança funcional, como documentação ou refatorações internas sem mudança de comportamento, não exigem esse disparo.
+- Quando estiver desmarcado, o agente não deve disparar automaticamente a aplicação por causa de uma alteração funcional.
+- O agente nunca deve marcar, desmarcar ou mover esse checkbox.
+
 ## Fluxo obrigatório de desenvolvimento
 
 1. Sempre aplicar o fluxo completo de TDD:
@@ -25,8 +37,18 @@ Estas instruções se aplicam a todo agente que atuar neste repositório.
 
 1. Escrever testes ao longo da implementação e executar os testes unitários rápidos durante os ciclos RED e GREEN.
 2. Não executar verificações pesadas, benchmarks ou validações demoradas sem solicitação explícita do usuário.
-3. Ao terminar uma implementação, quando possível, apenas disparar a execução da aplicação para que o usuário faça a validação manual.
-4. Registrar no `TASKS.md` quais testes unitários foram executados e quais verificações manuais ficaram a cargo do usuário.
+3. Registrar no `TASKS.md` quais testes unitários foram executados e quais verificações manuais ficaram a cargo do usuário.
+
+## Execução da aplicação na sessão
+
+Para disparar a aplicação diretamente na sessão do terminal:
+
+1. Usar um terminal PowerShell com diretório de trabalho na raiz do projeto.
+2. Executar `cargo run --bin sprite-demo` diretamente.
+3. Manter o processo do terminal em execução enquanto a janela do renderizador estiver aberta.
+4. Considerar a aplicação encerrada quando a janela for fechada e o comando retornar ao prompt.
+
+Esse procedimento não depende da configuração de depuração do VS Code nem do LLDB. A validação visual fica a cargo do usuário enquanto a sessão permanece ativa.
 
 ## Atualização da lista
 

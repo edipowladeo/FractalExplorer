@@ -4,13 +4,15 @@ pub mod calculator;
 pub mod config;
 pub mod fixed;
 pub mod geometry;
+pub mod input;
 pub mod orchestrator;
 pub mod renderer;
 
 pub use calculator::Mandelbrot;
 pub use calculator::MandelbrotFixed;
 pub use fixed::Fixed;
-pub use orchestrator::{Orchestrator, Tile, TileStatus};
+pub use input::{InputEvent, InputState};
+pub use orchestrator::{Orchestrator, Tile, TileLayer, TileSprite, TileStatus};
 
 /// A small, packed RGBA sprite.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +70,36 @@ impl Sprite {
                     let source = sprite_y * self.width + sprite_x;
                     let target = target_y as usize * framebuffer_width + target_x as usize;
                     framebuffer[target] = self.pixels[source];
+                }
+            }
+        }
+    }
+
+    pub fn draw_into_scaled(
+        &self,
+        framebuffer: &mut [u32],
+        framebuffer_width: usize,
+        x: isize,
+        y: isize,
+        width: usize,
+        height: usize,
+    ) {
+        let framebuffer_height = framebuffer.len() / framebuffer_width;
+        for target_y in 0..height {
+            for target_x in 0..width {
+                let destination_x = x + target_x as isize;
+                let destination_y = y + target_y as isize;
+                if destination_x >= 0
+                    && destination_y >= 0
+                    && (destination_x as usize) < framebuffer_width
+                    && (destination_y as usize) < framebuffer_height
+                {
+                    let source_x = target_x * self.width / width;
+                    let source_y = target_y * self.height / height;
+                    let source = source_y * self.width + source_x;
+                    let destination =
+                        destination_y as usize * framebuffer_width + destination_x as usize;
+                    framebuffer[destination] = self.pixels[source];
                 }
             }
         }
