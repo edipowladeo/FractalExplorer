@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tile_size.1,
         delta,
         position,
-        1.0,
+        config.renderer.max_apparent_pixel_size(),
     );
     let orchestrator = Orchestrator::new(Mandelbrot::new(config.renderer.max_iterations));
     orchestrator.render_layer(&layer);
