@@ -25,6 +25,7 @@ pub struct RendererConfig {
 pub struct RendererDebugConfig {
     pub reduced_viewport: bool,
     pub reduced_viewport_allocation_ratio: f64,
+    pub show_allocation_envelope: bool,
 }
 
 impl Default for AppConfig {
@@ -53,6 +54,7 @@ impl Default for RendererDebugConfig {
         Self {
             reduced_viewport: false,
             reduced_viewport_allocation_ratio: 0.5,
+            show_allocation_envelope: false,
         }
     }
 }
@@ -92,6 +94,7 @@ mod tests {
             [renderer.debug]
             reduced_viewport = true
             reduced_viewport_allocation_ratio = 0.5
+            show_allocation_envelope = true
             "#,
         )
         .unwrap();
@@ -102,6 +105,7 @@ mod tests {
         assert_eq!(config.renderer.max_iterations, 256);
         assert!(config.renderer.debug.reduced_viewport);
         assert_eq!(config.renderer.debug.reduced_viewport_allocation_ratio, 0.5);
+        assert!(config.renderer.debug.show_allocation_envelope);
         assert_eq!(config.renderer.effective_allocation_ratio(), 0.5);
     }
 }

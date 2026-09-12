@@ -5,6 +5,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image = Orchestrator::new(Mandelbrot::new(config.renderer.max_iterations)).render(
         RenderConfig::centered(config.renderer.width, config.renderer.height, 4.0),
     );
-    fractal_explorer::renderer::run(image)?;
+    fractal_explorer::renderer::run(image, &config.renderer)?;
     Ok(())
 }
