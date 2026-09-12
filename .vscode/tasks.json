@@ -1,0 +1,27 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Executar FractalExplorer",
+      "type": "shell",
+      "command": "cargo run --bin sprite-demo",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": ["$rustc"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "Compilar FractalExplorer",
+      "type": "shell",
+      "command": "cargo build --bin sprite-demo",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": ["$rustc"]
+    }
+  ]
+}
