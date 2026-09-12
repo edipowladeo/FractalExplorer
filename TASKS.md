@@ -17,7 +17,11 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## TODO
 
-_Nenhuma tarefa ativa._
+### T018 — Criar UI dinâmica para propriedades do TOML
+
+- **Critérios de aceitação:** descobrir propriedades escalares da configuração recursivamente; gerar checkbox para booleanos e spinner para inteiros/pontos flutuantes; permitir alterar os controles numéricos e booleanos; manter propriedades não suportadas visíveis como somente leitura.
+- **Dependências:** T001 e T002.
+- **Evidências esperadas:** testes unitários para descoberta, tipos de controle e atualização de valores; verificação manual da janela `minifb` pelo usuário.
 
 ## BACKLOG
 
