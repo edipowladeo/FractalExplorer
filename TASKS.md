@@ -65,6 +65,8 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - Começar pelo ciclo TDD de `Fixed<1>`, `Fixed<2>` e `Fixed<N>`.
 - Registrar RED/GREEN/REFACTOR e os testes executados nesta tarefa.
 - Depende da investigação concluída em T018.
+- **Progresso:** núcleo `Fixed<N>` e `MandelbrotFixed<N>` implementados; testes
+  unitários do módulo `fixed` (5) e do calculador Mandelbrot (4) passaram.
 
 ## BACKLOG
 
