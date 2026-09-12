@@ -17,7 +17,18 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## TODO
 
-_Nenhuma tarefa ativa._
+### T023 — Registrar percurso de navegação no relatório de coordenadas
+
+- **Critério de aceitação:** o relatório de clique do meio deve informar todos os arrastos e zooms aplicados ao canvas, com dados suficientes para reproduzir a sequência em um teste de regressão de alinhamento das camadas.
+- **Decisão:** registrar os comandos de navegação no próprio canvas, pois um retrato final das coordenadas não permite reconstruir de forma determinística a sequência de transformações.
+- **Evidências:** RED confirmado para a ausência do percurso e para o uso incorreto da transformação global no relatório de cada camada. GREEN: `cargo test renderer::tests::` passou com 13 testes; `cargo fmt` e `git diff --check` passaram. Regressão RED criada em `orchestrator::tests::reported_navigation_keeps_all_layer_coordinates_under_the_cursor_aligned`: reproduz os 31 zooms informados e confirma que a camada 0 mapeia o cursor para `-1.5913955983658463x0.04982497959951243`, em vez do ponto global `-1.5912597012720062x0.04979363767123237`. O valor absoluto diverge do relatório por ele ainda não registrar o estado inicial do canvas, mas a sequência de comandos e a inconsistência de transformação são reproduzidas. `cargo test` completo também permanece RED no teste preexistente `orchestrator::tests::tiled_infinite_canvas_expands_by_one_layer_per_frame` (`esperado 360x265`, `obtido 362x267`); por isso a tarefa permanece em `TODO`, sem commit/push ou validação manual.
+- **Atualização:** o relatório passou a registrar o estado inicial (`posição`, `tile`, `delta`, `tela`, `zoom_max` e `zoom_min`), e `cargo test renderer::tests::` passou com 14 testes. É necessário gerar um novo relatório para ajustar a regressão aos valores absolutos do caso visual.
+- **Regressão mínima:** `orchestrator::tests::initial_layer_expansion_keeps_the_cursor_complex_coordinate_aligned` reproduz o estado inicial informado e cinco expansões de frame, sem pan ou zoom. RED confirmado na camada 3: `-1.5565625x0.0009375`, em vez de `-1.55625x0.00125`; a tolerância de `1e-12` elimina somente ruído de ponto flutuante.
+- **Isolamento progressivo:** `orchestrator::tests::each_initial_layer_expansion_keeps_the_cursor_complex_coordinate_aligned` valida a invariante depois de cada expansão. As expansões 1, 2 e 3 passam; a primeira ruptura é a expansão 4, na camada 3 (`zoom=1`), com o mesmo desvio do relatório.
+- **Diagnóstico visual:** o relatório marca uma camada divergente com `DESALINHADA dx=... dy=...` e informa `Discrepancias detectadas: N`. RED/GREEN: o teste do marcador falhou antes da implementação e `cargo test renderer::tests::` passou com 15 testes depois dela.
+- **Causa isolada:** a regressão sem cobertura de tiles falha igualmente na expansão 4; `adjacent_layer(..., 0.5)` já retorna desalinhada antes da sincronização. O teste mais próximo da causa registra a origem da nova camada em `491x361`, enquanto `canvas.complex_to_screen(layer.position())` produz `491x360`.
+- **Log de criação:** a criação e expansão de camadas imprimem e armazenam `Camada criada com delta: <expoente>` ou `Camada expandida, direcao de incremento: <maior|menor>, delta: <expoente>`. RED/GREEN: `orchestrator::tests::records_the_delta_exponent_and_direction_for_created_layers` passou após a implementação.
+- **Overlays de texto:** adicionadas em `[renderer.debug]` as flags booleanas `text_overlay_global`, `text_overlay_workers`, `text_overlay_layers` e `text_overlay_queue`, todas com padrão `true` e registradas em `config.toml`. RED/GREEN: `cargo test config::tests::` passou com 4 testes e `cargo test renderer::tests::` passou com 15 testes.
 
 ## BACKLOG
 
