@@ -17,13 +17,6 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## TODO
 
-### T019 — Diagnosticar e corrigir o alinhamento de camadas de tiles
-
-- **Objetivo:** garantir que a posição da camada represente seu canto superior esquerdo no plano complexo e que cada tile seja calculado e desenhado na posição correspondente.
-- **Critérios de aceitação:** testes cobrem a transformação canto-superior-esquerdo → pixel → plano complexo, offsets de linha/coluna, bordas entre tiles e desenho de múltiplos tiles; a aplicação deixa de exibir camadas desalinhadas.
-- **Decisão:** investigação iniciada sem agrupamento, pois `TODO` estava vazio.
-- **Evidências:** RED confirmou a ausência do contrato de transformação e que a primeira iteração da camada ignorava sua origem; GREEN adicionou cobertura para origem, fronteira, cálculo, desenho de múltiplos tiles e escala da janela. `cargo test` passou com 31 testes; `cargo fmt -- --check`, `git diff --check` e `cargo check --features native-ui` passaram. Validação visual da janela fica a cargo do usuário.
-
 ## BACKLOG
 
 ### T003 — Ampliar o processador CPU determinístico
@@ -99,6 +92,12 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - Depende da estabilização da barra de status.
 
 ## DONE
+
+### T019 — Diagnosticar e corrigir o alinhamento de camadas de tiles
+
+- **Resultado:** a posição de `TileLayer` agora é explicitamente o canto superior esquerdo no plano complexo; o cálculo deriva o ponto de cada tile pelos offsets de linha/coluna, e o renderer desenha a grade inteira nas posições correspondentes. A inicialização converte o centro configurado para esse canto e usa o mesmo `delta` da transformação da janela.
+- **Evidências:** RED confirmou a ausência do contrato de transformação e que a primeira iteração da camada ignorava sua origem; GREEN adicionou cobertura para origem, fronteira, cálculo, desenho de múltiplos tiles e escala da janela. `cargo test` passou com 31 testes; `cargo fmt -- --check`, `git diff --check` e `cargo check --features native-ui` passaram. Validação visual da janela fica a cargo do usuário.
+- **Commit:** `522e0a5`, registrado e enviado para `origin/feature/dynamic-config-ui`.
 
 ### T018 — Criar UI dinâmica para propriedades do TOML
 
