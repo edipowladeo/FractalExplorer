@@ -39,6 +39,34 @@ impl<const N: usize> MandelbrotFixed<N> {
 
         self.max_iterations
     }
+
+    /// Calculates every pixel in a centered row-major tile using fixed-point
+    /// coordinate arithmetic throughout the traversal.
+    pub fn render_tile(
+        &self,
+        center_real: Fixed<N>,
+        center_imaginary: Fixed<N>,
+        delta: Fixed<N>,
+        width: usize,
+        height: usize,
+    ) -> Vec<u32> {
+        assert!(width > 0 && height > 0, "a tile must have a size");
+        let center_x = Fixed::from_i64((width.saturating_sub(1) / 2) as i64);
+        let center_y = Fixed::from_i64((height.saturating_sub(1) / 2) as i64);
+        let mut iterations = Vec::with_capacity(width * height);
+
+        for y in 0..height {
+            for x in 0..width {
+                let x_offset = Fixed::from_i64(x as i64).sub(center_x);
+                let y_offset = center_y.sub(Fixed::from_i64(y as i64));
+                let real = center_real.add(delta.mul(x_offset));
+                let imaginary = center_imaginary.add(delta.mul(y_offset));
+                iterations.push(self.escape_iterations(real, imaginary));
+            }
+        }
+
+        iterations
+    }
 }
 
 impl Mandelbrot {
@@ -87,6 +115,17 @@ mod tests {
         let fractal = MandelbrotFixed::<2>::new(32);
 
         assert!(fractal.escape_iterations(Fixed::from_i64(2), Fixed::zero()) < 32);
+    }
+
+    #[test]
+    fn fixed_render_tile_calculates_every_pixel_without_float_coordinates() {
+        let fractal = MandelbrotFixed::<2>::new(32);
+        let iterations =
+            fractal.render_tile(Fixed::zero(), Fixed::zero(), Fixed::from_i64(1), 3, 3);
+
+        assert_eq!(iterations.len(), 9);
+        assert_eq!(iterations[4], 32);
+        assert!(iterations[0] < 32);
     }
 
     #[test]
