@@ -32,6 +32,7 @@ pub struct RendererConfig {
     pub height: usize,
     pub max_iterations: u32,
     pub allocation_ratio: f64,
+    pub deallocation_ratio: f64,
     pub zoom_multiplier: f64,
     pub palette: Palette,
     pub palette_period: f64,
@@ -81,6 +82,7 @@ impl Default for RendererConfig {
             height: 480,
             max_iterations: 256,
             allocation_ratio: 1.2,
+            deallocation_ratio: 0.8,
             zoom_multiplier: 1.1,
             palette: Palette::Rainbow,
             palette_period: 5.0,
@@ -127,6 +129,11 @@ impl RendererConfig {
             self.allocation_ratio
         }
     }
+
+    pub fn effective_deallocation_ratio(&self) -> f64 {
+        self.deallocation_ratio
+            .max(self.effective_allocation_ratio())
+    }
 }
 
 impl AppConfig {
@@ -150,6 +157,7 @@ mod tests {
             width = 800
             height = 600
             allocation_ratio = 1.2
+            deallocation_ratio = 0.8
             zoom_multiplier = 1.1
             palette = "rainbow"
             palette_period = 5.0
@@ -173,6 +181,8 @@ mod tests {
         assert_eq!(config.renderer.effective_allocation_ratio(), 0.5);
         assert_eq!(config.renderer.palette, crate::renderer::Palette::Rainbow);
         assert_eq!(config.renderer.palette_period, 5.0);
+        assert_eq!(config.renderer.deallocation_ratio, 0.8);
+        assert_eq!(config.renderer.effective_deallocation_ratio(), 0.8);
         assert_eq!(config.renderer.zoom_multiplier, 1.1);
         assert_eq!(config.orchestrator.tile.width, 800);
         assert_eq!(config.orchestrator.tile.height, 600);
@@ -180,5 +190,13 @@ mod tests {
             config.renderer.starting_point_coordinates().unwrap(),
             crate::geometry::ComplexPoint::new(-0.743643887037151, 0.131825904205330)
         );
+    }
+
+    #[test]
+    fn deallocation_ratio_silently_uses_allocation_ratio_when_smaller() {
+        let config: super::RendererConfig =
+            toml::from_str("allocation_ratio = 1.2\ndeallocation_ratio = 0.5").unwrap();
+
+        assert_eq!(config.effective_deallocation_ratio(), 1.2);
     }
 }

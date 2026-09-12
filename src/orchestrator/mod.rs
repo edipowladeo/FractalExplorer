@@ -40,6 +40,17 @@ mod tests {
     }
 
     #[test]
+    fn tile_keeps_one_immutable_sprite_reference() {
+        let tile = Tile::new(crate::geometry::ComplexPoint::new(0.0, 0.0), 1, 1, 1.0);
+        let sprite = Arc::new(crate::Sprite::solid(1, 1, 0xff00ff));
+        tile.set_sprite(Arc::clone(&sprite));
+
+        let stored = tile.sprite().expect("tile sprite should exist");
+
+        assert!(Arc::ptr_eq(&stored, &sprite));
+    }
+
+    #[test]
     fn tile_sprite_keeps_tile_reference_and_top_left_screen_position() {
         let tile = std::sync::Arc::new(Tile::new(
             crate::geometry::ComplexPoint::new(0.0, 0.0),
@@ -101,6 +112,28 @@ mod tests {
         assert_eq!(
             layer.position(),
             &crate::geometry::ComplexPoint::new(-2.0, 2.0)
+        );
+    }
+
+    #[test]
+    fn tile_layer_removes_tiles_that_are_fully_outside_screen_bounds() {
+        let mut layer = TileLayer::new(
+            crate::geometry::ComplexPoint::new(-1.0, 1.0),
+            2,
+            2,
+            1.0,
+            crate::geometry::ScreenPoint::new(0, 0),
+            1.0,
+        );
+        layer.ensure_screen_coverage((0, 0, 7, 7));
+        layer.set_screen_position(crate::geometry::ScreenPoint::new(-8, -8));
+
+        layer.trim_outside_allocation((0, 0, 7, 7));
+
+        assert_eq!((layer.row_count(), layer.column_count()), (1, 1));
+        assert_eq!(
+            layer.screen_position(),
+            crate::geometry::ScreenPoint::new(-2, -2)
         );
     }
 
@@ -176,6 +209,7 @@ pub struct Tile {
     delta: f64,
     status: AtomicU8,
     iterations: Arc<Mutex<Vec<u64>>>,
+    sprite: Arc<Mutex<Option<Arc<crate::Sprite>>>>,
 }
 
 /// Places one calculated tile in screen space.
@@ -392,6 +426,38 @@ impl TileLayer {
         }
     }
 
+    pub fn trim_outside_allocation(&mut self, bounds: (i32, i32, i32, i32)) {
+        let (left, top, right, bottom) = bounds;
+        let (tile_width, tile_height) = self.tile_screen_size();
+        let complex_width = self.tile_width as f64 * self.delta;
+        let complex_height = self.tile_height as f64 * self.delta;
+
+        while self.column_count() > 1 && self.screen_position.x + tile_width as i32 - 1 < left {
+            for row in &mut self.tiles {
+                row.pop_front();
+            }
+            self.position.x += complex_width;
+            self.screen_position.x += tile_width as i32;
+        }
+        while self.column_count() > 1
+            && self.screen_position.x + (self.column_count() as i32 - 1) * tile_width as i32 > right
+        {
+            for row in &mut self.tiles {
+                row.pop_back();
+            }
+        }
+        while self.row_count() > 1 && self.screen_position.y + tile_height as i32 - 1 < top {
+            self.tiles.pop_front();
+            self.position.y -= complex_height;
+            self.screen_position.y += tile_height as i32;
+        }
+        while self.row_count() > 1
+            && self.screen_position.y + (self.row_count() as i32 - 1) * tile_height as i32 > bottom
+        {
+            self.tiles.pop_back();
+        }
+    }
+
     fn make_tile(&self, row: usize, column: usize) -> Arc<Tile> {
         let x = self.position.x
             + (column as f64 * self.tile_width as f64 + (self.tile_width - 1) as f64 / 2.0)
@@ -473,6 +539,7 @@ impl Tile {
             delta,
             status: AtomicU8::new(TileStatus::NotStarted as u8),
             iterations: Arc::new(Mutex::new(vec![0; width as usize * height as usize])),
+            sprite: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -496,6 +563,20 @@ impl Tile {
 
     pub fn iterations(&self) -> Arc<Mutex<Vec<u64>>> {
         Arc::clone(&self.iterations)
+    }
+
+    pub fn sprite(&self) -> Option<Arc<crate::Sprite>> {
+        self.sprite
+            .lock()
+            .expect("tile sprite mutex poisoned")
+            .clone()
+    }
+
+    pub fn set_sprite(&self, sprite: Arc<crate::Sprite>) {
+        let mut stored = self.sprite.lock().expect("tile sprite mutex poisoned");
+        if stored.is_none() {
+            *stored = Some(sprite);
+        }
     }
 }
 

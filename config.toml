@@ -6,6 +6,7 @@ width = 800
 height = 600
 max_iterations = 10000
 allocation_ratio = 1
+deallocation_ratio = 0.8
 zoom_multiplier = 1.1
 #palette = "shade"
 palette_period = 50.0

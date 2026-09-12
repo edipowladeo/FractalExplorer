@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::config::RendererConfig;
 use crate::geometry::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
 use crate::{input::ZoomDirection, InputEvent, InputState, Orchestrator, Sprite, Tile, TileLayer};
@@ -63,6 +61,7 @@ pub fn run(
     let height = config.height;
     let screen_size = ScreenSize::new(width, height);
     let allocation = allocation_screen_rect(screen_size, config.effective_allocation_ratio());
+    let deallocation = deallocation_screen_rect(screen_size, config.effective_deallocation_ratio());
     let window_envelope = window_envelope(screen_size);
     let mut window = Window::new(
         "FractalExplorer - Mandelbrot",
@@ -71,10 +70,15 @@ pub fn run(
         WindowOptions::default(),
     )?;
     let mut input = InputState::new();
-    let mut sprite_cache: HashMap<usize, Sprite> = HashMap::new();
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         let mut framebuffer = vec![0x101820; width * height];
+        layer.trim_outside_allocation((
+            deallocation.left,
+            deallocation.top,
+            deallocation.right,
+            deallocation.bottom,
+        ));
         layer.ensure_screen_coverage((
             allocation.left,
             allocation.top,
@@ -120,14 +124,15 @@ pub fn run(
         for row in 0..layer.row_count() {
             for column in 0..layer.column_count() {
                 let tile = layer.tile(row, column).expect("layer grid is rectangular");
-                let key = std::sync::Arc::as_ptr(tile) as usize;
-                let sprite = sprite_cache.entry(key).or_insert_with(|| {
-                    sprite_from_tile(
+                let sprite = tile.sprite().unwrap_or_else(|| {
+                    let sprite = std::sync::Arc::new(sprite_from_tile(
                         tile,
                         config.max_iterations as u64,
                         config.palette,
                         config.palette_period,
-                    )
+                    ));
+                    tile.set_sprite(std::sync::Arc::clone(&sprite));
+                    tile.sprite().expect("tile sprite should exist")
                 });
                 sprite.draw_into_scaled(
                     &mut framebuffer,
@@ -141,7 +146,17 @@ pub fn run(
         }
         if config.debug.show_allocation_envelope {
             draw_rectangle_outline(&mut framebuffer, screen_size, allocation, 0xff0000);
+            draw_rectangle_outline(&mut framebuffer, screen_size, deallocation, 0xffff00);
         }
+        let overlay = format_layer_overlay(layer.column_count(), layer.row_count());
+        draw_text(
+            &mut framebuffer,
+            screen_size,
+            8,
+            (height.saturating_sub(24 + 7 + 4)) as i32,
+            &overlay,
+            0xffffff,
+        );
         window.update_with_buffer(&framebuffer, width, height)?;
     }
 
@@ -200,6 +215,10 @@ fn allocation_screen_rect(size: ScreenSize, allocation_ratio: f64) -> ScreenRect
     }
 }
 
+fn deallocation_screen_rect(size: ScreenSize, deallocation_ratio: f64) -> ScreenRect {
+    allocation_screen_rect(size, deallocation_ratio)
+}
+
 fn window_envelope(size: ScreenSize) -> ComplexEnvelope<f64> {
     ComplexEnvelope::new(
         -2.0,
@@ -249,6 +268,10 @@ fn format_coordinates(point: ComplexPoint<f64>) -> String {
     format!("x: {:.15}   y: {:.15}", point.x, point.y)
 }
 
+fn format_layer_overlay(columns: usize, rows: usize) -> String {
+    format!("Camada: {columns}*{rows} tiles")
+}
+
 fn draw_status_bar(framebuffer: &mut [u32], size: ScreenSize, text: &str) {
     let bar_height = 24usize;
     let top = size.height.saturating_sub(bar_height);
@@ -285,6 +308,9 @@ fn draw_text(framebuffer: &mut [u32], size: ScreenSize, x: i32, y: i32, text: &s
 
 fn glyph(character: char) -> Option<[u8; 7]> {
     let glyph = match character {
+        'C' => [
+            0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110,
+        ],
         '0' => [
             0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
         ],
@@ -320,6 +346,33 @@ fn glyph(character: char) -> Option<[u8; 7]> {
         ],
         'y' => [
             0b00000, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b11100,
+        ],
+        'a' => [
+            0b00000, 0b00000, 0b01110, 0b00001, 0b01111, 0b10001, 0b01111,
+        ],
+        'm' => [
+            0b00000, 0b00000, 0b11010, 0b10101, 0b10101, 0b10101, 0b10101,
+        ],
+        'd' => [
+            0b00001, 0b00001, 0b01111, 0b10001, 0b10001, 0b10011, 0b01101,
+        ],
+        'e' => [
+            0b00000, 0b00000, 0b01110, 0b10001, 0b11111, 0b10000, 0b01111,
+        ],
+        't' => [
+            0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00101, 0b00010,
+        ],
+        'i' => [
+            0b00100, 0b00000, 0b01100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+        'l' => [
+            0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+        's' => [
+            0b00000, 0b00000, 0b01111, 0b10000, 0b01110, 0b00001, 0b11110,
+        ],
+        '*' => [
+            0b00000, 0b00100, 0b10101, 0b01110, 0b10101, 0b00100, 0b00000,
         ],
         ':' => [
             0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000,
@@ -374,8 +427,8 @@ fn rainbow_color(iterations: u64, palette_period: f64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        allocation_screen_rect, draw_rectangle_outline, format_coordinates, sprite_from_tile,
-        Palette, ScreenRect,
+        allocation_screen_rect, draw_rectangle_outline, format_coordinates, format_layer_overlay,
+        sprite_from_tile, Palette, ScreenRect,
     };
     use crate::geometry::{ComplexPoint, ScreenSize};
     use crate::{Mandelbrot, Orchestrator, Tile};
@@ -416,6 +469,11 @@ mod tests {
             crate::config::RendererConfig::default().palette,
             Palette::Rainbow
         );
+    }
+
+    #[test]
+    fn formats_layer_overlay_with_grid_dimensions() {
+        assert_eq!(format_layer_overlay(3, 4), "Camada: 3*4 tiles");
     }
 
     #[test]
