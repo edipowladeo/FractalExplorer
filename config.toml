@@ -4,7 +4,7 @@ debug_global = true
 [renderer]
 width = 1400
 height = 800
-max_iterations = 2000
+max_iterations = 256
 precision = 1
 allocation_ratio = 1
 deallocation_ratio = 1
