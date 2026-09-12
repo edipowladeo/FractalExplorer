@@ -67,11 +67,12 @@ mod tests {
 
     #[test]
     fn draws_sprite_at_position_and_clips_to_framebuffer() {
-        let sprite = Sprite::solid(2, 2, 0xabcdef);
+        let color = 0xabcdef;
+        let sprite = Sprite::solid(2, 2, color);
         let mut framebuffer = vec![0; 3 * 3];
 
         sprite.draw_into(&mut framebuffer, 3, -1, 1);
 
-        assert_eq!(framebuffer, vec![0, 0, 0, 0xabcdef, 0, 0, 0xabcdef, 0, 0]);
+        assert_eq!(framebuffer, vec![0, 0, 0, color, 0, 0, color, 0, 0]);
     }
 }
