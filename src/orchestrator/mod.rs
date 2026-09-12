@@ -4,6 +4,17 @@ mod tests {
 
     use super::{Orchestrator, Tile, TileLayer, TileSprite, TileStatus};
     use crate::Mandelbrot;
+    use std::{thread, time::Duration};
+
+    fn wait_for_completion(tile: &Tile) {
+        for _ in 0..1000 {
+            if tile.status() == TileStatus::Completed {
+                return;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        panic!("tile worker did not complete the tile");
+    }
 
     #[test]
     fn tile_starts_not_started_and_owns_u64_iteration_storage() {
@@ -18,19 +29,50 @@ mod tests {
     }
 
     #[test]
-    fn orchestrator_dispatches_and_completes_a_tile() {
-        let tile = Tile::new(crate::geometry::ComplexPoint::new(0.0, 0.0), 3, 3, 1.0);
+    fn orchestrator_enqueues_and_worker_completes_a_tile() {
+        let tile = Arc::new(Tile::new(
+            crate::geometry::ComplexPoint::new(0.0, 0.0),
+            3,
+            3,
+            1.0,
+        ));
         Orchestrator::new(Mandelbrot::new(32)).render_tile(&tile);
 
+        wait_for_completion(&tile);
         assert_eq!(tile.status(), TileStatus::Completed);
         assert_eq!(tile.iterations().lock().unwrap()[4], 32u64);
     }
 
     #[test]
+    fn new_tile_is_deferred_before_worker_completes_it() {
+        let tile = Arc::new(Tile::new(
+            crate::geometry::ComplexPoint::new(0.0, 0.0),
+            3,
+            3,
+            1.0,
+        ));
+        let orchestrator = Orchestrator::new(Mandelbrot::new(32));
+
+        orchestrator.render_tile(&tile);
+
+        assert!(matches!(
+            tile.status(),
+            TileStatus::Deferred | TileStatus::Completed
+        ));
+        wait_for_completion(&tile);
+    }
+
+    #[test]
     fn completed_tile_is_not_recalculated() {
-        let tile = Tile::new(crate::geometry::ComplexPoint::new(0.0, 0.0), 1, 1, 1.0);
+        let tile = Arc::new(Tile::new(
+            crate::geometry::ComplexPoint::new(0.0, 0.0),
+            1,
+            1,
+            1.0,
+        ));
         let orchestrator = Orchestrator::new(Mandelbrot::new(32));
         orchestrator.render_tile(&tile);
+        wait_for_completion(&tile);
         tile.iterations().lock().unwrap()[0] = 777;
 
         orchestrator.render_tile(&tile);
@@ -179,22 +221,23 @@ mod tests {
 
 use std::collections::VecDeque;
 use std::sync::{
-    atomic::{AtomicU8, Ordering},
-    Arc, Mutex,
+    atomic::{AtomicBool, AtomicU8, Ordering},
+    Arc, Condvar, Mutex,
 };
+use std::thread::{self, JoinHandle};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum TileStatus {
     NotStarted = 0,
-    Dispatched = 1,
+    Deferred = 1,
     Completed = 2,
 }
 
 impl TileStatus {
     fn from_u8(value: u8) -> Self {
         match value {
-            1 => Self::Dispatched,
+            1 => Self::Deferred,
             2 => Self::Completed,
             _ => Self::NotStarted,
         }
@@ -582,47 +625,117 @@ impl Tile {
 
 /// Dispatches tiles to the calculator.
 pub struct Orchestrator {
-    calculator: crate::Mandelbrot,
+    work_queue: Arc<TileWorkQueue>,
+    stop_worker: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
 }
 
 impl Orchestrator {
     pub fn new(calculator: crate::Mandelbrot) -> Self {
-        Self { calculator }
-    }
-
-    pub fn render_tile(&self, tile: &Tile) {
-        self.render_tile_with_delta(tile, tile.delta);
-    }
-
-    fn render_tile_with_delta(&self, tile: &Tile, delta: f64) {
-        if tile.status() == TileStatus::Completed {
-            return;
-        }
-        tile.status
-            .store(TileStatus::Dispatched as u8, Ordering::Release);
-        let mut iterations = tile
-            .iterations
-            .lock()
-            .expect("tile iterations mutex poisoned");
-        let center_x = (tile.width - 1) as f64 / 2.0;
-        let center_y = (tile.height - 1) as f64 / 2.0;
-        for y in 0..tile.height {
-            for x in 0..tile.width {
-                let real = tile.coordinate.x + (x as f64 - center_x) * delta;
-                let imaginary = tile.coordinate.y - (y as f64 - center_y) * delta;
-                iterations[y as usize * tile.width as usize + x as usize] =
-                    self.calculator.escape_iterations(real, imaginary) as u64;
+        let work_queue = Arc::new(TileWorkQueue::new());
+        let stop_worker = Arc::new(AtomicBool::new(false));
+        let worker_queue = Arc::clone(&work_queue);
+        let worker_stop = Arc::clone(&stop_worker);
+        let worker = thread::spawn(move || {
+            while let Some(tile) = worker_queue.next(&worker_stop) {
+                calculate_tile(&calculator, &tile);
             }
+        });
+
+        Self {
+            work_queue,
+            stop_worker,
+            worker: Some(worker),
         }
-        tile.status
-            .store(TileStatus::Completed as u8, Ordering::Release);
+    }
+
+    pub fn render_tile(&self, tile: &Arc<Tile>) {
+        self.work_queue.enqueue(Arc::clone(tile));
     }
 
     pub fn render_layer(&self, layer: &TileLayer) {
         for row in &layer.tiles {
             for tile in row {
-                self.render_tile_with_delta(tile, layer.delta);
+                self.work_queue.enqueue(Arc::clone(tile));
             }
         }
     }
+}
+
+impl Drop for Orchestrator {
+    fn drop(&mut self) {
+        self.stop_worker.store(true, Ordering::Release);
+        self.work_queue.available.notify_all();
+        if let Some(worker) = self.worker.take() {
+            worker.join().expect("tile worker panicked");
+        }
+    }
+}
+
+struct TileWorkQueue {
+    pending: Mutex<VecDeque<Arc<Tile>>>,
+    available: Condvar,
+}
+
+impl TileWorkQueue {
+    fn new() -> Self {
+        Self {
+            pending: Mutex::new(VecDeque::new()),
+            available: Condvar::new(),
+        }
+    }
+
+    fn enqueue(&self, tile: Arc<Tile>) {
+        if tile
+            .status
+            .compare_exchange(
+                TileStatus::NotStarted as u8,
+                TileStatus::Deferred as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            self.pending
+                .lock()
+                .expect("tile queue mutex poisoned")
+                .push_back(tile);
+            self.available.notify_one();
+        }
+    }
+
+    fn next(&self, stop: &AtomicBool) -> Option<Arc<Tile>> {
+        let mut pending = self.pending.lock().expect("tile queue mutex poisoned");
+        loop {
+            if let Some(tile) = pending.pop_front() {
+                return Some(tile);
+            }
+            if stop.load(Ordering::Acquire) {
+                return None;
+            }
+            pending = self
+                .available
+                .wait(pending)
+                .expect("tile queue mutex poisoned");
+        }
+    }
+}
+
+fn calculate_tile(calculator: &crate::Mandelbrot, tile: &Tile) {
+    let mut iterations = tile
+        .iterations
+        .lock()
+        .expect("tile iterations mutex poisoned");
+    let center_x = (tile.width - 1) as f64 / 2.0;
+    let center_y = (tile.height - 1) as f64 / 2.0;
+    for y in 0..tile.height {
+        for x in 0..tile.width {
+            let real = tile.coordinate.x + (x as f64 - center_x) * tile.delta;
+            let imaginary = tile.coordinate.y - (y as f64 - center_y) * tile.delta;
+            iterations[y as usize * tile.width as usize + x as usize] =
+                calculator.escape_iterations(real, imaginary) as u64;
+        }
+    }
+    tile.status
+        .store(TileStatus::Completed as u8, Ordering::Release);
 }
