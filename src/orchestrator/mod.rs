@@ -2,7 +2,7 @@
 mod tests {
     use std::sync::Arc;
 
-    use super::{Orchestrator, Tile, TileLayer, TileSprite, TileStatus};
+    use super::{Orchestrator, Tile, TileLayer, TileSprite, TileStatus, TiledInfiniteCanvas};
     use crate::Mandelbrot;
     use std::{thread, time::Duration};
 
@@ -217,6 +217,38 @@ mod tests {
             &crate::geometry::ComplexPoint::new(-0.995, 0.745)
         );
     }
+
+    #[test]
+    fn tiled_infinite_canvas_expands_by_one_layer_per_frame() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-1.0, 1.0),
+            30,
+            20,
+            0.01,
+            crate::geometry::ScreenPoint::new(300, 225),
+            8.0,
+            0.8,
+        );
+
+        assert_eq!(canvas.layer_count(), 0);
+        assert!(canvas.expand_one_layer_per_frame());
+        assert_eq!(canvas.layer_count(), 1);
+        assert_eq!(canvas.layer(0).unwrap().zoom(), 8.0);
+        assert!(canvas.expand_one_layer_per_frame());
+        assert_eq!(canvas.layer_count(), 2);
+        assert_eq!(canvas.layer(1).unwrap().zoom(), 4.0);
+        assert_eq!(canvas.layer(1).unwrap().delta(), 0.005);
+        assert_eq!(canvas.layer(1).unwrap().position().x, -0.9275);
+        assert_eq!(canvas.layer(1).unwrap().position().y, 0.9525);
+        assert_eq!(
+            canvas.layer(1).unwrap().screen_position(),
+            crate::geometry::ScreenPoint::new(360, 265)
+        );
+
+        canvas.zoom_at(crate::geometry::ScreenPoint::new(400, 300), 16.0);
+        assert_eq!(canvas.layer(0).unwrap().zoom(), 16.0);
+        assert_eq!(canvas.layer(1).unwrap().zoom(), 8.0);
+    }
 }
 
 use std::collections::VecDeque;
@@ -271,6 +303,190 @@ pub struct TileLayer {
     tiles: VecDeque<VecDeque<Arc<Tile>>>,
     screen_position: crate::geometry::ScreenPoint,
     zoom: f64,
+    work_queue: Arc<TileWorkQueue>,
+}
+
+/// Ordered collection of fractal layers at progressively smaller apparent pixels.
+pub struct TiledInfiniteCanvas {
+    layers: VecDeque<TileLayer>,
+    position: crate::geometry::ComplexPoint<f64>,
+    tile_width: u32,
+    tile_height: u32,
+    delta: f64,
+    screen_position: crate::geometry::ScreenPoint,
+    max_apparent_pixel_size: f64,
+    min_apparent_pixel_size: f64,
+}
+
+impl TiledInfiniteCanvas {
+    pub fn new(
+        position: crate::geometry::ComplexPoint<f64>,
+        tile_width: u32,
+        tile_height: u32,
+        delta: f64,
+        screen_position: crate::geometry::ScreenPoint,
+        max_apparent_pixel_size: f64,
+        min_apparent_pixel_size: f64,
+    ) -> Self {
+        assert!(max_apparent_pixel_size > 0.0);
+        assert!(min_apparent_pixel_size > 0.0);
+        Self {
+            layers: VecDeque::new(),
+            position,
+            tile_width,
+            tile_height,
+            delta,
+            screen_position,
+            max_apparent_pixel_size,
+            min_apparent_pixel_size,
+        }
+    }
+
+    /// Adds at most one layer per frame, keeping the deque ordered max-to-min zoom.
+    pub fn expand_one_layer_per_frame(&mut self) -> bool {
+        if self.layers.is_empty() {
+            self.layers.push_back(TileLayer::new(
+                self.position.clone(),
+                self.tile_width,
+                self.tile_height,
+                self.delta,
+                self.screen_position,
+                self.max_apparent_pixel_size,
+            ));
+            return true;
+        }
+
+        let front_zoom = self.layers.front().unwrap().zoom();
+        let larger_zoom = front_zoom * 2.0;
+        if larger_zoom <= self.max_apparent_pixel_size && !self.has_zoom(larger_zoom) {
+            let layer = Self::adjacent_layer(self.layers.front().unwrap(), 2.0);
+            self.layers.push_front(layer);
+            return true;
+        }
+        let back_zoom = self.layers.back().unwrap().zoom();
+        let smaller_zoom = back_zoom / 2.0;
+        if smaller_zoom >= self.min_apparent_pixel_size && !self.has_zoom(smaller_zoom) {
+            let layer = Self::adjacent_layer(self.layers.back().unwrap(), 0.5);
+            self.layers.push_back(layer);
+            return true;
+        }
+        false
+    }
+
+    fn has_zoom(&self, candidate: f64) -> bool {
+        self.layers.iter().any(|layer| {
+            let scale = candidate.abs().max(layer.zoom().abs()).max(1.0);
+            (layer.zoom() - candidate).abs() <= scale * f64::EPSILON * 8.0
+        })
+    }
+
+    pub fn layer_count(&self) -> usize {
+        self.layers.len()
+    }
+
+    pub fn layer(&self, index: usize) -> Option<&TileLayer> {
+        self.layers.get(index)
+    }
+
+    pub fn layer_mut(&mut self, index: usize) -> Option<&mut TileLayer> {
+        self.layers.get_mut(index)
+    }
+
+    pub fn layers(&self) -> &VecDeque<TileLayer> {
+        &self.layers
+    }
+
+    pub fn layers_mut(&mut self) -> &mut VecDeque<TileLayer> {
+        &mut self.layers
+    }
+
+    pub fn ensure_screen_coverage(&mut self, bounds: (i32, i32, i32, i32)) {
+        if self.retract_one_layer_per_frame() && self.layers.is_empty() {
+            self.expand_one_layer_per_frame();
+        } else {
+            self.expand_one_layer_per_frame();
+        }
+        for layer in &mut self.layers {
+            layer.ensure_screen_coverage(bounds);
+        }
+    }
+
+    fn retract_one_layer_per_frame(&mut self) -> bool {
+        if self
+            .layers
+            .front()
+            .is_some_and(|layer| layer.zoom() > self.max_apparent_pixel_size)
+        {
+            self.layers.pop_front();
+            return true;
+        }
+        if self
+            .layers
+            .back()
+            .is_some_and(|layer| layer.zoom() < self.min_apparent_pixel_size)
+        {
+            self.layers.pop_back();
+            return true;
+        }
+        false
+    }
+
+    fn adjacent_layer(tip: &TileLayer, zoom_factor: f64) -> TileLayer {
+        let zoom = tip.zoom() * zoom_factor;
+        let delta = tip.delta() * zoom_factor;
+        let center = crate::geometry::ComplexPoint::new(
+            tip.position().x + (tip.tile_width() - 1) as f64 * tip.delta() / 2.0,
+            tip.position().y - (tip.tile_height() - 1) as f64 * tip.delta() / 2.0,
+        );
+        let position = crate::geometry::ComplexPoint::new(
+            center.x - (tip.tile_width() - 1) as f64 * delta / 2.0,
+            center.y + (tip.tile_height() - 1) as f64 * delta / 2.0,
+        );
+        let screen_center = crate::geometry::ScreenPoint::new(
+            tip.screen_position().x
+                + ((tip.tile_width() as f64 * tip.zoom() - 1.0) / 2.0).round() as i32,
+            tip.screen_position().y
+                + ((tip.tile_height() as f64 * tip.zoom() - 1.0) / 2.0).round() as i32,
+        );
+        let screen_position = crate::geometry::ScreenPoint::new(
+            screen_center.x - ((tip.tile_width() as f64 * zoom - 1.0) / 2.0).round() as i32,
+            screen_center.y - ((tip.tile_height() as f64 * zoom - 1.0) / 2.0).round() as i32,
+        );
+        TileLayer::new(
+            position,
+            tip.tile_width(),
+            tip.tile_height(),
+            delta,
+            screen_position,
+            zoom,
+        )
+    }
+
+    pub fn trim_outside_allocation(&mut self, bounds: (i32, i32, i32, i32)) {
+        for layer in &mut self.layers {
+            layer.trim_outside_allocation(bounds);
+        }
+    }
+
+    pub fn drag(&mut self, delta: crate::geometry::ScreenPoint) {
+        for layer in &mut self.layers {
+            layer.set_screen_position(crate::geometry::ScreenPoint::new(
+                layer.screen_position().x + delta.x,
+                layer.screen_position().y + delta.y,
+            ));
+        }
+    }
+
+    pub fn zoom_at(&mut self, cursor: crate::geometry::ScreenPoint, zoom: f64) {
+        let current_zoom = self
+            .layers
+            .front()
+            .map_or(self.max_apparent_pixel_size, TileLayer::zoom);
+        let scale = zoom / current_zoom;
+        for layer in &mut self.layers {
+            layer.zoom_at(cursor, layer.zoom() * scale);
+        }
+    }
 }
 
 impl TileLayer {
@@ -364,6 +580,7 @@ impl TileLayer {
             tiles,
             screen_position,
             zoom,
+            work_queue: Arc::new(TileWorkQueue::new()),
         }
     }
 
@@ -625,47 +842,70 @@ impl Tile {
 
 /// Dispatches tiles to the calculator.
 pub struct Orchestrator {
-    work_queue: Arc<TileWorkQueue>,
+    layer_queues: Arc<Mutex<VecDeque<Arc<TileWorkQueue>>>>,
+    available: Arc<Condvar>,
     stop_worker: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
 
 impl Orchestrator {
     pub fn new(calculator: crate::Mandelbrot) -> Self {
-        let work_queue = Arc::new(TileWorkQueue::new());
+        let layer_queues = Arc::new(Mutex::new(VecDeque::new()));
+        let available = Arc::new(Condvar::new());
         let stop_worker = Arc::new(AtomicBool::new(false));
-        let worker_queue = Arc::clone(&work_queue);
+        let worker_queues = Arc::clone(&layer_queues);
+        let worker_available = Arc::clone(&available);
         let worker_stop = Arc::clone(&stop_worker);
         let worker = thread::spawn(move || {
-            while let Some(tile) = worker_queue.next(&worker_stop) {
+            while let Some(tile) = next_tile(&worker_queues, &worker_available, &worker_stop) {
                 calculate_tile(&calculator, &tile);
             }
         });
 
         Self {
-            work_queue,
+            layer_queues,
+            available,
             stop_worker,
             worker: Some(worker),
         }
     }
 
     pub fn render_tile(&self, tile: &Arc<Tile>) {
-        self.work_queue.enqueue(Arc::clone(tile));
+        let queue = Arc::new(TileWorkQueue::new());
+        self.register_queue(Arc::clone(&queue));
+        queue.enqueue(Arc::clone(tile));
+        self.available.notify_one();
     }
 
     pub fn render_layer(&self, layer: &TileLayer) {
+        self.register_queue(Arc::clone(&layer.work_queue));
         for row in &layer.tiles {
             for tile in row {
-                self.work_queue.enqueue(Arc::clone(tile));
+                layer.work_queue.enqueue(Arc::clone(tile));
             }
         }
+        self.available.notify_one();
+    }
+
+    fn register_queue(&self, queue: Arc<TileWorkQueue>) {
+        let mut queues = self
+            .layer_queues
+            .lock()
+            .expect("layer queue mutex poisoned");
+        if !queues
+            .iter()
+            .any(|registered| Arc::ptr_eq(registered, &queue))
+        {
+            queues.push_back(queue);
+        }
+        self.available.notify_one();
     }
 }
 
 impl Drop for Orchestrator {
     fn drop(&mut self) {
         self.stop_worker.store(true, Ordering::Release);
-        self.work_queue.available.notify_all();
+        self.available.notify_all();
         if let Some(worker) = self.worker.take() {
             worker.join().expect("tile worker panicked");
         }
@@ -674,14 +914,12 @@ impl Drop for Orchestrator {
 
 struct TileWorkQueue {
     pending: Mutex<VecDeque<Arc<Tile>>>,
-    available: Condvar,
 }
 
 impl TileWorkQueue {
     fn new() -> Self {
         Self {
             pending: Mutex::new(VecDeque::new()),
-            available: Condvar::new(),
         }
     }
 
@@ -700,24 +938,35 @@ impl TileWorkQueue {
                 .lock()
                 .expect("tile queue mutex poisoned")
                 .push_back(tile);
-            self.available.notify_one();
         }
     }
 
-    fn next(&self, stop: &AtomicBool) -> Option<Arc<Tile>> {
-        let mut pending = self.pending.lock().expect("tile queue mutex poisoned");
-        loop {
-            if let Some(tile) = pending.pop_front() {
+    fn pop_front(&self) -> Option<Arc<Tile>> {
+        self.pending
+            .lock()
+            .expect("tile queue mutex poisoned")
+            .pop_front()
+    }
+}
+
+fn next_tile(
+    queues: &Mutex<VecDeque<Arc<TileWorkQueue>>>,
+    available: &Condvar,
+    stop: &AtomicBool,
+) -> Option<Arc<Tile>> {
+    let mut queues_guard = queues.lock().expect("layer queue mutex poisoned");
+    loop {
+        for queue in queues_guard.iter() {
+            if let Some(tile) = queue.pop_front() {
                 return Some(tile);
             }
-            if stop.load(Ordering::Acquire) {
-                return None;
-            }
-            pending = self
-                .available
-                .wait(pending)
-                .expect("tile queue mutex poisoned");
         }
+        if stop.load(Ordering::Acquire) {
+            return None;
+        }
+        queues_guard = available
+            .wait(queues_guard)
+            .expect("layer queue mutex poisoned");
     }
 }
 

@@ -1,6 +1,8 @@
 use crate::config::RendererConfig;
 use crate::geometry::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
-use crate::{input::ZoomDirection, InputEvent, InputState, Orchestrator, Sprite, Tile, TileLayer};
+use crate::{
+    input::ZoomDirection, InputEvent, InputState, Orchestrator, Sprite, Tile, TiledInfiniteCanvas,
+};
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -53,7 +55,7 @@ fn sprite_from_tile(
 
 /// Displays one rendered sprite in a native window.
 pub fn run(
-    layer: &mut TileLayer,
+    canvas: &mut TiledInfiniteCanvas,
     orchestrator: &Orchestrator,
     config: &RendererConfig,
 ) -> Result<(), minifb::Error> {
@@ -73,19 +75,21 @@ pub fn run(
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         let mut framebuffer = vec![0x101820; width * height];
-        layer.trim_outside_allocation((
+        canvas.trim_outside_allocation((
             deallocation.left,
             deallocation.top,
             deallocation.right,
             deallocation.bottom,
         ));
-        layer.ensure_screen_coverage((
+        canvas.ensure_screen_coverage((
             allocation.left,
             allocation.top,
             allocation.right,
             allocation.bottom,
         ));
-        orchestrator.render_layer(layer);
+        for layer in canvas.layers() {
+            orchestrator.render_layer(layer);
+        }
         let mouse_position = window
             .get_mouse_pos(MouseMode::Clamp)
             .map(|(x, y)| ScreenPoint::new(x.round() as i32, y.round() as i32));
@@ -97,10 +101,7 @@ pub fn run(
         );
         for event in events {
             match event {
-                InputEvent::Drag { delta } => layer.set_screen_position(ScreenPoint::new(
-                    layer.screen_position().x + delta.x,
-                    layer.screen_position().y + delta.y,
-                )),
+                InputEvent::Drag { delta } => canvas.drag(delta),
                 InputEvent::MiddleClick(cursor) => {
                     let complex = window_envelope.screen_to_complex(cursor, screen_size);
                     copy_coordinates(&format_coordinates(complex));
@@ -108,11 +109,14 @@ pub fn run(
                 InputEvent::Zoom { direction, cursor } => {
                     let multiplier = config.zoom_multiplier;
                     assert!(multiplier > 1.0, "zoom_multiplier must be greater than 1");
+                    let current_zoom = canvas
+                        .layer(0)
+                        .map_or(config.max_apparent_pixel_size(), |layer| layer.zoom());
                     let zoom = match direction {
-                        ZoomDirection::In => layer.zoom() * multiplier,
-                        ZoomDirection::Out => layer.zoom() / multiplier,
+                        ZoomDirection::In => current_zoom * multiplier,
+                        ZoomDirection::Out => current_zoom / multiplier,
                     };
-                    layer.zoom_at(cursor, zoom);
+                    canvas.zoom_at(cursor, zoom);
                 }
             }
         }
@@ -120,46 +124,58 @@ pub fn run(
             let complex = window_envelope.screen_to_complex(cursor, screen_size);
             draw_status_bar(&mut framebuffer, screen_size, &format_coordinates(complex));
         }
-        let (tile_width, tile_height) = layer.tile_screen_size();
-        for row in 0..layer.row_count() {
-            for column in 0..layer.column_count() {
-                let tile = layer.tile(row, column).expect("layer grid is rectangular");
-                if tile.status() != crate::orchestrator::TileStatus::Completed {
-                    continue;
+        for layer in canvas.layers() {
+            let (tile_width, tile_height) = layer.tile_screen_size();
+            for row in 0..layer.row_count() {
+                for column in 0..layer.column_count() {
+                    let tile = layer.tile(row, column).expect("layer grid is rectangular");
+                    if tile.status() != crate::orchestrator::TileStatus::Completed {
+                        continue;
+                    }
+                    let sprite = tile.sprite().unwrap_or_else(|| {
+                        let sprite = std::sync::Arc::new(sprite_from_tile(
+                            tile,
+                            config.max_iterations as u64,
+                            config.palette,
+                            config.palette_period,
+                        ));
+                        tile.set_sprite(std::sync::Arc::clone(&sprite));
+                        tile.sprite().expect("tile sprite should exist")
+                    });
+                    sprite.draw_into_scaled(
+                        &mut framebuffer,
+                        width,
+                        layer.screen_position().x as isize + column as isize * tile_width as isize,
+                        layer.screen_position().y as isize + row as isize * tile_height as isize,
+                        tile_width as usize,
+                        tile_height as usize,
+                    );
                 }
-                let sprite = tile.sprite().unwrap_or_else(|| {
-                    let sprite = std::sync::Arc::new(sprite_from_tile(
-                        tile,
-                        config.max_iterations as u64,
-                        config.palette,
-                        config.palette_period,
-                    ));
-                    tile.set_sprite(std::sync::Arc::clone(&sprite));
-                    tile.sprite().expect("tile sprite should exist")
-                });
-                sprite.draw_into_scaled(
-                    &mut framebuffer,
-                    width,
-                    layer.screen_position().x as isize + column as isize * tile_width as isize,
-                    layer.screen_position().y as isize + row as isize * tile_height as isize,
-                    tile_width as usize,
-                    tile_height as usize,
-                );
             }
         }
         if config.debug.show_allocation_envelope {
             draw_rectangle_outline(&mut framebuffer, screen_size, allocation, 0xff0000);
             draw_rectangle_outline(&mut framebuffer, screen_size, deallocation, 0xffff00);
         }
-        let overlay = format_layer_overlay(layer.column_count(), layer.row_count());
-        draw_text(
-            &mut framebuffer,
-            screen_size,
-            8,
-            (height.saturating_sub(24 + 7 + 4)) as i32,
-            &overlay,
-            0xffffff,
-        );
+        let overlays: Vec<_> = canvas
+            .layers()
+            .iter()
+            .enumerate()
+            .map(|(index, layer)| {
+                format_layer_overlay(index, layer.zoom(), layer.column_count(), layer.row_count())
+            })
+            .collect();
+        let first_overlay_y = height.saturating_sub(24 + overlays.len() * 8 + 4) as i32;
+        for (line, overlay) in overlays.iter().enumerate() {
+            draw_text(
+                &mut framebuffer,
+                screen_size,
+                8,
+                first_overlay_y + line as i32 * 8,
+                overlay,
+                0xffffff,
+            );
+        }
         window.update_with_buffer(&framebuffer, width, height)?;
     }
 
@@ -271,8 +287,8 @@ fn format_coordinates(point: ComplexPoint<f64>) -> String {
     format!("x: {:.15}   y: {:.15}", point.x, point.y)
 }
 
-fn format_layer_overlay(columns: usize, rows: usize) -> String {
-    format!("Camada: {columns}*{rows} tiles")
+fn format_layer_overlay(index: usize, zoom: f64, columns: usize, rows: usize) -> String {
+    format!("Camada {index}: zoom={zoom:.3} {columns}x{rows} tiles")
 }
 
 fn draw_status_bar(framebuffer: &mut [u32], size: ScreenSize, text: &str) {
@@ -350,6 +366,12 @@ fn glyph(character: char) -> Option<[u8; 7]> {
         'y' => [
             0b00000, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b11100,
         ],
+        'z' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
+        ],
+        'o' => [
+            0b00000, 0b00000, 0b01110, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
         'a' => [
             0b00000, 0b00000, 0b01110, 0b00001, 0b01111, 0b10001, 0b01111,
         ],
@@ -379,6 +401,9 @@ fn glyph(character: char) -> Option<[u8; 7]> {
         ],
         ':' => [
             0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000,
+        ],
+        '=' => [
+            0b00000, 0b11111, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000,
         ],
         '.' => [
             0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00110, 0b00110,
@@ -476,7 +501,10 @@ mod tests {
 
     #[test]
     fn formats_layer_overlay_with_grid_dimensions() {
-        assert_eq!(format_layer_overlay(3, 4), "Camada: 3*4 tiles");
+        assert_eq!(
+            format_layer_overlay(2, 4.0, 3, 4),
+            "Camada 2: zoom=4.000 3x4 tiles"
+        );
     }
 
     #[test]
