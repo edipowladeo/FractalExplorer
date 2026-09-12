@@ -32,6 +32,7 @@ pub struct RendererConfig {
     pub height: usize,
     pub max_iterations: u32,
     pub allocation_ratio: f64,
+    pub zoom_multiplier: f64,
     pub palette: Palette,
     pub palette_period: f64,
     pub starting_point: String,
@@ -80,6 +81,7 @@ impl Default for RendererConfig {
             height: 480,
             max_iterations: 256,
             allocation_ratio: 1.2,
+            zoom_multiplier: 1.1,
             palette: Palette::Rainbow,
             palette_period: 5.0,
             starting_point: "x=0.0, y=0.0".to_string(),
@@ -148,6 +150,7 @@ mod tests {
             width = 800
             height = 600
             allocation_ratio = 1.2
+            zoom_multiplier = 1.1
             palette = "rainbow"
             palette_period = 5.0
             starting_point = "x=-0.743643887037151, y=0.131825904205330"
@@ -170,6 +173,7 @@ mod tests {
         assert_eq!(config.renderer.effective_allocation_ratio(), 0.5);
         assert_eq!(config.renderer.palette, crate::renderer::Palette::Rainbow);
         assert_eq!(config.renderer.palette_period, 5.0);
+        assert_eq!(config.renderer.zoom_multiplier, 1.1);
         assert_eq!(config.orchestrator.tile.width, 800);
         assert_eq!(config.orchestrator.tile.height, 600);
         assert_eq!(

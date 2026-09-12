@@ -1,6 +1,6 @@
 use crate::config::RendererConfig;
 use crate::geometry::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
-use crate::{InputEvent, InputState, Sprite, Tile, TileSprite};
+use crate::{input::ZoomDirection, InputEvent, InputState, Sprite, Tile, TileSprite};
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -81,6 +81,7 @@ pub fn run(tile_sprite: &mut TileSprite, config: &RendererConfig) -> Result<(), 
             mouse_position,
             window.get_mouse_down(MouseButton::Left),
             window.get_mouse_down(MouseButton::Middle),
+            window.get_scroll_wheel().map_or(0.0, |(_, y)| y),
         );
         for event in events {
             match event {
@@ -91,6 +92,15 @@ pub fn run(tile_sprite: &mut TileSprite, config: &RendererConfig) -> Result<(), 
                 InputEvent::MiddleClick(cursor) => {
                     let complex = window_envelope.screen_to_complex(cursor, screen_size);
                     copy_coordinates(&format_coordinates(complex));
+                }
+                InputEvent::Zoom { direction, cursor } => {
+                    let multiplier = config.zoom_multiplier;
+                    assert!(multiplier > 1.0, "zoom_multiplier must be greater than 1");
+                    let zoom = match direction {
+                        ZoomDirection::In => tile_sprite.zoom() * multiplier,
+                        ZoomDirection::Out => tile_sprite.zoom() / multiplier,
+                    };
+                    tile_sprite.zoom_at(cursor, zoom);
                 }
             }
         }

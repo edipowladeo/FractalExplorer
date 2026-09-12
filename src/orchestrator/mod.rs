@@ -43,6 +43,22 @@ mod tests {
         assert_eq!(sprite.zoom(), 1.5);
         assert_eq!(sprite.screen_size(), (300, 225));
     }
+
+    #[test]
+    fn tile_sprite_zoom_keeps_cursor_position_invariant() {
+        let tile = std::sync::Arc::new(Tile::new(
+            crate::geometry::ComplexPoint::new(0.0, 0.0),
+            100,
+            50,
+            1.0,
+        ));
+        let mut sprite = TileSprite::new(tile, crate::geometry::ScreenPoint::new(100, 80), 1.0);
+
+        sprite.zoom_at(crate::geometry::ScreenPoint::new(150, 100), 2.0);
+
+        assert_eq!(sprite.position(), crate::geometry::ScreenPoint::new(50, 60));
+        assert_eq!(sprite.zoom(), 2.0);
+    }
 }
 
 use std::sync::{
@@ -105,6 +121,21 @@ impl TileSprite {
 
     pub fn zoom(&self) -> f64 {
         self.zoom
+    }
+
+    pub fn set_zoom(&mut self, zoom: f64) {
+        assert!(zoom > 0.0, "sprite zoom must be positive");
+        self.zoom = zoom;
+    }
+
+    pub fn zoom_at(&mut self, cursor: crate::geometry::ScreenPoint, zoom: f64) {
+        assert!(zoom > 0.0, "sprite zoom must be positive");
+        let scale = zoom / self.zoom;
+        self.position = crate::geometry::ScreenPoint::new(
+            (cursor.x as f64 - (cursor.x - self.position.x) as f64 * scale).round() as i32,
+            (cursor.y as f64 - (cursor.y - self.position.y) as f64 * scale).round() as i32,
+        );
+        self.zoom = zoom;
     }
 
     pub fn screen_size(&self) -> (u32, u32) {

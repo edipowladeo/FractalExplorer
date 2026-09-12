@@ -6,10 +6,10 @@ mod tests {
     #[test]
     fn emits_drag_delta_while_left_button_is_held() {
         let mut input = InputState::new();
-        input.update(Some(ScreenPoint::new(20, 30)), true, false);
+        input.update(Some(ScreenPoint::new(20, 30)), true, false, 0.0);
 
         assert_eq!(
-            input.update(Some(ScreenPoint::new(35, 24)), true, false),
+            input.update(Some(ScreenPoint::new(35, 24)), true, false, 0.0),
             vec![InputEvent::Drag {
                 delta: ScreenPoint::new(15, -6)
             }]
@@ -22,18 +22,50 @@ mod tests {
         let cursor = ScreenPoint::new(100, 200);
 
         assert_eq!(
-            input.update(Some(cursor), false, true),
+            input.update(Some(cursor), false, true, 0.0),
             vec![InputEvent::MiddleClick(cursor)]
         );
-        assert!(input.update(Some(cursor), false, true).is_empty());
+        assert!(input.update(Some(cursor), false, true, 0.0).is_empty());
+    }
+
+    #[test]
+    fn emits_zoom_direction_from_vertical_wheel_delta() {
+        let mut input = InputState::new();
+
+        assert_eq!(
+            input.update(Some(ScreenPoint::new(40, 50)), false, false, 1.0),
+            vec![InputEvent::Zoom {
+                direction: super::ZoomDirection::In,
+                cursor: ScreenPoint::new(40, 50),
+            }]
+        );
+        assert_eq!(
+            input.update(Some(ScreenPoint::new(40, 50)), false, false, -1.0),
+            vec![InputEvent::Zoom {
+                direction: super::ZoomDirection::Out,
+                cursor: ScreenPoint::new(40, 50),
+            }]
+        );
     }
 }
 use crate::geometry::ScreenPoint;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEvent {
-    Drag { delta: ScreenPoint },
+    Drag {
+        delta: ScreenPoint,
+    },
     MiddleClick(ScreenPoint),
+    Zoom {
+        direction: ZoomDirection,
+        cursor: ScreenPoint,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZoomDirection {
+    In,
+    Out,
 }
 
 #[derive(Debug, Default)]
@@ -53,6 +85,7 @@ impl InputState {
         mouse_position: Option<ScreenPoint>,
         left_button_is_down: bool,
         middle_button_is_down: bool,
+        scroll_y: f32,
     ) -> Vec<InputEvent> {
         let mut events = Vec::new();
 
@@ -74,6 +107,20 @@ impl InputState {
             }
         } else {
             self.previous_mouse_position = None;
+        }
+
+        if let Some(cursor) = mouse_position {
+            if scroll_y > 0.0 {
+                events.push(InputEvent::Zoom {
+                    direction: ZoomDirection::In,
+                    cursor,
+                });
+            } else if scroll_y < 0.0 {
+                events.push(InputEvent::Zoom {
+                    direction: ZoomDirection::Out,
+                    cursor,
+                });
+            }
         }
 
         self.left_button_was_down = left_button_is_down;
