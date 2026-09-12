@@ -6,8 +6,9 @@ width = 800
 height = 600
 max_iterations = 10000
 allocation_ratio = 1
-palette = "shade"
+#palette = "shade"
 palette_period = 5.0
+starting_point = "x=0.0, y=0.0"
 
 [renderer.debug]
 reduced_viewport = true

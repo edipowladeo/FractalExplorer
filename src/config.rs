@@ -20,6 +20,7 @@ pub struct RendererConfig {
     pub allocation_ratio: f64,
     pub palette: Palette,
     pub palette_period: f64,
+    pub starting_point: String,
     pub debug: RendererDebugConfig,
 }
 
@@ -49,6 +50,7 @@ impl Default for RendererConfig {
             allocation_ratio: 1.2,
             palette: Palette::Rainbow,
             palette_period: 5.0,
+            starting_point: "x=0.0, y=0.0".to_string(),
             debug: RendererDebugConfig::default(),
         }
     }
@@ -65,6 +67,25 @@ impl Default for RendererDebugConfig {
 }
 
 impl RendererConfig {
+    pub fn starting_point_coordinates(&self) -> Result<crate::geometry::ComplexPoint<f64>, String> {
+        let (x_text, y_text) = self.starting_point.split_once(',').ok_or_else(|| {
+            "starting_point deve usar o formato 'x=<valor>, y=<valor>'".to_string()
+        })?;
+        let x = x_text
+            .trim()
+            .strip_prefix("x=")
+            .ok_or_else(|| "starting_point deve iniciar com 'x='".to_string())?
+            .parse::<f64>()
+            .map_err(|_| "valor x inválido em starting_point".to_string())?;
+        let y = y_text
+            .trim()
+            .strip_prefix("y=")
+            .ok_or_else(|| "starting_point deve conter 'y='".to_string())?
+            .parse::<f64>()
+            .map_err(|_| "valor y inválido em starting_point".to_string())?;
+        Ok(crate::geometry::ComplexPoint::new(x, y))
+    }
+
     pub fn effective_allocation_ratio(&self) -> f64 {
         if self.debug.reduced_viewport {
             self.debug.reduced_viewport_allocation_ratio
@@ -97,6 +118,7 @@ mod tests {
             allocation_ratio = 1.2
             palette = "rainbow"
             palette_period = 5.0
+            starting_point = "x=-0.743643887037151, y=0.131825904205330"
 
             [renderer.debug]
             reduced_viewport = true
@@ -116,5 +138,9 @@ mod tests {
         assert_eq!(config.renderer.effective_allocation_ratio(), 0.5);
         assert_eq!(config.renderer.palette, crate::renderer::Palette::Rainbow);
         assert_eq!(config.renderer.palette_period, 5.0);
+        assert_eq!(
+            config.renderer.starting_point_coordinates().unwrap(),
+            crate::geometry::ComplexPoint::new(-0.743643887037151, 0.131825904205330)
+        );
     }
 }

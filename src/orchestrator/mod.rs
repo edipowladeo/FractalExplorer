@@ -20,6 +20,15 @@ mod tests {
 
         assert_eq!(image.iterations()[4 * 9 + 4], 32);
     }
+
+    #[test]
+    fn maps_the_center_pixel_to_the_configured_center() {
+        let config =
+            RenderConfig::centered_at(9, 9, 4.0, crate::geometry::ComplexPoint::new(2.0, 0.0));
+        let image = Orchestrator::new(Mandelbrot::new(32)).render(config);
+
+        assert!(image.iterations()[4 * 9 + 4] < 32);
+    }
 }
 
 /// Viewport and output dimensions used by the orchestrator.
@@ -27,16 +36,32 @@ pub struct RenderConfig {
     pub width: usize,
     pub height: usize,
     pub view_width: f64,
+    pub center: crate::geometry::ComplexPoint<f64>,
 }
 
 impl RenderConfig {
     pub fn centered(width: usize, height: usize, view_width: f64) -> Self {
+        Self::centered_at(
+            width,
+            height,
+            view_width,
+            crate::geometry::ComplexPoint::new(0.0, 0.0),
+        )
+    }
+
+    pub fn centered_at(
+        width: usize,
+        height: usize,
+        view_width: f64,
+        center: crate::geometry::ComplexPoint<f64>,
+    ) -> Self {
         assert!(width > 0 && height > 0, "a render target must have a size");
         assert!(view_width > 0.0, "view_width must be positive");
         Self {
             width,
             height,
             view_width,
+            center,
         }
     }
 }
@@ -57,10 +82,12 @@ impl Orchestrator {
 
         for pixel_y in 0..config.height {
             for pixel_x in 0..config.width {
-                let real = ((pixel_x as f64 + 0.5) / config.width as f64 - 0.5) * config.view_width;
+                let real = config.center.x
+                    + ((pixel_x as f64 + 0.5) / config.width as f64 - 0.5) * config.view_width;
                 let imaginary = ((pixel_y as f64 + 0.5) / config.height as f64 - 0.5)
                     * config.view_width
-                    * aspect_ratio;
+                    * aspect_ratio
+                    + config.center.y;
                 iterations.push(self.calculator.escape_iterations(real, imaginary));
             }
         }
