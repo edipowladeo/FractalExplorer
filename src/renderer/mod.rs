@@ -2,13 +2,48 @@ use crate::config::RendererConfig;
 use crate::geometry::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
 use crate::{IterationBuffer, Sprite};
 use minifb::{Key, Window, WindowOptions};
+use serde::{Deserialize, Deserializer, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Palette {
+    Shade,
+    Rainbow,
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        Self::Shade
+    }
+}
+
+impl<'de> Deserialize<'de> for Palette {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.to_ascii_lowercase().as_str() {
+            "shade" => Ok(Self::Shade),
+            "rainbow" => Ok(Self::Rainbow),
+            invalid => {
+                eprintln!("Aviso: paleta inválida '{invalid}'; usando fallback 'rainbow'");
+                Ok(Self::Rainbow)
+            }
+        }
+    }
+}
 
 /// Converts calculator results into display pixels.
-pub fn sprite_from_iterations(image: &IterationBuffer) -> Sprite {
+pub fn sprite_from_iterations(
+    image: &IterationBuffer,
+    palette: Palette,
+    palette_period: f64,
+) -> Sprite {
     let pixels = image
         .iterations()
         .iter()
-        .map(|&iterations| color(iterations, image.max_iterations()))
+        .map(|&iterations| color(iterations, image.max_iterations(), palette, palette_period))
         .collect();
     Sprite::from_pixels(image.width(), image.height(), pixels)
 }
@@ -17,7 +52,7 @@ pub fn sprite_from_iterations(image: &IterationBuffer) -> Sprite {
 pub fn run(image: IterationBuffer, config: &RendererConfig) -> Result<(), minifb::Error> {
     let width = image.width();
     let height = image.height();
-    let sprite = sprite_from_iterations(&image);
+    let sprite = sprite_from_iterations(&image, config.palette, config.palette_period);
     let mut framebuffer = vec![0x101820; width * height];
     sprite.draw_into(&mut framebuffer, width, 0, 0);
     let screen_size = ScreenSize::new(width, height);
@@ -129,19 +164,45 @@ fn set_pixel(framebuffer: &mut [u32], size: ScreenSize, x: i32, y: i32, color: u
     }
 }
 
-fn color(iterations: u32, max_iterations: u32) -> u32 {
+fn color(iterations: u32, max_iterations: u32, palette: Palette, palette_period: f64) -> u32 {
     if iterations == max_iterations {
         return 0;
     }
 
+    match palette {
+        Palette::Shade => shade_color(iterations, max_iterations),
+        Palette::Rainbow => rainbow_color(iterations, palette_period),
+    }
+}
+
+fn shade_color(iterations: u32, max_iterations: u32) -> u32 {
     let shade = 255 - (iterations * 255 / max_iterations);
     (shade << 16) | (shade << 8) | 0xff
+}
+
+fn rainbow_color(iterations: u32, palette_period: f64) -> u32 {
+    assert!(palette_period > 0.0, "palette_period must be positive");
+    let hue = (0.7 + iterations as f64 / palette_period).rem_euclid(1.0);
+    let sector = hue * 6.0;
+    let fraction = sector.fract();
+    let p = 0.1;
+    let q = 1.0 - 0.9 * fraction;
+    let t = 1.0 - 0.9 * (1.0 - fraction);
+    let (red, green, blue) = match sector as u32 {
+        0 => (1.0, t, p),
+        1 => (q, 1.0, p),
+        2 => (p, 1.0, t),
+        3 => (p, q, 1.0),
+        4 => (t, p, 1.0),
+        _ => (1.0, p, q),
+    };
+    ((red * 255.0) as u32) << 16 | ((green * 255.0) as u32) << 8 | (blue * 255.0) as u32
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        allocation_screen_rect, draw_rectangle_outline, sprite_from_iterations, ScreenRect,
+        allocation_screen_rect, draw_rectangle_outline, sprite_from_iterations, Palette, ScreenRect,
     };
     use crate::geometry::ScreenSize;
     use crate::{Mandelbrot, Orchestrator, RenderConfig};
@@ -150,7 +211,7 @@ mod tests {
     fn converts_iteration_buffer_to_a_sprite() {
         let image =
             Orchestrator::new(Mandelbrot::new(32)).render(RenderConfig::centered(3, 3, 4.0));
-        let sprite = sprite_from_iterations(&image);
+        let sprite = sprite_from_iterations(&image, Palette::Shade, 5.0);
 
         assert_eq!((sprite.width(), sprite.height()), (3, 3));
         assert_eq!(sprite.pixels()[4], 0);
@@ -170,6 +231,14 @@ mod tests {
                 bottom: 3,
             }
         );
+    }
+
+    #[test]
+    fn invalid_palette_falls_back_to_rainbow() {
+        let config: crate::config::RendererConfig =
+            toml::from_str("palette = \"unknown\"").unwrap();
+
+        assert_eq!(config.palette, Palette::Rainbow);
     }
 
     #[test]

@@ -5,9 +5,11 @@ debug_global = true
 width = 800
 height = 600
 max_iterations = 10000
-allocation_ratio = 0.8
+allocation_ratio = 1
+palette = "shade"
+palette_period = 5.0
 
 [renderer.debug]
-reduced_viewport = false
+reduced_viewport = true
 reduced_viewport_allocation_ratio = 0.5
 show_allocation_envelope = true

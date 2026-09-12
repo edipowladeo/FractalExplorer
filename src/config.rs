@@ -1,3 +1,4 @@
+use crate::renderer::Palette;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs;
@@ -17,6 +18,8 @@ pub struct RendererConfig {
     pub height: usize,
     pub max_iterations: u32,
     pub allocation_ratio: f64,
+    pub palette: Palette,
+    pub palette_period: f64,
     pub debug: RendererDebugConfig,
 }
 
@@ -44,6 +47,8 @@ impl Default for RendererConfig {
             height: 480,
             max_iterations: 256,
             allocation_ratio: 1.2,
+            palette: Palette::Shade,
+            palette_period: 5.0,
             debug: RendererDebugConfig::default(),
         }
     }
@@ -90,6 +95,8 @@ mod tests {
             width = 800
             height = 600
             allocation_ratio = 1.2
+            palette = "rainbow"
+            palette_period = 5.0
 
             [renderer.debug]
             reduced_viewport = true
@@ -107,5 +114,7 @@ mod tests {
         assert_eq!(config.renderer.debug.reduced_viewport_allocation_ratio, 0.5);
         assert!(config.renderer.debug.show_allocation_envelope);
         assert_eq!(config.renderer.effective_allocation_ratio(), 0.5);
+        assert_eq!(config.renderer.palette, crate::renderer::Palette::Rainbow);
+        assert_eq!(config.renderer.palette_period, 5.0);
     }
 }
