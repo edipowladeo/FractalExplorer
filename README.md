@@ -14,14 +14,40 @@ The intended direction is a shared Rust fractal core with platform and rendering
 
 ## First sprite renderer prototype
 
-The first implementation uses a Rust CPU-side framebuffer and a Windows-capable `minifb` window to display a centered sprite. After installing the Rust toolchain, run:
+The first implementation uses a Rust CPU-side framebuffer and a Windows-capable `minifb` window to display a centered sprite. After installing the Rust toolchain, run these commands from the repository root:
 
-```text
+```powershell
+# Confirmar a toolchain ativa
+rustup show active-toolchain
+
+# Formatar o código
+cargo fmt
+
+# Verificar a compilação sem executar
+cargo check
+
+# Executar os testes
 cargo test
+
+# Executar a aplicação de demonstração
 cargo run --bin sprite-demo
 ```
 
-Press `Esc` to close the demo window. The prototype is tracked as `T001` in [TASKS.md](TASKS.md) and remains in `TODO` until tests, refactor and visual verification are completed.
+O comando `cargo run --bin sprite-demo` abre a janela de demonstração e exibe o sprite azul centralizado. Pressione `Esc` para fechar a janela.
+
+Para compilar em modo release:
+
+```powershell
+cargo build --release
+```
+
+Para limpar os artefatos de compilação:
+
+```powershell
+cargo clean
+```
+
+O protótipo é acompanhado pela `T001` em [TASKS.md](TASKS.md) e permanece em `TODO` até que testes, refactor e verificação visual sejam concluídos.
 
 ## Legacy implementations
 
