@@ -27,15 +27,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         center.x - (tile_size.0 - 1) as f64 * delta / 2.0,
         center.y + (tile_size.1 - 1) as f64 * delta / 2.0,
     );
-    let mut layer = fractal_explorer::TileLayer::new(
+    let mut canvas = fractal_explorer::TiledInfiniteCanvas::new(
         layer_position,
         tile_size.0,
         tile_size.1,
         delta,
         position,
         config.renderer.max_apparent_pixel_size(),
+        config.renderer.min_apparent_pixel_size,
     );
     let orchestrator = Orchestrator::new(Mandelbrot::new(config.renderer.max_iterations));
-    fractal_explorer::renderer::run(&mut layer, &orchestrator, &config.renderer)?;
+    fractal_explorer::renderer::run(&mut canvas, &orchestrator, &config.renderer)?;
     Ok(())
 }
