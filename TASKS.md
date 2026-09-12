@@ -18,14 +18,8 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 ## TODO
 
 _Nenhuma tarefa ativa._
-- **Progresso:** implementação inicial criada em `src/lib.rs` e `src/main.rs`; RED/GREEN, refactor e verificação visual estão pendentes porque `cargo`/`rustc` não estão disponíveis neste ambiente.
 
 ## BACKLOG
-
-### T002 — Extrair e estabilizar o workspace Rust e os módulos do core
-
-- Definir a estrutura de crates/módulos compartilhados e comandos de build/teste.
-- Depende de T001.
 
 ### T003 — Ampliar o processador CPU determinístico
 
@@ -99,4 +93,10 @@ _Nenhuma tarefa ativa._
 
 - **Resultado:** janela/renderizador Rust para Windows criado com `minifb`; sprite preenchido com o fractal de Mandelbrot CPU `f64`, centralizado em `(0, 0)`.
 - **Evidências:** RED confirmou a ausência do módulo; GREEN passou com 5 testes; `cargo fmt -- --check` foi aplicado; `cargo test` passou com 5 testes; `cargo run --bin sprite-demo` compilou e iniciou sem erro.
+- **Commit:** registrado e enviado ao remoto após a implementação.
+
+### T002 — Separar cálculo, orquestração e renderização
+
+- **Resultado:** `src/mandelbrot.rs` calcula somente as iterações de um ponto `(x, y)`; `src/orchestrator.rs` percorre largura/altura e produz `IterationBuffer`; `src/renderer.rs` converte as iterações em sprite e gerencia a janela `minifb`; `src/main.rs` apenas compõe esses módulos.
+- **Evidências:** RED confirmou os módulos ausentes; GREEN passou com 7 testes; `cargo fmt` foi aplicado; `cargo test` passou com 7 testes.
 - **Commit:** registrado e enviado ao remoto após a implementação.

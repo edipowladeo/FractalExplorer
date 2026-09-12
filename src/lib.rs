@@ -1,8 +1,11 @@
 //! Primitives shared by the first Windows sprite renderer.
 
 mod mandelbrot;
+mod orchestrator;
+pub mod renderer;
 
 pub use mandelbrot::Mandelbrot;
+pub use orchestrator::{IterationBuffer, Orchestrator, RenderConfig};
 
 /// A small, packed RGBA sprite.
 #[derive(Debug, Clone, PartialEq, Eq)]
