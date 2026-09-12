@@ -176,6 +176,28 @@ pub fn run(
                 0xffffff,
             );
         }
+        let queue_lines: Vec<_> = canvas
+            .layers()
+            .iter()
+            .enumerate()
+            .flat_map(|(layer_index, layer)| {
+                layer
+                    .pending_work_positions()
+                    .into_iter()
+                    .map(move |(row, column)| format_worker_queue_line(layer_index, row, column))
+            })
+            .collect();
+        for (line, queue_line) in queue_lines.iter().enumerate() {
+            let x = width.saturating_sub(queue_line.chars().count() * 6 + 8) as i32;
+            draw_text(
+                &mut framebuffer,
+                screen_size,
+                x,
+                8 + line as i32 * 8,
+                queue_line,
+                0xffffff,
+            );
+        }
         window.update_with_buffer(&framebuffer, width, height)?;
     }
 
@@ -291,6 +313,10 @@ fn format_layer_overlay(index: usize, zoom: f64, columns: usize, rows: usize) ->
     format!("Camada {index}: zoom={zoom:.3} {columns}x{rows} tiles")
 }
 
+fn format_worker_queue_line(layer: usize, row: usize, column: usize) -> String {
+    format!("Camada={layer} pos {row}x{column}")
+}
+
 fn draw_status_bar(framebuffer: &mut [u32], size: ScreenSize, text: &str) {
     let bar_height = 24usize;
     let top = size.height.saturating_sub(bar_height);
@@ -365,6 +391,9 @@ fn glyph(character: char) -> Option<[u8; 7]> {
         ],
         'y' => [
             0b00000, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b11100,
+        ],
+        'p' => [
+            0b00000, 0b00000, 0b11110, 0b10001, 0b11110, 0b10000, 0b10000,
         ],
         'z' => [
             0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
@@ -456,14 +485,14 @@ fn rainbow_color(iterations: u64, palette_period: f64) -> u32 {
 mod tests {
     use super::{
         allocation_screen_rect, draw_rectangle_outline, format_coordinates, format_layer_overlay,
-        sprite_from_tile, Palette, ScreenRect,
+        format_worker_queue_line, sprite_from_tile, Palette, ScreenRect,
     };
     use crate::geometry::{ComplexPoint, ScreenSize};
     use crate::{Mandelbrot, Orchestrator, Tile};
 
     #[test]
     fn converts_tile_iterations_to_a_sprite() {
-        let tile = std::sync::Arc::new(Tile::new(ComplexPoint::new(0.0, 0.0), 3, 3, 1.0));
+        let tile = std::sync::Arc::new(Tile::new(ComplexPoint::new(-1.0, 1.0), 3, 3, 1.0));
         Orchestrator::new(Mandelbrot::new(32)).render_tile(&tile);
         let sprite = sprite_from_tile(&tile, 32, Palette::Shade, 5.0);
 
@@ -505,6 +534,11 @@ mod tests {
             format_layer_overlay(2, 4.0, 3, 4),
             "Camada 2: zoom=4.000 3x4 tiles"
         );
+    }
+
+    #[test]
+    fn formats_worker_queue_line_with_layer_and_tile_position() {
+        assert_eq!(format_worker_queue_line(1, 2, 4), "Camada=1 pos 2x4");
     }
 
     #[test]
