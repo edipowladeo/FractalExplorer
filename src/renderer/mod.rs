@@ -1,5 +1,6 @@
 use crate::config::RendererConfig;
 use crate::geometry::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
+use crate::orchestrator::CanvasNavigationEvent;
 use crate::{
     input::ZoomDirection, InputEvent, InputState, Orchestrator, Sprite, Tile, TiledInfiniteCanvas,
 };
@@ -64,7 +65,6 @@ pub fn run(
     let screen_size = ScreenSize::new(width, height);
     let allocation = allocation_screen_rect(screen_size, config.effective_allocation_ratio());
     let deallocation = deallocation_screen_rect(screen_size, config.effective_deallocation_ratio());
-    let window_envelope = window_envelope(screen_size);
     let mut window = Window::new(
         "FractalExplorer - Mandelbrot",
         width,
@@ -103,7 +103,7 @@ pub fn run(
             match event {
                 InputEvent::Drag { delta } => canvas.drag(delta),
                 InputEvent::MiddleClick(cursor) => {
-                    let complex = window_envelope.screen_to_complex(cursor, screen_size);
+                    let complex = canvas.screen_to_complex(cursor);
                     copy_coordinates(&format_coordinates(complex.clone()));
                     println!(
                         "{}",
@@ -124,9 +124,11 @@ pub fn run(
                 }
             }
         }
-        if let Some(cursor) = mouse_position {
-            let complex = window_envelope.screen_to_complex(cursor, screen_size);
-            draw_status_bar(&mut framebuffer, screen_size, &format_coordinates(complex));
+        if config.debug.text_overlay_global {
+            if let Some(cursor) = mouse_position {
+                let complex = canvas.screen_to_complex(cursor);
+                draw_status_bar(&mut framebuffer, screen_size, &format_coordinates(complex));
+            }
         }
         for layer in canvas.layers() {
             let (tile_width, tile_height) = layer.tile_screen_size();
@@ -146,11 +148,12 @@ pub fn run(
                         tile.set_sprite(std::sync::Arc::clone(&sprite));
                         tile.sprite().expect("tile sprite should exist")
                     });
+                    let tile_position = canvas.complex_to_screen(tile.coordinate().clone());
                     sprite.draw_into_scaled(
                         &mut framebuffer,
                         width,
-                        layer.screen_position().x as isize + column as isize * tile_width as isize,
-                        layer.screen_position().y as isize + row as isize * tile_height as isize,
+                        tile_position.x as isize,
+                        tile_position.y as isize,
                         tile_width as usize,
                         tile_height as usize,
                     );
@@ -164,71 +167,77 @@ pub fn run(
             draw_rectangle_outline(&mut framebuffer, screen_size, allocation, 0xff0000);
             draw_rectangle_outline(&mut framebuffer, screen_size, deallocation, 0xffff00);
         }
-        let overlays: Vec<_> = canvas
-            .layers()
-            .iter()
-            .enumerate()
-            .map(|(index, layer)| {
-                format_layer_overlay(
-                    index,
-                    layer.zoom(),
-                    delta_exponent(layer.delta()),
-                    layer.column_count(),
-                    layer.row_count(),
-                    mouse_position.map(|cursor| layer.screen_to_complex(cursor)),
-                )
-            })
-            .collect();
-        let first_overlay_y = height.saturating_sub(24 + overlays.len() * 8 + 4) as i32;
-        for (line, overlay) in overlays.iter().enumerate() {
-            draw_text(
-                &mut framebuffer,
-                screen_size,
-                8,
-                first_overlay_y + line as i32 * 8,
-                overlay,
-                0xffffff,
-            );
+        if config.debug.text_overlay_layers {
+            let overlays: Vec<_> = canvas
+                .layers()
+                .iter()
+                .enumerate()
+                .map(|(index, layer)| {
+                    format_layer_overlay(
+                        index,
+                        layer.zoom(),
+                        delta_exponent(layer.delta()),
+                        layer.column_count(),
+                        layer.row_count(),
+                        mouse_position.map(|cursor| canvas.screen_to_complex(cursor)),
+                    )
+                })
+                .collect();
+            let first_overlay_y = height.saturating_sub(24 + overlays.len() * 8 + 4) as i32;
+            for (line, overlay) in overlays.iter().enumerate() {
+                draw_text(
+                    &mut framebuffer,
+                    screen_size,
+                    8,
+                    first_overlay_y + line as i32 * 8,
+                    overlay,
+                    0xffffff,
+                );
+            }
         }
-        let queue_lines: Vec<_> = canvas
-            .layers()
-            .iter()
-            .enumerate()
-            .flat_map(|(layer_index, layer)| {
-                layer
-                    .pending_work_positions()
-                    .into_iter()
-                    .map(move |(row, column)| {
-                        format_worker_queue_line(
-                            layer_index,
-                            row,
-                            column,
-                            delta_exponent(layer.delta()),
-                        )
-                    })
-            })
-            .collect();
-        for (line, queue_line) in queue_lines.iter().enumerate() {
-            let x = width.saturating_sub(queue_line.chars().count() * 6 + 8) as i32;
-            draw_text(
-                &mut framebuffer,
-                screen_size,
-                x,
-                8 + line as i32 * 8,
-                queue_line,
-                0xffffff,
-            );
+        if config.debug.text_overlay_queue {
+            let queue_lines: Vec<_> = canvas
+                .layers()
+                .iter()
+                .enumerate()
+                .flat_map(|(layer_index, layer)| {
+                    layer
+                        .pending_work_positions()
+                        .into_iter()
+                        .map(move |(row, column)| {
+                            format_worker_queue_line(
+                                layer_index,
+                                row,
+                                column,
+                                delta_exponent(layer.delta()),
+                            )
+                        })
+                })
+                .collect();
+            for (line, queue_line) in queue_lines.iter().enumerate() {
+                let x = width.saturating_sub(queue_line.chars().count() * 6 + 8) as i32;
+                draw_text(
+                    &mut framebuffer,
+                    screen_size,
+                    x,
+                    8 + line as i32 * 8,
+                    queue_line,
+                    0xffffff,
+                );
+            }
         }
-        for (line, worker) in orchestrator.worker_statuses().iter().enumerate() {
-            let worker_line = format_worker_status_line(worker.id, worker.tile.as_ref());
-            draw_text(
-                &mut framebuffer,
-                screen_size,
-                8,
-                8 + line as i32 * 8,
-                &worker_line,
-                0xffffff,
-            );
+        if config.debug.text_overlay_workers {
+            for (line, worker) in orchestrator.worker_statuses().iter().enumerate() {
+                let worker_line = format_worker_status_line(worker.id, worker.tile.as_ref());
+                draw_text(
+                    &mut framebuffer,
+                    screen_size,
+                    8,
+                    8 + line as i32 * 8,
+                    &worker_line,
+                    0xffffff,
+                );
+            }
         }
         window.update_with_buffer(&framebuffer, width, height)?;
     }
@@ -405,17 +414,58 @@ fn middle_click_coordinate_report(
     cursor: ScreenPoint,
     global: ComplexPoint<f64>,
 ) -> String {
+    let initial = canvas.initial_state();
     let mut report = format!(
-        "Mouse tela: {}x{}\nMouse complexo: {:.15}x{:.15}",
-        cursor.x, cursor.y, global.x, global.y
+        "Canvas inicial: pos={:.15}x{:.15} tile={}x{} delta={:.15} tela={}x{} zoom_max={:.15} zoom_min={:.15}\nMouse tela: {}x{}\nMouse complexo: {:.15}x{:.15}",
+        initial.position.x,
+        initial.position.y,
+        initial.tile_width,
+        initial.tile_height,
+        initial.delta,
+        initial.screen_position.x,
+        initial.screen_position.y,
+        initial.max_apparent_pixel_size,
+        initial.min_apparent_pixel_size,
+        cursor.x,
+        cursor.y,
+        global.x,
+        global.y
     );
+    let mut discrepancy_count = 0;
     for (index, layer) in canvas.layers().iter().enumerate() {
         let point = layer.screen_to_complex(cursor);
         let expected_screen = layer.complex_to_screen(point.clone());
+        let dx = point.x - global.x;
+        let dy = point.y - global.y;
+        let discrepancy = (dx.abs() >= 1e-12 || dy.abs() >= 1e-12).then(|| {
+            discrepancy_count += 1;
+            format!(" DESALINHADA dx={dx:.15} dy={dy:.15}")
+        });
         report.push_str(&format!(
-            "\nCamada {index}: {:.15}x{:.15} tela_esperada {}x{}",
-            point.x, point.y, expected_screen.x, expected_screen.y
+            "\nCamada {index}: {:.15}x{:.15} tela_esperada {}x{}{}",
+            point.x,
+            point.y,
+            expected_screen.x,
+            expected_screen.y,
+            discrepancy.unwrap_or_default()
         ));
+    }
+    if discrepancy_count > 0 {
+        report.push_str(&format!("\nDiscrepancias detectadas: {discrepancy_count}"));
+    }
+    if !canvas.navigation_history().is_empty() {
+        report.push_str("\nPercurso de navegacao:");
+        for (index, event) in canvas.navigation_history().iter().enumerate() {
+            let command = match event {
+                CanvasNavigationEvent::Drag { delta } => {
+                    format!("arrasto {}x{}", delta.x, delta.y)
+                }
+                CanvasNavigationEvent::Zoom { cursor, zoom } => {
+                    format!("zoom {}x{} escala={zoom:.15}", cursor.x, cursor.y)
+                }
+            };
+            report.push_str(&format!("\n{}. {command}", index + 1));
+        }
     }
     report
 }
@@ -687,8 +737,105 @@ mod tests {
 
         assert_eq!(
             report,
-            "Mouse tela: 300x225\nMouse complexo: -1.000000000000000x1.000000000000000\nCamada 0: -1.000000000000000x1.000000000000000 tela_esperada 300x225"
+            "Canvas inicial: pos=-1.000000000000000x1.000000000000000 tile=30x20 delta=0.010000000000000 tela=300x225 zoom_max=8.000000000000000 zoom_min=0.800000000000000\nMouse tela: 300x225\nMouse complexo: -1.000000000000000x1.000000000000000\nCamada 0: -1.005000000000000x1.005000000000000 tela_esperada 300x225 DESALINHADA dx=-0.005000000000000 dy=0.005000000000000\nDiscrepancias detectadas: 1"
         );
+    }
+
+    #[test]
+    fn middle_click_report_records_the_navigation_path_needed_to_reproduce_it() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            ComplexPoint::new(-1.0, 1.0),
+            30,
+            20,
+            0.01,
+            ScreenPoint::new(300, 225),
+            8.0,
+            0.8,
+        );
+        canvas.drag(ScreenPoint::new(12, -7));
+        canvas.zoom_at(ScreenPoint::new(484, 357), 10.4);
+
+        let report = middle_click_coordinate_report(
+            &canvas,
+            ScreenPoint::new(484, 357),
+            canvas.screen_to_complex(ScreenPoint::new(484, 357)),
+        );
+
+        assert!(report.contains(
+            "Percurso de navegacao:\n1. arrasto 12x-7\n2. zoom 484x357 escala=10.400000000000000"
+        ));
+    }
+
+    #[test]
+    fn middle_click_report_uses_each_layers_own_transform() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            ComplexPoint::new(-1.0, 1.0),
+            30,
+            20,
+            0.01,
+            ScreenPoint::new(300, 225),
+            8.0,
+            0.8,
+        );
+        canvas.expand_one_layer_per_frame();
+        canvas
+            .layer_mut(0)
+            .unwrap()
+            .set_screen_position(ScreenPoint::new(0, 0));
+        let cursor = ScreenPoint::new(300, 225);
+
+        let report =
+            middle_click_coordinate_report(&canvas, cursor, canvas.screen_to_complex(cursor));
+
+        assert!(
+            report.contains("Camada 0: -0.625000000000000x0.718750000000000 tela_esperada 300x225")
+        );
+    }
+
+    #[test]
+    fn middle_click_report_records_the_canvas_initial_state_for_replay() {
+        let canvas = TiledInfiniteCanvas::new(
+            ComplexPoint::new(-1.5725, 0.0475),
+            30,
+            20,
+            0.005,
+            ScreenPoint::new(385, 290),
+            8.0,
+            0.8,
+        );
+
+        let report = middle_click_coordinate_report(
+            &canvas,
+            ScreenPoint::new(353, 318),
+            canvas.screen_to_complex(ScreenPoint::new(353, 318)),
+        );
+
+        assert!(report.contains(
+            "Canvas inicial: pos=-1.572500000000000x0.047500000000000 tile=30x20 delta=0.005000000000000 tela=385x290 zoom_max=8.000000000000000 zoom_min=0.800000000000000"
+        ));
+    }
+
+    #[test]
+    fn middle_click_report_does_not_flag_layers_aligned_with_the_camera() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            ComplexPoint::new(-1.5725, 0.0475),
+            30,
+            20,
+            0.005,
+            ScreenPoint::new(385, 290),
+            8.0,
+            0.5,
+        );
+        for _ in 0..5 {
+            canvas.ensure_screen_coverage((0, 0, 799, 599));
+        }
+        let cursor = ScreenPoint::new(415, 368);
+
+        let report =
+            middle_click_coordinate_report(&canvas, cursor, canvas.screen_to_complex(cursor));
+
+        assert!(!report.contains("DESALINHADA"));
+        assert!(!report.contains("Discrepancias detectadas:"));
     }
 
     #[test]
