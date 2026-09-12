@@ -17,6 +17,14 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## TODO
 
+### T020 — Integrar multiprecisão na camada e corrigir navegação
+
+- Fazer todos os tiles criados pela `TileLayer` respeitarem `rendering_method` e
+  `perturbation_fallback`.
+- Corrigir expansão/recomposição da camada durante pan e zoom, preservando a
+  coordenada complexa sob o cursor.
+- Validar com TDD, registrar testes e validação manual da aplicação.
+
 ## BACKLOG
 
 ### T003 — Ampliar o processador CPU determinístico

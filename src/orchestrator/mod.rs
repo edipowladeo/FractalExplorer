@@ -27,6 +27,18 @@ mod tests {
     }
 
     #[test]
+    fn configured_multiprecision_orchestrator_renders_tiles_with_fixed_arithmetic() {
+        let mut config = crate::config::RendererConfig::default();
+        config.rendering_method = "multiprecision".to_string();
+        let tile = Tile::new(crate::geometry::ComplexPoint::new(0.0, 0.0), 3, 3, 1.0);
+
+        Orchestrator::from_config(&config).render_tile(&tile);
+
+        assert_eq!(tile.status(), TileStatus::Completed);
+        assert_eq!(tile.iterations().lock().unwrap()[4], 256);
+    }
+
+    #[test]
     fn completed_tile_is_not_recalculated() {
         let tile = Tile::new(crate::geometry::ComplexPoint::new(0.0, 0.0), 1, 1, 1.0);
         let orchestrator = Orchestrator::new(Mandelbrot::new(32));
@@ -174,6 +186,24 @@ mod tests {
             layer.position(),
             &crate::geometry::ComplexPoint::new(-0.995, 0.745)
         );
+    }
+
+    #[test]
+    fn layer_zoom_updates_complex_scale_while_preserving_cursor_coordinate() {
+        let mut layer = TileLayer::new(
+            crate::geometry::ComplexPoint::new(-1.0, 1.0),
+            10,
+            10,
+            0.1,
+            crate::geometry::ScreenPoint::new(100, 100),
+            1.0,
+        );
+        let cursor = crate::geometry::ScreenPoint::new(105, 105);
+        layer.zoom_at(cursor, 2.0);
+
+        assert_eq!(layer.delta(), 0.05);
+        assert_eq!(layer.tile(0, 0).unwrap().coordinate().x, -0.4);
+        assert_eq!(layer.tile(0, 0).unwrap().coordinate().y, 0.4);
     }
 }
 
@@ -597,11 +627,36 @@ impl Tile {
 /// Dispatches tiles to the calculator.
 pub struct Orchestrator {
     calculator: crate::Mandelbrot,
+    mode: CalculationMode,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CalculationMode {
+    F64,
+    Multiprecision,
+    Perturbation { fallback: bool },
 }
 
 impl Orchestrator {
     pub fn new(calculator: crate::Mandelbrot) -> Self {
-        Self { calculator }
+        Self {
+            calculator,
+            mode: CalculationMode::F64,
+        }
+    }
+
+    pub fn from_config(config: &crate::config::RendererConfig) -> Self {
+        let mode = match config.rendering_method.as_str() {
+            "multiprecision" => CalculationMode::Multiprecision,
+            "perturbation" => CalculationMode::Perturbation {
+                fallback: config.perturbation_fallback,
+            },
+            _ => CalculationMode::F64,
+        };
+        Self {
+            calculator: crate::Mandelbrot::new(config.max_iterations),
+            mode,
+        }
     }
 
     pub fn render_tile(&self, tile: &Tile) {
@@ -618,6 +673,12 @@ impl Orchestrator {
             .iterations
             .lock()
             .expect("tile iterations mutex poisoned");
+        if !matches!(self.mode, CalculationMode::F64) {
+            drop(iterations);
+            let values = self.render_fixed(tile, delta);
+            tile.replace_iterations(values);
+            return;
+        }
         let center_x = (tile.width - 1) as f64 / 2.0;
         let center_y = (tile.height - 1) as f64 / 2.0;
         for y in 0..tile.height {
@@ -630,6 +691,57 @@ impl Orchestrator {
         }
         tile.status
             .store(TileStatus::Completed as u8, Ordering::Release);
+    }
+
+    fn render_fixed(&self, tile: &Tile, delta: f64) -> Vec<u64> {
+        let fractal = crate::MandelbrotFixed::<2>::new(self.calculator.max_iterations());
+        let center_real = crate::Fixed::from_f64(tile.coordinate.x);
+        let center_imaginary = crate::Fixed::from_f64(tile.coordinate.y);
+        let fixed_delta = crate::Fixed::from_f64(delta);
+        let width = tile.width as usize;
+        let height = tile.height as usize;
+        match self.mode {
+            CalculationMode::Multiprecision => fractal
+                .render_tile(center_real, center_imaginary, fixed_delta, width, height)
+                .into_iter()
+                .map(u64::from)
+                .collect(),
+            CalculationMode::Perturbation { fallback } => {
+                let center_x = crate::Fixed::from_i64((width.saturating_sub(1) / 2) as i64);
+                let center_y = crate::Fixed::from_i64((height.saturating_sub(1) / 2) as i64);
+                let min_real = center_real.sub(fixed_delta.mul(center_x));
+                let max_real = center_real.add(
+                    fixed_delta
+                        .mul(crate::Fixed::from_i64(width.saturating_sub(1) as i64).sub(center_x)),
+                );
+                let min_imaginary = center_imaginary
+                    .sub(fixed_delta.mul(
+                        crate::Fixed::from_i64(height.saturating_sub(1) as i64).sub(center_y),
+                    ));
+                let max_imaginary = center_imaginary.add(fixed_delta.mul(center_y));
+                let reference = fractal.select_reference_grid(
+                    min_real,
+                    max_real,
+                    min_imaginary,
+                    max_imaginary,
+                    5,
+                );
+                fractal
+                    .render_tile_perturbation(
+                        center_real,
+                        center_imaginary,
+                        fixed_delta,
+                        width,
+                        height,
+                        &reference,
+                        fallback,
+                    )
+                    .into_iter()
+                    .map(|iteration| u64::from(iteration.unwrap_or(0)))
+                    .collect()
+            }
+            CalculationMode::F64 => unreachable!(),
+        }
     }
 
     pub fn render_layer(&self, layer: &TileLayer) {
