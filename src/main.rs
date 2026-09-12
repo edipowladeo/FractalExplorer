@@ -36,7 +36,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.renderer.max_apparent_pixel_size(),
     );
     let orchestrator = Orchestrator::new(Mandelbrot::new(config.renderer.max_iterations));
-    orchestrator.render_layer(&layer);
     fractal_explorer::renderer::run(&mut layer, &orchestrator, &config.renderer)?;
     Ok(())
 }

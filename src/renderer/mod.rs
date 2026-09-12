@@ -124,6 +124,9 @@ pub fn run(
         for row in 0..layer.row_count() {
             for column in 0..layer.column_count() {
                 let tile = layer.tile(row, column).expect("layer grid is rectangular");
+                if tile.status() != crate::orchestrator::TileStatus::Completed {
+                    continue;
+                }
                 let sprite = tile.sprite().unwrap_or_else(|| {
                     let sprite = std::sync::Arc::new(sprite_from_tile(
                         tile,
@@ -435,7 +438,7 @@ mod tests {
 
     #[test]
     fn converts_tile_iterations_to_a_sprite() {
-        let tile = Tile::new(ComplexPoint::new(0.0, 0.0), 3, 3, 1.0);
+        let tile = std::sync::Arc::new(Tile::new(ComplexPoint::new(0.0, 0.0), 3, 3, 1.0));
         Orchestrator::new(Mandelbrot::new(32)).render_tile(&tile);
         let sprite = sprite_from_tile(&tile, 32, Palette::Shade, 5.0);
 
