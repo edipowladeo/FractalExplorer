@@ -185,6 +185,19 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## DONE
 
+### T018 — Investigar e planejar a multiprecisão u64
+
+- **Resultado:** investigação do `fractalExplorer_kotlin2026` registrada em
+  `PLANO_IMPLEMENTACAO_MULTIPRECISAO.md`, cobrindo full multiprecision,
+  seleção/órbita de referência, perturbação, snippets e o plano para
+  `Fixed<1>`, `Fixed<2>` e `Fixed<N>` com limbs `u64`.
+- **Decisão registrada:** `perturbation_fallback = false` por padrão, com opção
+  funcional para habilitar fallback e permitir inspeção dos artefatos quando a
+  perturbação perder estabilidade.
+- **Evidências:** `git diff --check` passou; não foram executados testes pesados
+  ou benchmarks nesta etapa.
+- **Commit:** `9edf964`, enviado para `origin/multiprecisao`.
+
 ### T001 — Desenhar um sprite na tela e exibi-lo
 
 - **Resultado:** janela/renderizador Rust para Windows criado com `minifb`; sprite preenchido com o fractal de Mandelbrot CPU `f64`, centralizado em `(0, 0)`.
