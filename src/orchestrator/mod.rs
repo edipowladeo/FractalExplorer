@@ -61,6 +61,7 @@ mod tests {
     }
 }
 
+use std::collections::VecDeque;
 use std::sync::{
     atomic::{AtomicU8, Ordering},
     Arc, Mutex,
@@ -99,6 +100,84 @@ pub struct TileSprite {
     tile: Arc<Tile>,
     position: crate::geometry::ScreenPoint,
     zoom: f64,
+}
+
+/// A grid of tiles with one shared complex-plane transform.
+pub struct TileLayer {
+    position: crate::geometry::ComplexPoint<f64>,
+    delta: f64,
+    tiles: VecDeque<VecDeque<Arc<Tile>>>,
+    screen_position: crate::geometry::ScreenPoint,
+    zoom: f64,
+}
+
+impl TileLayer {
+    pub fn new(
+        position: crate::geometry::ComplexPoint<f64>,
+        delta: f64,
+        tiles: VecDeque<VecDeque<Arc<Tile>>>,
+        screen_position: crate::geometry::ScreenPoint,
+        zoom: f64,
+    ) -> Self {
+        assert!(delta > 0.0, "layer delta must be positive");
+        assert!(zoom > 0.0, "layer zoom must be positive");
+        assert!(!tiles.is_empty(), "a layer must have at least one row");
+        let columns = tiles.front().map_or(0, VecDeque::len);
+        assert!(columns > 0, "a layer must have at least one column");
+        assert!(
+            tiles.iter().all(|row| row.len() == columns),
+            "layer rows must have equal lengths"
+        );
+        Self {
+            position,
+            delta,
+            tiles,
+            screen_position,
+            zoom,
+        }
+    }
+
+    pub fn position(&self) -> &crate::geometry::ComplexPoint<f64> {
+        &self.position
+    }
+    pub fn delta(&self) -> f64 {
+        self.delta
+    }
+    pub fn row_count(&self) -> usize {
+        self.tiles.len()
+    }
+    pub fn column_count(&self) -> usize {
+        self.tiles.front().map_or(0, VecDeque::len)
+    }
+    pub fn tile(&self, row: usize, column: usize) -> Option<&Arc<Tile>> {
+        self.tiles.get(row)?.get(column)
+    }
+    pub fn screen_position(&self) -> crate::geometry::ScreenPoint {
+        self.screen_position
+    }
+    pub fn zoom(&self) -> f64 {
+        self.zoom
+    }
+    pub fn screen_size(&self) -> (u32, u32) {
+        let tile = self.tile(0, 0).expect("layer must contain a tile");
+        (
+            ((tile.width() as f64 * self.zoom).round() as u32).max(1) * self.column_count() as u32,
+            ((tile.height() as f64 * self.zoom).round() as u32).max(1) * self.row_count() as u32,
+        )
+    }
+    pub fn set_screen_position(&mut self, position: crate::geometry::ScreenPoint) {
+        self.screen_position = position;
+    }
+
+    pub fn zoom_at(&mut self, cursor: crate::geometry::ScreenPoint, zoom: f64) {
+        assert!(zoom > 0.0, "layer zoom must be positive");
+        let scale = zoom / self.zoom;
+        self.screen_position = crate::geometry::ScreenPoint::new(
+            (cursor.x as f64 - (cursor.x - self.screen_position.x) as f64 * scale).round() as i32,
+            (cursor.y as f64 - (cursor.y - self.screen_position.y) as f64 * scale).round() as i32,
+        );
+        self.zoom = zoom;
+    }
 }
 
 impl TileSprite {
@@ -203,6 +282,10 @@ impl Orchestrator {
     }
 
     pub fn render_tile(&self, tile: &Tile) {
+        self.render_tile_with_delta(tile, tile.delta);
+    }
+
+    fn render_tile_with_delta(&self, tile: &Tile, delta: f64) {
         tile.status
             .store(TileStatus::Dispatched as u8, Ordering::Release);
         let mut iterations = tile
@@ -213,13 +296,21 @@ impl Orchestrator {
         let center_y = (tile.height - 1) as f64 / 2.0;
         for y in 0..tile.height {
             for x in 0..tile.width {
-                let real = tile.coordinate.x + (x as f64 - center_x) * tile.delta;
-                let imaginary = tile.coordinate.y - (y as f64 - center_y) * tile.delta;
+                let real = tile.coordinate.x + (x as f64 - center_x) * delta;
+                let imaginary = tile.coordinate.y - (y as f64 - center_y) * delta;
                 iterations[y as usize * tile.width as usize + x as usize] =
                     self.calculator.escape_iterations(real, imaginary) as u64;
             }
         }
         tile.status
             .store(TileStatus::Completed as u8, Ordering::Release);
+    }
+
+    pub fn render_layer(&self, layer: &TileLayer) {
+        for row in &layer.tiles {
+            for tile in row {
+                self.render_tile_with_delta(tile, layer.delta);
+            }
+        }
     }
 }

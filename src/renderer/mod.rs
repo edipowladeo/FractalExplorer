@@ -1,6 +1,6 @@
 use crate::config::RendererConfig;
 use crate::geometry::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
-use crate::{input::ZoomDirection, InputEvent, InputState, Sprite, Tile, TileSprite};
+use crate::{input::ZoomDirection, InputEvent, InputState, Sprite, Tile, TileLayer};
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -52,11 +52,11 @@ fn sprite_from_tile(
 }
 
 /// Displays one rendered sprite in a native window.
-pub fn run(tile_sprite: &mut TileSprite, config: &RendererConfig) -> Result<(), minifb::Error> {
+pub fn run(layer: &mut TileLayer, config: &RendererConfig) -> Result<(), minifb::Error> {
     let width = config.width;
     let height = config.height;
     let sprite = sprite_from_tile(
-        tile_sprite.tile(),
+        layer.tile(0, 0).expect("layer must contain a tile"),
         config.max_iterations as u64,
         config.palette,
         config.palette_period,
@@ -85,9 +85,9 @@ pub fn run(tile_sprite: &mut TileSprite, config: &RendererConfig) -> Result<(), 
         );
         for event in events {
             match event {
-                InputEvent::Drag { delta } => tile_sprite.set_position(ScreenPoint::new(
-                    tile_sprite.position().x + delta.x,
-                    tile_sprite.position().y + delta.y,
+                InputEvent::Drag { delta } => layer.set_screen_position(ScreenPoint::new(
+                    layer.screen_position().x + delta.x,
+                    layer.screen_position().y + delta.y,
                 )),
                 InputEvent::MiddleClick(cursor) => {
                     let complex = window_envelope.screen_to_complex(cursor, screen_size);
@@ -97,10 +97,10 @@ pub fn run(tile_sprite: &mut TileSprite, config: &RendererConfig) -> Result<(), 
                     let multiplier = config.zoom_multiplier;
                     assert!(multiplier > 1.0, "zoom_multiplier must be greater than 1");
                     let zoom = match direction {
-                        ZoomDirection::In => tile_sprite.zoom() * multiplier,
-                        ZoomDirection::Out => tile_sprite.zoom() / multiplier,
+                        ZoomDirection::In => layer.zoom() * multiplier,
+                        ZoomDirection::Out => layer.zoom() / multiplier,
                     };
-                    tile_sprite.zoom_at(cursor, zoom);
+                    layer.zoom_at(cursor, zoom);
                 }
             }
         }
@@ -108,12 +108,12 @@ pub fn run(tile_sprite: &mut TileSprite, config: &RendererConfig) -> Result<(), 
             let complex = window_envelope.screen_to_complex(cursor, screen_size);
             draw_status_bar(&mut framebuffer, screen_size, &format_coordinates(complex));
         }
-        let (sprite_width, sprite_height) = tile_sprite.screen_size();
+        let (sprite_width, sprite_height) = layer.screen_size();
         sprite.draw_into_scaled(
             &mut framebuffer,
             width,
-            tile_sprite.position().x as isize,
-            tile_sprite.position().y as isize,
+            layer.screen_position().x as isize,
+            layer.screen_position().y as isize,
             sprite_width as usize,
             sprite_height as usize,
         );
