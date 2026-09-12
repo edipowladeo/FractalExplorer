@@ -16,5 +16,5 @@ reduced_viewport_allocation_ratio = 0.7
 show_allocation_envelope = true
 
 [orchestrator.tile]
-width = 800
-height = 600
+width = 200
+height = 150
