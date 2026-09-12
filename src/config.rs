@@ -49,6 +49,10 @@ pub struct RendererDebugConfig {
     pub reduced_viewport: bool,
     pub reduced_viewport_allocation_ratio: f64,
     pub show_allocation_envelope: bool,
+    pub text_overlay_global: bool,
+    pub text_overlay_workers: bool,
+    pub text_overlay_layers: bool,
+    pub text_overlay_queue: bool,
 }
 
 impl Default for AppConfig {
@@ -104,6 +108,10 @@ impl Default for RendererDebugConfig {
             reduced_viewport: false,
             reduced_viewport_allocation_ratio: 0.5,
             show_allocation_envelope: false,
+            text_overlay_global: true,
+            text_overlay_workers: true,
+            text_overlay_layers: true,
+            text_overlay_queue: true,
         }
     }
 }
@@ -184,6 +192,10 @@ mod tests {
             reduced_viewport = true
             reduced_viewport_allocation_ratio = 0.5
             show_allocation_envelope = true
+            text_overlay_global = false
+            text_overlay_workers = false
+            text_overlay_layers = false
+            text_overlay_queue = false
             "#,
         )
         .unwrap();
@@ -195,6 +207,10 @@ mod tests {
         assert!(config.renderer.debug.reduced_viewport);
         assert_eq!(config.renderer.debug.reduced_viewport_allocation_ratio, 0.5);
         assert!(config.renderer.debug.show_allocation_envelope);
+        assert!(!config.renderer.debug.text_overlay_global);
+        assert!(!config.renderer.debug.text_overlay_workers);
+        assert!(!config.renderer.debug.text_overlay_layers);
+        assert!(!config.renderer.debug.text_overlay_queue);
         assert_eq!(config.renderer.effective_allocation_ratio(), 0.5);
         assert_eq!(config.renderer.palette, crate::renderer::Palette::Rainbow);
         assert_eq!(config.renderer.palette_period, 5.0);

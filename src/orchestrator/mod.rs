@@ -322,12 +322,268 @@ mod tests {
         assert_eq!(canvas.layer(1).unwrap().position().y, 0.9525);
         assert_eq!(
             canvas.layer(1).unwrap().screen_position(),
-            crate::geometry::ScreenPoint::new(360, 265)
+            canvas.complex_to_screen(canvas.layer(1).unwrap().position().clone())
         );
 
         canvas.zoom_at(crate::geometry::ScreenPoint::new(400, 300), 16.0);
         assert_eq!(canvas.layer(0).unwrap().zoom(), 16.0);
         assert_eq!(canvas.layer(1).unwrap().zoom(), 8.0);
+    }
+
+    #[test]
+    fn records_the_delta_exponent_and_direction_for_created_layers() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-1.5725, 0.0475),
+            30,
+            20,
+            0.005,
+            crate::geometry::ScreenPoint::new(385, 290),
+            8.0,
+            0.5,
+        );
+
+        for _ in 0..3 {
+            assert!(canvas.expand_one_layer_per_frame());
+        }
+
+        assert_eq!(
+            canvas.layer_creation_log(),
+            [
+                "Camada criada com delta: 7.644",
+                "Camada expandida, direcao de incremento: menor, delta: 8.644",
+                "Camada expandida, direcao de incremento: menor, delta: 9.644",
+            ]
+        );
+    }
+
+    #[test]
+    fn all_layers_map_the_same_complex_point_to_the_same_screen_point() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-1.0, 1.0),
+            30,
+            20,
+            0.01,
+            crate::geometry::ScreenPoint::new(300, 225),
+            8.0,
+            0.8,
+        );
+        canvas.expand_one_layer_per_frame();
+        canvas.expand_one_layer_per_frame();
+        canvas.expand_one_layer_per_frame();
+
+        let point = crate::geometry::ComplexPoint::new(-0.95, 0.93);
+        let expected = canvas.complex_to_screen(point.clone());
+
+        for layer in canvas.layers() {
+            assert_eq!(
+                layer.complex_to_screen(point.clone()),
+                expected,
+                "layer transform is not aligned with the camera"
+            );
+        }
+    }
+
+    #[test]
+    fn initial_layer_expansion_keeps_the_cursor_complex_coordinate_aligned() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-1.5725, 0.0475),
+            30,
+            20,
+            0.005,
+            crate::geometry::ScreenPoint::new(385, 290),
+            8.0,
+            0.5,
+        );
+        for _ in 0..5 {
+            canvas.ensure_screen_coverage((0, 0, 799, 599));
+        }
+
+        let cursor = crate::geometry::ScreenPoint::new(415, 368);
+        let global = canvas.screen_to_complex(cursor);
+        assert_eq!(canvas.layer_count(), 5);
+        assert_eq!(
+            global,
+            crate::geometry::ComplexPoint::new(-1.55625, 0.00125)
+        );
+        for (index, layer) in canvas.layers().iter().enumerate() {
+            let point = layer.screen_to_complex(cursor);
+            assert!(
+                (point.x - global.x).abs() < 1e-12 && (point.y - global.y).abs() < 1e-12,
+                "layer {index} is not aligned with the camera at the initial cursor: {point:?} != {global:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn each_initial_layer_expansion_keeps_the_cursor_complex_coordinate_aligned() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-1.5725, 0.0475),
+            30,
+            20,
+            0.005,
+            crate::geometry::ScreenPoint::new(385, 290),
+            8.0,
+            0.5,
+        );
+        let cursor = crate::geometry::ScreenPoint::new(415, 368);
+
+        for expansion in 1..=5 {
+            canvas.ensure_screen_coverage((0, 0, 799, 599));
+            let global = canvas.screen_to_complex(cursor);
+            assert_eq!(canvas.layer_count(), expansion);
+            for (index, layer) in canvas.layers().iter().enumerate() {
+                let point = layer.screen_to_complex(cursor);
+                assert!(
+                    (point.x - global.x).abs() < 1e-12 && (point.y - global.y).abs() < 1e-12,
+                    "expansion {expansion}, layer {index} is not aligned: {point:?} != {global:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn layer_expansion_without_tile_coverage_keeps_the_cursor_coordinate_aligned() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-1.5725, 0.0475),
+            30,
+            20,
+            0.005,
+            crate::geometry::ScreenPoint::new(385, 290),
+            8.0,
+            0.5,
+        );
+        let cursor = crate::geometry::ScreenPoint::new(415, 368);
+
+        for expansion in 1..=5 {
+            assert!(canvas.expand_one_layer_per_frame());
+            let global = canvas.screen_to_complex(cursor);
+            for (index, layer) in canvas.layers().iter().enumerate() {
+                let point = layer.screen_to_complex(cursor);
+                assert!(
+                    (point.x - global.x).abs() < 1e-12
+                        && (point.y - global.y).abs() < 1e-12,
+                    "expansion {expansion}, layer {index} is misaligned without tile coverage: {point:?} != {global:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn smaller_adjacent_layer_is_aligned_before_position_synchronization() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-1.5725, 0.0475),
+            30,
+            20,
+            0.005,
+            crate::geometry::ScreenPoint::new(385, 290),
+            8.0,
+            0.5,
+        );
+        for _ in 0..3 {
+            assert!(canvas.expand_one_layer_per_frame());
+        }
+        let cursor = crate::geometry::ScreenPoint::new(415, 368);
+        let global = canvas.screen_to_complex(cursor);
+        let layer = TiledInfiniteCanvas::adjacent_layer(canvas.layer(2).unwrap(), 0.5);
+        let point = layer.screen_to_complex(cursor);
+
+        assert!(
+            (point.x - global.x).abs() < 1e-12 && (point.y - global.y).abs() < 1e-12,
+            "adjacent layer is misaligned before synchronization: {point:?} != {global:?}"
+        );
+    }
+
+    #[test]
+    fn smaller_adjacent_layer_preserves_its_complex_origin_projection_with_subpixel_precision() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-1.5725, 0.0475),
+            30,
+            20,
+            0.005,
+            crate::geometry::ScreenPoint::new(385, 290),
+            8.0,
+            0.5,
+        );
+        for _ in 0..3 {
+            assert!(canvas.expand_one_layer_per_frame());
+        }
+        let layer = TiledInfiniteCanvas::adjacent_layer(canvas.layer(2).unwrap(), 0.5);
+
+        let (origin_x, origin_y) = layer.screen_origin();
+        let position = layer.position();
+        let expected_x = canvas.camera_anchor_screen.x as f64
+            + (position.x - canvas.camera_anchor_complex.x) * canvas.camera_scale;
+        let expected_y = canvas.camera_anchor_screen.y as f64
+            - (position.y - canvas.camera_anchor_complex.y) * canvas.camera_scale;
+        assert!(
+            (origin_x - expected_x).abs() < 1e-12 && (origin_y - expected_y).abs() < 1e-12,
+            "the adjacent layer origin must preserve the camera projection"
+        );
+    }
+
+    #[test]
+    fn reported_navigation_keeps_all_layer_coordinates_under_the_cursor_aligned() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-1.5725, 0.0475),
+            30,
+            20,
+            0.005,
+            crate::geometry::ScreenPoint::new(385, 290),
+            8.0,
+            0.8,
+        );
+        let zooms = [
+            ((316, 352), 10.4),
+            ((316, 352), 6.760000000000001),
+            ((317, 351), 8.788000000000002),
+            ((286, 402), 5.712200000000002),
+            ((286, 402), 7.425860000000003),
+            ((286, 402), 9.653618000000003),
+            ((306, 389), 6.274851700000003),
+            ((306, 389), 8.157307210000004),
+            ((307, 388), 5.302249686500003),
+            ((314, 371), 6.892924592450004),
+            ((314, 371), 8.960801970185006),
+            ((316, 365), 5.824521280620254),
+            ((318, 359), 7.571877664806331),
+            ((311, 370), 9.843440964248231),
+            ((304, 379), 6.398236626761350),
+            ((313, 372), 8.317707614789756),
+            ((313, 372), 5.406509949613342),
+            ((313, 372), 7.028462934497345),
+            ((313, 372), 9.137001814846549),
+            ((313, 372), 5.939051179650257),
+            ((313, 372), 7.720766533545335),
+            ((323, 362), 10.036996493608935),
+            ((323, 362), 6.524047720845808),
+            ((334, 362), 8.481262037099551),
+            ((359, 362), 5.512820324114708),
+            ((359, 362), 7.166666421349120),
+            ((357, 359), 9.316666347753857),
+            ((357, 359), 6.055833126040008),
+            ((347, 333), 7.872583063852010),
+            ((347, 333), 10.234357983007614),
+            ((347, 333), 6.652332688954949),
+        ];
+
+        for _ in 0..4 {
+            canvas.ensure_screen_coverage((0, 0, 799, 599));
+        }
+        for ((x, y), zoom) in zooms {
+            canvas.zoom_at(crate::geometry::ScreenPoint::new(x, y), zoom);
+        }
+
+        let cursor = crate::geometry::ScreenPoint::new(353, 318);
+        let global = canvas.screen_to_complex(cursor);
+        assert_eq!(canvas.layer_count(), 4);
+        for (index, layer) in canvas.layers().iter().enumerate() {
+            let layer_point = layer.screen_to_complex(cursor);
+            assert!(
+                (layer_point.x - global.x).abs() < 1e-12
+                    && (layer_point.y - global.y).abs() < 1e-12,
+                "layer {index} maps the cursor to {layer_point:?}, instead of {global:?}"
+            );
+        }
     }
 }
 
@@ -381,6 +637,8 @@ pub struct TileLayer {
     delta: f64,
     tiles: VecDeque<VecDeque<Arc<Tile>>>,
     screen_position: crate::geometry::ScreenPoint,
+    screen_origin_x: f64,
+    screen_origin_y: f64,
     zoom: f64,
     work_queue: Arc<TileWorkQueue>,
 }
@@ -401,6 +659,35 @@ pub struct TiledInfiniteCanvas {
     screen_position: crate::geometry::ScreenPoint,
     max_apparent_pixel_size: f64,
     min_apparent_pixel_size: f64,
+    camera_anchor_complex: crate::geometry::ComplexPoint<f64>,
+    camera_anchor_screen: crate::geometry::ScreenPoint,
+    camera_scale: f64,
+    navigation_history: Vec<CanvasNavigationEvent>,
+    layer_creation_log: Vec<String>,
+}
+
+/// A navigation command applied to a canvas, retained for diagnostic replay.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CanvasNavigationEvent {
+    Drag {
+        delta: crate::geometry::ScreenPoint,
+    },
+    Zoom {
+        cursor: crate::geometry::ScreenPoint,
+        zoom: f64,
+    },
+}
+
+/// Immutable parameters used to create a canvas, for deterministic replay.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanvasInitialState {
+    pub position: crate::geometry::ComplexPoint<f64>,
+    pub tile_width: u32,
+    pub tile_height: u32,
+    pub delta: f64,
+    pub screen_position: crate::geometry::ScreenPoint,
+    pub max_apparent_pixel_size: f64,
+    pub min_apparent_pixel_size: f64,
 }
 
 impl TiledInfiniteCanvas {
@@ -415,6 +702,16 @@ impl TiledInfiniteCanvas {
     ) -> Self {
         assert!(max_apparent_pixel_size > 0.0);
         assert!(min_apparent_pixel_size > 0.0);
+        let camera_anchor_complex = crate::geometry::ComplexPoint::new(
+            position.x + (tile_width - 1) as f64 * delta / 2.0,
+            position.y - (tile_height - 1) as f64 * delta / 2.0,
+        );
+        let camera_anchor_screen = crate::geometry::ScreenPoint::new(
+            screen_position.x
+                + ((tile_width as f64 * max_apparent_pixel_size - 1.0) / 2.0).round() as i32,
+            screen_position.y
+                + ((tile_height as f64 * max_apparent_pixel_size - 1.0) / 2.0).round() as i32,
+        );
         Self {
             layers: VecDeque::new(),
             position,
@@ -424,6 +721,11 @@ impl TiledInfiniteCanvas {
             screen_position,
             max_apparent_pixel_size,
             min_apparent_pixel_size,
+            camera_anchor_complex,
+            camera_anchor_screen,
+            camera_scale: max_apparent_pixel_size / delta,
+            navigation_history: Vec::new(),
+            layer_creation_log: Vec::new(),
         }
     }
 
@@ -438,6 +740,8 @@ impl TiledInfiniteCanvas {
                 self.screen_position,
                 self.max_apparent_pixel_size,
             ));
+            self.synchronize_layer_positions();
+            self.record_layer_creation(None, self.layers.back().unwrap().delta());
             return true;
         }
 
@@ -446,6 +750,8 @@ impl TiledInfiniteCanvas {
         if larger_zoom <= self.max_apparent_pixel_size && !self.has_zoom(larger_zoom) {
             let layer = Self::adjacent_layer(self.layers.front().unwrap(), 2.0);
             self.layers.push_front(layer);
+            self.synchronize_layer_positions();
+            self.record_layer_creation(Some("maior"), self.layers.front().unwrap().delta());
             return true;
         }
         let back_zoom = self.layers.back().unwrap().zoom();
@@ -453,6 +759,8 @@ impl TiledInfiniteCanvas {
         if smaller_zoom >= self.min_apparent_pixel_size && !self.has_zoom(smaller_zoom) {
             let layer = Self::adjacent_layer(self.layers.back().unwrap(), 0.5);
             self.layers.push_back(layer);
+            self.synchronize_layer_positions();
+            self.record_layer_creation(Some("menor"), self.layers.back().unwrap().delta());
             return true;
         }
         false
@@ -483,6 +791,78 @@ impl TiledInfiniteCanvas {
 
     pub fn layers_mut(&mut self) -> &mut VecDeque<TileLayer> {
         &mut self.layers
+    }
+
+    /// Commands applied since the canvas was created, in replay order.
+    pub fn navigation_history(&self) -> &[CanvasNavigationEvent] {
+        &self.navigation_history
+    }
+
+    /// Lines emitted when the canvas creates a new layer.
+    pub fn layer_creation_log(&self) -> &[String] {
+        &self.layer_creation_log
+    }
+
+    /// Parameters supplied at canvas creation, before any navigation command.
+    pub fn initial_state(&self) -> CanvasInitialState {
+        CanvasInitialState {
+            position: self.position.clone(),
+            tile_width: self.tile_width,
+            tile_height: self.tile_height,
+            delta: self.delta,
+            screen_position: self.screen_position,
+            max_apparent_pixel_size: self.max_apparent_pixel_size,
+            min_apparent_pixel_size: self.min_apparent_pixel_size,
+        }
+    }
+
+    fn record_layer_creation(&mut self, direction: Option<&str>, delta: f64) {
+        let delta_exponent = -delta.log2();
+        let line = match direction {
+            Some(direction) => format!(
+                "Camada expandida, direcao de incremento: {direction}, delta: {delta_exponent:.3}"
+            ),
+            None => format!("Camada criada com delta: {delta_exponent:.3}"),
+        };
+        println!("{line}");
+        self.layer_creation_log.push(line);
+    }
+
+    pub fn screen_to_complex(
+        &self,
+        point: crate::geometry::ScreenPoint,
+    ) -> crate::geometry::ComplexPoint<f64> {
+        crate::geometry::ComplexPoint::new(
+            self.camera_anchor_complex.x
+                + (point.x - self.camera_anchor_screen.x) as f64 / self.camera_scale,
+            self.camera_anchor_complex.y
+                - (point.y - self.camera_anchor_screen.y) as f64 / self.camera_scale,
+        )
+    }
+
+    pub fn complex_to_screen(
+        &self,
+        point: crate::geometry::ComplexPoint<f64>,
+    ) -> crate::geometry::ScreenPoint {
+        crate::geometry::ScreenPoint::new(
+            self.camera_anchor_screen.x
+                + ((point.x - self.camera_anchor_complex.x) * self.camera_scale).round() as i32,
+            self.camera_anchor_screen.y
+                - ((point.y - self.camera_anchor_complex.y) * self.camera_scale).round() as i32,
+        )
+    }
+
+    fn synchronize_layer_positions(&mut self) {
+        let anchor_complex = self.camera_anchor_complex.clone();
+        let anchor_screen = self.camera_anchor_screen;
+        let scale = self.camera_scale;
+        for layer in &mut self.layers {
+            let position = layer.position();
+            layer.set_screen_origin(
+                anchor_screen.x as f64 + (position.x - anchor_complex.x) * scale,
+                anchor_screen.y as f64 - (position.y - anchor_complex.y) * scale,
+            );
+        }
     }
 
     pub fn ensure_screen_coverage(&mut self, bounds: (i32, i32, i32, i32)) {
@@ -527,24 +907,24 @@ impl TiledInfiniteCanvas {
             center.x - (tip.tile_width() - 1) as f64 * delta / 2.0,
             center.y + (tip.tile_height() - 1) as f64 * delta / 2.0,
         );
-        let screen_center = crate::geometry::ScreenPoint::new(
-            tip.screen_position().x
-                + ((tip.tile_width() as f64 * tip.zoom() - 1.0) / 2.0).round() as i32,
-            tip.screen_position().y
-                + ((tip.tile_height() as f64 * tip.zoom() - 1.0) / 2.0).round() as i32,
-        );
-        let screen_position = crate::geometry::ScreenPoint::new(
-            screen_center.x - ((tip.tile_width() as f64 * zoom - 1.0) / 2.0).round() as i32,
-            screen_center.y - ((tip.tile_height() as f64 * zoom - 1.0) / 2.0).round() as i32,
-        );
-        TileLayer::new(
+        let (tip_origin_x, tip_origin_y) = tip.screen_origin();
+        let screen_origin_x = tip_origin_x + (tip.tile_width() - 1) as f64 * tip.zoom() / 2.0
+            - (tip.tile_width() - 1) as f64 * zoom / 2.0;
+        let screen_origin_y = tip_origin_y + (tip.tile_height() - 1) as f64 * tip.zoom() / 2.0
+            - (tip.tile_height() - 1) as f64 * zoom / 2.0;
+        let mut layer = TileLayer::new(
             position,
             tip.tile_width(),
             tip.tile_height(),
             delta,
-            screen_position,
+            crate::geometry::ScreenPoint::new(
+                screen_origin_x.round() as i32,
+                screen_origin_y.round() as i32,
+            ),
             zoom,
-        )
+        );
+        layer.set_screen_origin(screen_origin_x, screen_origin_y);
+        layer
     }
 
     pub fn trim_outside_allocation(&mut self, bounds: (i32, i32, i32, i32)) {
@@ -554,23 +934,31 @@ impl TiledInfiniteCanvas {
     }
 
     pub fn drag(&mut self, delta: crate::geometry::ScreenPoint) {
-        for layer in &mut self.layers {
-            layer.set_screen_position(crate::geometry::ScreenPoint::new(
-                layer.screen_position().x + delta.x,
-                layer.screen_position().y + delta.y,
-            ));
-        }
+        self.navigation_history
+            .push(CanvasNavigationEvent::Drag { delta });
+        self.camera_anchor_screen = crate::geometry::ScreenPoint::new(
+            self.camera_anchor_screen.x + delta.x,
+            self.camera_anchor_screen.y + delta.y,
+        );
+        self.synchronize_layer_positions();
     }
 
     pub fn zoom_at(&mut self, cursor: crate::geometry::ScreenPoint, zoom: f64) {
+        self.navigation_history
+            .push(CanvasNavigationEvent::Zoom { cursor, zoom });
         let current_zoom = self
             .layers
             .front()
             .map_or(self.max_apparent_pixel_size, TileLayer::zoom);
         let scale = zoom / current_zoom;
+        let cursor_complex = self.screen_to_complex(cursor);
+        self.camera_anchor_complex = cursor_complex;
+        self.camera_anchor_screen = cursor;
+        self.camera_scale *= scale;
         for layer in &mut self.layers {
             layer.zoom_at(cursor, layer.zoom() * scale);
         }
+        self.synchronize_layer_positions();
     }
 }
 
@@ -645,6 +1033,8 @@ impl TileLayer {
             delta,
             tiles,
             screen_position,
+            screen_origin_x: screen_position.x as f64,
+            screen_origin_y: screen_position.y as f64,
             zoom,
             work_queue: Arc::new(TileWorkQueue::new()),
         }
@@ -691,8 +1081,8 @@ impl TileLayer {
     ) -> crate::geometry::ComplexPoint<f64> {
         let origin = self.position();
         crate::geometry::ComplexPoint::new(
-            origin.x + (point.x - self.screen_position.x) as f64 * self.delta / self.zoom,
-            origin.y - (point.y - self.screen_position.y) as f64 * self.delta / self.zoom,
+            origin.x + (point.x as f64 - self.screen_origin_x) * self.delta / self.zoom,
+            origin.y - (point.y as f64 - self.screen_origin_y) * self.delta / self.zoom,
         )
     }
     pub fn complex_to_screen(
@@ -701,8 +1091,8 @@ impl TileLayer {
     ) -> crate::geometry::ScreenPoint {
         let origin = self.position();
         crate::geometry::ScreenPoint::new(
-            self.screen_position.x + ((point.x - origin.x) / self.delta * self.zoom).round() as i32,
-            self.screen_position.y + ((origin.y - point.y) / self.delta * self.zoom).round() as i32,
+            (self.screen_origin_x + (point.x - origin.x) / self.delta * self.zoom).round() as i32,
+            (self.screen_origin_y + (origin.y - point.y) / self.delta * self.zoom).round() as i32,
         )
     }
     pub fn pending_work_positions(&self) -> Vec<(usize, usize)> {
@@ -722,14 +1112,23 @@ impl TileLayer {
         )
     }
     pub fn set_screen_position(&mut self, position: crate::geometry::ScreenPoint) {
-        self.screen_position = position;
+        self.set_screen_origin(position.x as f64, position.y as f64);
+    }
+    fn screen_origin(&self) -> (f64, f64) {
+        (self.screen_origin_x, self.screen_origin_y)
+    }
+    fn set_screen_origin(&mut self, x: f64, y: f64) {
+        self.screen_origin_x = x;
+        self.screen_origin_y = y;
+        self.screen_position =
+            crate::geometry::ScreenPoint::new(x.round() as i32, y.round() as i32);
     }
     pub fn zoom_at(&mut self, cursor: crate::geometry::ScreenPoint, zoom: f64) {
         assert!(zoom > 0.0, "layer zoom must be positive");
         let scale = zoom / self.zoom;
-        self.screen_position = crate::geometry::ScreenPoint::new(
-            (cursor.x as f64 - (cursor.x - self.screen_position.x) as f64 * scale).round() as i32,
-            (cursor.y as f64 - (cursor.y - self.screen_position.y) as f64 * scale).round() as i32,
+        self.set_screen_origin(
+            cursor.x as f64 - (cursor.x as f64 - self.screen_origin_x) * scale,
+            cursor.y as f64 - (cursor.y as f64 - self.screen_origin_y) * scale,
         );
         self.zoom = zoom;
     }
@@ -743,6 +1142,7 @@ impl TileLayer {
         while self.screen_position.x > left {
             let origin = self.position().clone();
             self.screen_position.x -= tile_width as i32;
+            self.screen_origin_x -= tile_width as f64;
             for row_index in 0..self.row_count() {
                 let tile = self.make_tile_at(crate::geometry::ComplexPoint::new(
                     origin.x - complex_width,
@@ -754,6 +1154,7 @@ impl TileLayer {
         while self.screen_position.y > top {
             let origin = self.position().clone();
             self.screen_position.y -= tile_height as i32;
+            self.screen_origin_y -= tile_height as f64;
             let mut row = VecDeque::new();
             for column_index in 0..self.column_count() {
                 row.push_back(self.make_tile_at(crate::geometry::ComplexPoint::new(
@@ -801,6 +1202,7 @@ impl TileLayer {
                 row.pop_front();
             }
             self.screen_position.x += tile_width as i32;
+            self.screen_origin_x += tile_width as f64;
         }
         while self.column_count() > 1
             && self.screen_position.x + (self.column_count() as i32 - 1) * tile_width as i32 > right
@@ -820,6 +1222,7 @@ impl TileLayer {
             }
             self.tiles.pop_front();
             self.screen_position.y += tile_height as i32;
+            self.screen_origin_y += tile_height as f64;
         }
         while self.row_count() > 1
             && self.screen_position.y + (self.row_count() as i32 - 1) * tile_height as i32 > bottom
