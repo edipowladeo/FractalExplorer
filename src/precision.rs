@@ -49,13 +49,8 @@ impl PrecisionSpec {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderMethod {
-    Direct {
-        precision: PrecisionSpec,
-    },
-    Perturbation {
-        seed: PrecisionSpec,
-        delta: PrecisionSpec,
-    },
+    Direct { precision: PrecisionSpec },
+    Perturbation { seed: PrecisionSpec },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,7 +84,6 @@ impl PrecisionDecisionManager {
             },
             "perturbation" => RenderMethod::Perturbation {
                 seed: parse(&config.precision_technique, config.precision_level)?,
-                delta: PrecisionSpec::float(1),
             },
             invalid => return Err(format!("unknown rendering method: {invalid}")),
         };
@@ -107,9 +101,9 @@ impl PrecisionRenderPlan {
         }
     }
 
-    pub const fn perturbation(seed: PrecisionSpec, delta: PrecisionSpec) -> Self {
+    pub const fn perturbation(seed: PrecisionSpec) -> Self {
         Self {
-            method: RenderMethod::Perturbation { seed, delta },
+            method: RenderMethod::Perturbation { seed },
             perturbation_fallback: false,
         }
     }
@@ -122,12 +116,10 @@ impl PrecisionRenderPlan {
                     precision: precision.normalized(),
                 }
             }
-            RenderMethod::Perturbation { seed, delta } => {
+            RenderMethod::Perturbation { seed } => {
                 seed.validate_and_normalize()?;
-                delta.validate_and_normalize()?;
                 RenderMethod::Perturbation {
                     seed: seed.normalized(),
-                    delta: delta.normalized(),
                 }
             }
         };
@@ -180,7 +172,6 @@ mod tests {
     fn perturbation_plan_separates_seed_and_delta_precision() {
         let plan = PrecisionRenderPlan::new(RenderMethod::Perturbation {
             seed: PrecisionSpec::fixed(4),
-            delta: PrecisionSpec::float(1),
         })
         .unwrap();
 
@@ -191,7 +182,6 @@ mod tests {
                     technique: PrecisionTechnique::Fixed,
                     level: 4
                 },
-                delta: PrecisionSpec::float(1),
             }
         );
     }
@@ -225,7 +215,6 @@ mod tests {
                 .method(),
             RenderMethod::Perturbation {
                 seed: PrecisionSpec::fixed(4),
-                delta: PrecisionSpec::float(1),
             }
         );
     }
