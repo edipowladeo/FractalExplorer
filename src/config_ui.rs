@@ -73,7 +73,7 @@ impl ConfigUi {
     }
 
     #[cfg(feature = "native-ui")]
-    pub fn show(&mut self, ui: &mut eframe::egui::Ui) {
+    pub fn show(&mut self, ui: &mut eframe::egui::Ui) -> bool {
         let mut changes = Vec::new();
         eframe::egui::ScrollArea::vertical().show(ui, |ui| {
             for field in &self.fields {
@@ -113,17 +113,26 @@ impl ConfigUi {
                 }
             }
         });
+        let changed = !changes.is_empty();
         for (path, value) in changes {
             self.set_value(&path, value);
         }
+        changed
     }
 }
 
 #[cfg(feature = "native-ui")]
-pub fn run_window(config: &mut AppConfig) -> eframe::Result<()> {
+pub fn run_window(
+    config: &mut AppConfig,
+    renderer_updates: std::sync::mpsc::Sender<crate::config::RendererConfig>,
+) -> eframe::Result<()> {
     use std::sync::{Arc, Mutex};
 
-    let state = Arc::new(Mutex::new(ConfigUi::from_config(config)));
+    let state = Arc::new(Mutex::new(ConfigWindowState {
+        config: config.clone(),
+        fields: ConfigUi::from_config(config),
+        renderer_updates,
+    }));
     let app_state = Arc::clone(&state);
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
@@ -139,6 +148,7 @@ pub fn run_window(config: &mut AppConfig) -> eframe::Result<()> {
     state
         .lock()
         .expect("config UI mutex poisoned")
+        .fields
         .apply_to(config)
         .expect("config UI state must remain compatible with AppConfig");
     Ok(())
@@ -146,16 +156,29 @@ pub fn run_window(config: &mut AppConfig) -> eframe::Result<()> {
 
 #[cfg(feature = "native-ui")]
 struct ConfigWindow {
-    state: std::sync::Arc<std::sync::Mutex<ConfigUi>>,
+    state: std::sync::Arc<std::sync::Mutex<ConfigWindowState>>,
+}
+
+#[cfg(feature = "native-ui")]
+struct ConfigWindowState {
+    config: AppConfig,
+    fields: ConfigUi,
+    renderer_updates: std::sync::mpsc::Sender<crate::config::RendererConfig>,
 }
 
 #[cfg(feature = "native-ui")]
 impl eframe::App for ConfigWindow {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
-        self.state
-            .lock()
-            .expect("config UI mutex poisoned")
-            .show(ui);
+        let mut state = self.state.lock().expect("config UI mutex poisoned");
+        if state.fields.show(ui) {
+            let mut updated_config = state.config.clone();
+            state
+                .fields
+                .apply_to(&mut updated_config)
+                .expect("config UI state must remain compatible with AppConfig");
+            state.config = updated_config;
+            let _ = state.renderer_updates.send(state.config.renderer.clone());
+        }
     }
 }
 
