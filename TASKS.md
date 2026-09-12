@@ -17,21 +17,6 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## TODO
 
-### T018 — Investigar e planejar a multiprecisão u64
-
-- Investigar `fractalExplorer_kotlin2026` e registrar os caminhos de
-  multiprecisão direta e perturbação.
-- Definir o plano para `Fixed<1>`, `Fixed<2>` e `Fixed<N>` com limbs `u64`.
-- Trazer snippets, decisões de representação, riscos e estratégia de testes
-  para `PLANO_IMPLEMENTACAO_MULTIPRECISAO.md`.
-- Registrar que o fallback da perturbação será configurável e começará
-  desabilitado por padrão para permitir a inspeção dos artefatos instáveis.
-- **Critérios de aceitação:** investigação registrada; full multiprecision,
-  órbita de referência e perturbação identificadas; plano TDD definido.
-- **Evidências:** análise registrada em
-  `PLANO_IMPLEMENTACAO_MULTIPRECISAO.md`; nenhum teste pesado executado nesta
-  etapa.
-
 ## BACKLOG
 
 ### T003 — Ampliar o processador CPU determinístico
@@ -107,6 +92,19 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - Depende da estabilização da barra de status.
 
 ## DONE
+
+### T018 — Investigar e planejar a multiprecisão u64
+
+- **Resultado:** investigação do `fractalExplorer_kotlin2026` registrada em
+  `PLANO_IMPLEMENTACAO_MULTIPRECISAO.md`, cobrindo full multiprecision,
+  seleção/órbita de referência, perturbação, snippets e o plano para
+  `Fixed<1>`, `Fixed<2>` e `Fixed<N>` com limbs `u64`.
+- **Decisão registrada:** `perturbation_fallback = false` por padrão, com opção
+  funcional para habilitar fallback e permitir inspeção dos artefatos quando a
+  perturbação perder estabilidade.
+- **Evidências:** `git diff --check` passou; não foram executados testes pesados
+  ou benchmarks nesta etapa.
+- **Commit:** `9edf964`, enviado para `origin/multiprecisao`.
 
 ### T001 — Desenhar um sprite na tela e exibi-lo
 
