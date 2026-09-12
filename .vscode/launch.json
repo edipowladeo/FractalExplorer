@@ -2,6 +2,15 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "Executar FractalExplorer (rápido)",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/sprite-demo.exe",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Compilar FractalExplorer",
+      "noDebug": true
+    },
+    {
       "name": "Depurar FractalExplorer",
       "type": "lldb",
       "request": "launch",
