@@ -685,6 +685,26 @@ impl TileLayer {
     pub fn zoom(&self) -> f64 {
         self.zoom
     }
+    pub fn screen_to_complex(
+        &self,
+        point: crate::geometry::ScreenPoint,
+    ) -> crate::geometry::ComplexPoint<f64> {
+        let origin = self.position();
+        crate::geometry::ComplexPoint::new(
+            origin.x + (point.x - self.screen_position.x) as f64 * self.delta / self.zoom,
+            origin.y - (point.y - self.screen_position.y) as f64 * self.delta / self.zoom,
+        )
+    }
+    pub fn complex_to_screen(
+        &self,
+        point: crate::geometry::ComplexPoint<f64>,
+    ) -> crate::geometry::ScreenPoint {
+        let origin = self.position();
+        crate::geometry::ScreenPoint::new(
+            self.screen_position.x + ((point.x - origin.x) / self.delta * self.zoom).round() as i32,
+            self.screen_position.y + ((origin.y - point.y) / self.delta * self.zoom).round() as i32,
+        )
+    }
     pub fn pending_work_positions(&self) -> Vec<(usize, usize)> {
         self.work_queue.pending_positions()
     }

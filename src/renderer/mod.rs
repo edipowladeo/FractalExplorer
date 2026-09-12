@@ -104,7 +104,11 @@ pub fn run(
                 InputEvent::Drag { delta } => canvas.drag(delta),
                 InputEvent::MiddleClick(cursor) => {
                     let complex = window_envelope.screen_to_complex(cursor, screen_size);
-                    copy_coordinates(&format_coordinates(complex));
+                    copy_coordinates(&format_coordinates(complex.clone()));
+                    println!(
+                        "{}",
+                        middle_click_coordinate_report(canvas, cursor, complex)
+                    );
                 }
                 InputEvent::Zoom { direction, cursor } => {
                     let multiplier = config.zoom_multiplier;
@@ -153,6 +157,9 @@ pub fn run(
                 }
             }
         }
+        if let Some(cursor) = mouse_position {
+            draw_mouse_marker(&mut framebuffer, screen_size, cursor, 0x00ffff);
+        }
         if config.debug.show_allocation_envelope {
             draw_rectangle_outline(&mut framebuffer, screen_size, allocation, 0xff0000);
             draw_rectangle_outline(&mut framebuffer, screen_size, deallocation, 0xffff00);
@@ -168,6 +175,7 @@ pub fn run(
                     delta_exponent(layer.delta()),
                     layer.column_count(),
                     layer.row_count(),
+                    mouse_position.map(|cursor| layer.screen_to_complex(cursor)),
                 )
             })
             .collect();
@@ -339,8 +347,12 @@ fn format_layer_overlay(
     delta: f64,
     columns: usize,
     rows: usize,
+    mouse: Option<ComplexPoint<f64>>,
 ) -> String {
-    format!("Camada {index}: zoom={zoom:.3} delta={delta:.3} {columns}x{rows} tiles")
+    let mouse_text = mouse.map_or_else(String::new, |point| {
+        format!(" mouse={:.15}x{:.15}", point.x, point.y)
+    });
+    format!("Camada {index}: zoom={zoom:.3} delta={delta:.3} {columns}x{rows} tiles{mouse_text}")
 }
 
 fn format_worker_queue_line(layer: usize, row: usize, column: usize, delta: f64) -> String {
@@ -374,11 +386,38 @@ fn draw_status_bar(framebuffer: &mut [u32], size: ScreenSize, text: &str) {
     draw_text(framebuffer, size, 8, top as i32 + 8, &text, 0xffffff);
 }
 
+fn draw_mouse_marker(framebuffer: &mut [u32], size: ScreenSize, position: ScreenPoint, color: u32) {
+    for offset in -4..=4 {
+        set_pixel(framebuffer, size, position.x + offset, position.y, color);
+        set_pixel(framebuffer, size, position.x, position.y + offset, color);
+    }
+}
+
 fn copy_coordinates(coordinates: &str) {
     match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(coordinates)) {
         Ok(()) => println!("Coordenadas copiadas: {coordinates}"),
         Err(error) => eprintln!("Não foi possível copiar as coordenadas: {error}"),
     }
+}
+
+fn middle_click_coordinate_report(
+    canvas: &TiledInfiniteCanvas,
+    cursor: ScreenPoint,
+    global: ComplexPoint<f64>,
+) -> String {
+    let mut report = format!(
+        "Mouse tela: {}x{}\nMouse complexo: {:.15}x{:.15}",
+        cursor.x, cursor.y, global.x, global.y
+    );
+    for (index, layer) in canvas.layers().iter().enumerate() {
+        let point = layer.screen_to_complex(cursor);
+        let expected_screen = layer.complex_to_screen(point.clone());
+        report.push_str(&format!(
+            "\nCamada {index}: {:.15}x{:.15} tela_esperada {}x{}",
+            point.x, point.y, expected_screen.x, expected_screen.y
+        ));
+    }
+    report
 }
 
 fn draw_text(framebuffer: &mut [u32], size: ScreenSize, x: i32, y: i32, text: &str, color: u32) {
@@ -530,11 +569,12 @@ fn rainbow_color(iterations: u64, palette_period: f64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        allocation_screen_rect, draw_rectangle_outline, format_coordinates, format_layer_overlay,
-        format_worker_queue_line, format_worker_status_line, sprite_from_tile, Palette, ScreenRect,
+        allocation_screen_rect, draw_mouse_marker, draw_rectangle_outline, format_coordinates,
+        format_layer_overlay, format_worker_queue_line, format_worker_status_line,
+        middle_click_coordinate_report, sprite_from_tile, Palette, ScreenRect,
     };
-    use crate::geometry::{ComplexPoint, ScreenSize};
-    use crate::{Mandelbrot, Orchestrator, Tile};
+    use crate::geometry::{ComplexPoint, ScreenPoint, ScreenSize};
+    use crate::{Mandelbrot, Orchestrator, Tile, TiledInfiniteCanvas};
 
     #[test]
     fn converts_tile_iterations_to_a_sprite() {
@@ -577,8 +617,23 @@ mod tests {
     #[test]
     fn formats_layer_overlay_with_grid_dimensions() {
         assert_eq!(
-            format_layer_overlay(2, 4.0, 0.005, 3, 4),
+            format_layer_overlay(2, 4.0, 0.005, 3, 4, None),
             "Camada 2: zoom=4.000 delta=0.005 3x4 tiles"
+        );
+    }
+
+    #[test]
+    fn formats_layer_overlay_with_high_precision_mouse_coordinate() {
+        assert_eq!(
+            format_layer_overlay(
+                0,
+                8.0,
+                7.644,
+                1,
+                1,
+                Some(ComplexPoint::new(-0.743643887037151, 0.131825904205330)),
+            ),
+            "Camada 0: zoom=8.000 delta=7.644 1x1 tiles mouse=-0.743643887037151x0.131825904205330"
         );
     }
 
@@ -612,6 +667,31 @@ mod tests {
     }
 
     #[test]
+    fn formats_middle_click_report_with_only_coordinates() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            ComplexPoint::new(-1.0, 1.0),
+            30,
+            20,
+            0.01,
+            ScreenPoint::new(300, 225),
+            8.0,
+            0.8,
+        );
+        canvas.expand_one_layer_per_frame();
+
+        let report = middle_click_coordinate_report(
+            &canvas,
+            ScreenPoint::new(300, 225),
+            ComplexPoint::new(-1.0, 1.0),
+        );
+
+        assert_eq!(
+            report,
+            "Mouse tela: 300x225\nMouse complexo: -1.000000000000000x1.000000000000000\nCamada 0: -1.000000000000000x1.000000000000000 tela_esperada 300x225"
+        );
+    }
+
+    #[test]
     fn draws_only_the_one_pixel_red_outline_when_requested() {
         let size = ScreenSize::new(5, 5);
         let mut framebuffer = vec![0; 25];
@@ -631,5 +711,22 @@ mod tests {
         assert_eq!(framebuffer[1 + 5], 0xff0000);
         assert_eq!(framebuffer[2 + 5], 0xff0000);
         assert_eq!(framebuffer[2 + 5 * 2], 0);
+    }
+
+    #[test]
+    fn draws_a_mouse_marker_as_a_cross() {
+        let size = ScreenSize::new(9, 9);
+        let mut framebuffer = vec![0; 81];
+
+        draw_mouse_marker(
+            &mut framebuffer,
+            size,
+            crate::geometry::ScreenPoint::new(4, 4),
+            0x00ffff,
+        );
+
+        assert_eq!(framebuffer[4 * 9 + 0], 0x00ffff);
+        assert_eq!(framebuffer[0 * 9 + 4], 0x00ffff);
+        assert_eq!(framebuffer[4 * 9 + 4], 0x00ffff);
     }
 }
