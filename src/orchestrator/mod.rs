@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use super::{Orchestrator, Tile, TileSprite, TileStatus};
+    use std::sync::Arc;
+
+    use super::{Orchestrator, Tile, TileLayer, TileSprite, TileStatus};
     use crate::Mandelbrot;
 
     #[test]
@@ -22,6 +24,19 @@ mod tests {
 
         assert_eq!(tile.status(), TileStatus::Completed);
         assert_eq!(tile.iterations().lock().unwrap()[4], 32u64);
+    }
+
+    #[test]
+    fn completed_tile_is_not_recalculated() {
+        let tile = Tile::new(crate::geometry::ComplexPoint::new(0.0, 0.0), 1, 1, 1.0);
+        let orchestrator = Orchestrator::new(Mandelbrot::new(32));
+        orchestrator.render_tile(&tile);
+        tile.iterations().lock().unwrap()[0] = 777;
+
+        orchestrator.render_tile(&tile);
+
+        assert_eq!(tile.iterations().lock().unwrap()[0], 777);
+        assert_eq!(tile.status(), TileStatus::Completed);
     }
 
     #[test]
@@ -58,6 +73,74 @@ mod tests {
 
         assert_eq!(sprite.position(), crate::geometry::ScreenPoint::new(50, 60));
         assert_eq!(sprite.zoom(), 2.0);
+    }
+
+    #[test]
+    fn tile_layer_expands_grid_until_screen_bounds_are_covered() {
+        let mut layer = TileLayer::new(
+            crate::geometry::ComplexPoint::new(-1.0, 1.0),
+            2,
+            2,
+            1.0,
+            crate::geometry::ScreenPoint::new(4, 4),
+            1.0,
+        );
+
+        layer.ensure_screen_coverage((0, 0, 7, 7));
+
+        assert_eq!((layer.row_count(), layer.column_count()), (4, 4));
+        assert_eq!(
+            layer.screen_position(),
+            crate::geometry::ScreenPoint::new(0, 0)
+        );
+        assert_eq!((layer.tile_width(), layer.tile_height()), (2, 2));
+        assert_eq!(layer.tile(3, 3).unwrap().width(), 2);
+        assert_eq!(layer.tile(3, 3).unwrap().delta(), 1.0);
+
+        layer.set_position(crate::geometry::ComplexPoint::new(-2.0, 2.0));
+        assert_eq!(
+            layer.position(),
+            &crate::geometry::ComplexPoint::new(-2.0, 2.0)
+        );
+    }
+
+    #[test]
+    fn tile_layer_composes_its_initial_tile_without_receiving_one() {
+        let layer = TileLayer::new(
+            crate::geometry::ComplexPoint::new(-1.0, 1.0),
+            200,
+            150,
+            0.01,
+            crate::geometry::ScreenPoint::new(300, 225),
+            1.0,
+        );
+
+        assert_eq!((layer.row_count(), layer.column_count()), (1, 1));
+        assert_eq!((layer.tile_width(), layer.tile_height()), (200, 150));
+        assert_eq!(layer.tile(0, 0).unwrap().width(), 200);
+        assert_eq!(layer.tile(0, 0).unwrap().delta(), 0.01);
+    }
+
+    #[test]
+    fn tile_layer_can_be_composed_from_one_tile() {
+        let tile = Arc::new(Tile::new(
+            crate::geometry::ComplexPoint::new(0.0, 0.0),
+            200,
+            150,
+            0.01,
+        ));
+        let layer = TileLayer::from_tile(
+            tile.clone(),
+            crate::geometry::ScreenPoint::new(300, 225),
+            1.0,
+        );
+
+        assert!(Arc::ptr_eq(layer.tile(0, 0).unwrap(), &tile));
+        assert_eq!(layer.delta(), 0.01);
+        assert_eq!(
+            layer.position(),
+            &crate::geometry::ComplexPoint::new(-0.995, 0.745)
+        );
     }
 }
 
@@ -105,6 +188,8 @@ pub struct TileSprite {
 /// A grid of tiles with one shared complex-plane transform.
 pub struct TileLayer {
     position: crate::geometry::ComplexPoint<f64>,
+    tile_width: u32,
+    tile_height: u32,
     delta: f64,
     tiles: VecDeque<VecDeque<Arc<Tile>>>,
     screen_position: crate::geometry::ScreenPoint,
@@ -112,14 +197,73 @@ pub struct TileLayer {
 }
 
 impl TileLayer {
+    pub fn from_tile(
+        tile: Arc<Tile>,
+        screen_position: crate::geometry::ScreenPoint,
+        zoom: f64,
+    ) -> Self {
+        let delta = tile.delta();
+        let position = crate::geometry::ComplexPoint::new(
+            tile.coordinate().x - (tile.width() - 1) as f64 * delta / 2.0,
+            tile.coordinate().y + (tile.height() - 1) as f64 * delta / 2.0,
+        );
+        let mut row = VecDeque::new();
+        row.push_back(tile.clone());
+        let mut tiles = VecDeque::new();
+        tiles.push_back(row);
+        Self::from_grid(
+            position,
+            tile.width(),
+            tile.height(),
+            delta,
+            tiles,
+            screen_position,
+            zoom,
+        )
+    }
+
     pub fn new(
         position: crate::geometry::ComplexPoint<f64>,
+        tile_width: u32,
+        tile_height: u32,
+        delta: f64,
+        screen_position: crate::geometry::ScreenPoint,
+        zoom: f64,
+    ) -> Self {
+        let center = crate::geometry::ComplexPoint::new(
+            position.x + (tile_width - 1) as f64 * delta / 2.0,
+            position.y - (tile_height - 1) as f64 * delta / 2.0,
+        );
+        let tile = Arc::new(Tile::new(center, tile_width, tile_height, delta));
+        let mut row = VecDeque::new();
+        row.push_back(tile);
+        let mut tiles = VecDeque::new();
+        tiles.push_back(row);
+        Self::from_grid(
+            position,
+            tile_width,
+            tile_height,
+            delta,
+            tiles,
+            screen_position,
+            zoom,
+        )
+    }
+
+    fn from_grid(
+        position: crate::geometry::ComplexPoint<f64>,
+        tile_width: u32,
+        tile_height: u32,
         delta: f64,
         tiles: VecDeque<VecDeque<Arc<Tile>>>,
         screen_position: crate::geometry::ScreenPoint,
         zoom: f64,
     ) -> Self {
         assert!(delta > 0.0, "layer delta must be positive");
+        assert!(
+            tile_width > 0 && tile_height > 0,
+            "layer tile size must be positive"
+        );
         assert!(zoom > 0.0, "layer zoom must be positive");
         assert!(!tiles.is_empty(), "a layer must have at least one row");
         let columns = tiles.front().map_or(0, VecDeque::len);
@@ -128,8 +272,17 @@ impl TileLayer {
             tiles.iter().all(|row| row.len() == columns),
             "layer rows must have equal lengths"
         );
+        assert!(
+            tiles
+                .iter()
+                .flatten()
+                .all(|tile| tile.width() == tile_width && tile.height() == tile_height),
+            "layer tile sizes must match"
+        );
         Self {
             position,
+            tile_width,
+            tile_height,
             delta,
             tiles,
             screen_position,
@@ -142,6 +295,12 @@ impl TileLayer {
     }
     pub fn delta(&self) -> f64 {
         self.delta
+    }
+    pub fn tile_width(&self) -> u32 {
+        self.tile_width
+    }
+    pub fn tile_height(&self) -> u32 {
+        self.tile_height
     }
     pub fn row_count(&self) -> usize {
         self.tiles.len()
@@ -159,14 +318,23 @@ impl TileLayer {
         self.zoom
     }
     pub fn screen_size(&self) -> (u32, u32) {
-        let tile = self.tile(0, 0).expect("layer must contain a tile");
         (
-            ((tile.width() as f64 * self.zoom).round() as u32).max(1) * self.column_count() as u32,
-            ((tile.height() as f64 * self.zoom).round() as u32).max(1) * self.row_count() as u32,
+            ((self.tile_width as f64 * self.zoom).round() as u32).max(1)
+                * self.column_count() as u32,
+            ((self.tile_height as f64 * self.zoom).round() as u32).max(1) * self.row_count() as u32,
+        )
+    }
+    pub fn tile_screen_size(&self) -> (u32, u32) {
+        (
+            ((self.tile_width as f64 * self.zoom).round() as u32).max(1),
+            ((self.tile_height as f64 * self.zoom).round() as u32).max(1),
         )
     }
     pub fn set_screen_position(&mut self, position: crate::geometry::ScreenPoint) {
         self.screen_position = position;
+    }
+    pub fn set_position(&mut self, position: crate::geometry::ComplexPoint<f64>) {
+        self.position = position;
     }
 
     pub fn zoom_at(&mut self, cursor: crate::geometry::ScreenPoint, zoom: f64) {
@@ -177,6 +345,66 @@ impl TileLayer {
             (cursor.y as f64 - (cursor.y - self.screen_position.y) as f64 * scale).round() as i32,
         );
         self.zoom = zoom;
+    }
+
+    pub fn ensure_screen_coverage(&mut self, bounds: (i32, i32, i32, i32)) {
+        let (left, top, right, bottom) = bounds;
+        let (tile_width, tile_height) = self.tile_screen_size();
+        let (complex_width, complex_height) = {
+            let tile = self.tile(0, 0).expect("layer must contain a tile");
+            (
+                tile.width() as f64 * self.delta,
+                tile.height() as f64 * self.delta,
+            )
+        };
+
+        while self.screen_position.x > left {
+            self.position.x -= complex_width;
+            self.screen_position.x -= tile_width as i32;
+            for row_index in 0..self.row_count() {
+                let tile = self.make_tile(row_index, 0);
+                self.tiles[row_index].push_front(tile);
+            }
+        }
+        while self.screen_position.y > top {
+            self.position.y += complex_height;
+            self.screen_position.y -= tile_height as i32;
+            let mut row = VecDeque::new();
+            for column_index in 0..self.column_count() {
+                row.push_back(self.make_tile(0, column_index));
+            }
+            self.tiles.push_front(row);
+        }
+        while self.screen_position.x + self.screen_size().0 as i32 - 1 < right {
+            let column_index = self.column_count();
+            for row_index in 0..self.row_count() {
+                let tile = self.make_tile(row_index, column_index);
+                self.tiles[row_index].push_back(tile);
+            }
+        }
+        while self.screen_position.y + self.screen_size().1 as i32 - 1 < bottom {
+            let row_index = self.row_count();
+            let mut row = VecDeque::new();
+            for column_index in 0..self.column_count() {
+                row.push_back(self.make_tile(row_index, column_index));
+            }
+            self.tiles.push_back(row);
+        }
+    }
+
+    fn make_tile(&self, row: usize, column: usize) -> Arc<Tile> {
+        let x = self.position.x
+            + (column as f64 * self.tile_width as f64 + (self.tile_width - 1) as f64 / 2.0)
+                * self.delta;
+        let y = self.position.y
+            - (row as f64 * self.tile_height as f64 + (self.tile_height - 1) as f64 / 2.0)
+                * self.delta;
+        Arc::new(Tile::new(
+            crate::geometry::ComplexPoint::new(x, y),
+            self.tile_width,
+            self.tile_height,
+            self.delta,
+        ))
     }
 }
 
@@ -286,6 +514,9 @@ impl Orchestrator {
     }
 
     fn render_tile_with_delta(&self, tile: &Tile, delta: f64) {
+        if tile.status() == TileStatus::Completed {
+            return;
+        }
         tile.status
             .store(TileStatus::Dispatched as u8, Ordering::Release);
         let mut iterations = tile

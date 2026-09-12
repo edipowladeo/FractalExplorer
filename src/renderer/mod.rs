@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+
 use crate::config::RendererConfig;
 use crate::geometry::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
-use crate::{input::ZoomDirection, InputEvent, InputState, Sprite, Tile, TileLayer};
+use crate::{input::ZoomDirection, InputEvent, InputState, Orchestrator, Sprite, Tile, TileLayer};
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -52,15 +54,13 @@ fn sprite_from_tile(
 }
 
 /// Displays one rendered sprite in a native window.
-pub fn run(layer: &mut TileLayer, config: &RendererConfig) -> Result<(), minifb::Error> {
+pub fn run(
+    layer: &mut TileLayer,
+    orchestrator: &Orchestrator,
+    config: &RendererConfig,
+) -> Result<(), minifb::Error> {
     let width = config.width;
     let height = config.height;
-    let sprite = sprite_from_tile(
-        layer.tile(0, 0).expect("layer must contain a tile"),
-        config.max_iterations as u64,
-        config.palette,
-        config.palette_period,
-    );
     let screen_size = ScreenSize::new(width, height);
     let allocation = allocation_screen_rect(screen_size, config.effective_allocation_ratio());
     let window_envelope = window_envelope(screen_size);
@@ -71,9 +71,17 @@ pub fn run(layer: &mut TileLayer, config: &RendererConfig) -> Result<(), minifb:
         WindowOptions::default(),
     )?;
     let mut input = InputState::new();
+    let mut sprite_cache: HashMap<usize, Sprite> = HashMap::new();
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         let mut framebuffer = vec![0x101820; width * height];
+        layer.ensure_screen_coverage((
+            allocation.left,
+            allocation.top,
+            allocation.right,
+            allocation.bottom,
+        ));
+        orchestrator.render_layer(layer);
         let mouse_position = window
             .get_mouse_pos(MouseMode::Clamp)
             .map(|(x, y)| ScreenPoint::new(x.round() as i32, y.round() as i32));
@@ -108,15 +116,29 @@ pub fn run(layer: &mut TileLayer, config: &RendererConfig) -> Result<(), minifb:
             let complex = window_envelope.screen_to_complex(cursor, screen_size);
             draw_status_bar(&mut framebuffer, screen_size, &format_coordinates(complex));
         }
-        let (sprite_width, sprite_height) = layer.screen_size();
-        sprite.draw_into_scaled(
-            &mut framebuffer,
-            width,
-            layer.screen_position().x as isize,
-            layer.screen_position().y as isize,
-            sprite_width as usize,
-            sprite_height as usize,
-        );
+        let (tile_width, tile_height) = layer.tile_screen_size();
+        for row in 0..layer.row_count() {
+            for column in 0..layer.column_count() {
+                let tile = layer.tile(row, column).expect("layer grid is rectangular");
+                let key = std::sync::Arc::as_ptr(tile) as usize;
+                let sprite = sprite_cache.entry(key).or_insert_with(|| {
+                    sprite_from_tile(
+                        tile,
+                        config.max_iterations as u64,
+                        config.palette,
+                        config.palette_period,
+                    )
+                });
+                sprite.draw_into_scaled(
+                    &mut framebuffer,
+                    width,
+                    layer.screen_position().x as isize + column as isize * tile_width as isize,
+                    layer.screen_position().y as isize + row as isize * tile_height as isize,
+                    tile_width as usize,
+                    tile_height as usize,
+                );
+            }
+        }
         if config.debug.show_allocation_envelope {
             draw_rectangle_outline(&mut framebuffer, screen_size, allocation, 0xff0000);
         }
