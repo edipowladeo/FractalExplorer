@@ -111,4 +111,4 @@ _Nenhuma tarefa ativa._
 
 - **Resultado:** criado `scripts/launch-codex.ps1`, que resolve o repositório pela própria localização, posiciona o PowerShell nele e invoca `codex.exe`; o atalho da área de trabalho foi atualizado para usar `-File` com esse launcher.
 - **Evidências:** RED confirmou o launcher ausente; GREEN passou com `tests/launch-codex.tests.ps1`; `cargo test` passou com 15 testes; `git diff --check` passou; os argumentos completos do `.lnk` foram lidos novamente sem truncamento. A abertura visual do atalho fica para validação manual do usuário.
-- **Commit:** será registrado e enviado ao remoto após a implementação.
+- **Commit:** `72e7164`, registrado e enviado para `origin/master`.
