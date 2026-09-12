@@ -40,6 +40,8 @@ pub struct RendererConfig {
     pub palette_period: f64,
     pub starting_point: String,
     pub rendering_method: String,
+    pub precision_technique: String,
+    pub precision_level: usize,
     pub perturbation_fallback: bool,
     pub debug: RendererDebugConfig,
 }
@@ -94,6 +96,8 @@ impl Default for RendererConfig {
             palette_period: 5.0,
             starting_point: "x=0.0, y=0.0".to_string(),
             rendering_method: "f64".to_string(),
+            precision_technique: "float".to_string(),
+            precision_level: 1,
             perturbation_fallback: false,
             debug: RendererDebugConfig::default(),
         }

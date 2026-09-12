@@ -93,6 +93,17 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## DONE
 
+### T021 — Separar técnica, nível de precisão e método de renderização
+
+- **Resultado:** criado `PrecisionDecisionManager` com seletor único de técnica
+  (`float`/`fixed`) e nível; `direct` usa esse plano e `perturbation` usa o
+  mesmo plano na semente, mantendo o delta em `float64` nível 1. Níveis float
+  informados acima de 1 são normalizados para 1 sem erro. A `TileLayer` recebe
+  e conserva o plano, e o orquestrador o executa para todos os tiles.
+- **Evidências:** RED/GREEN cobrindo planos, clamp, seed/delta e integração;
+  49 testes, `cargo check --bin sprite-demo`, `cargo fmt` e `git diff --check`
+  passaram.
+
 ### T020 — Integrar multiprecisão na camada e corrigir navegação
 
 - **Resultado:** `Orchestrator::from_config` aplica `multiprecision` ou

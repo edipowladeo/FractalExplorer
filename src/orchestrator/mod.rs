@@ -263,6 +263,7 @@ pub struct TileLayer {
     tiles: VecDeque<VecDeque<Arc<Tile>>>,
     screen_position: crate::geometry::ScreenPoint,
     zoom: f64,
+    render_plan: crate::PrecisionRenderPlan,
 }
 
 impl TileLayer {
@@ -356,6 +357,7 @@ impl TileLayer {
             tiles,
             screen_position,
             zoom,
+            render_plan: crate::PrecisionRenderPlan::default(),
         }
     }
 
@@ -385,6 +387,14 @@ impl TileLayer {
     }
     pub fn zoom(&self) -> f64 {
         self.zoom
+    }
+
+    pub fn render_plan(&self) -> crate::PrecisionRenderPlan {
+        self.render_plan
+    }
+
+    pub fn set_render_plan(&mut self, plan: crate::PrecisionRenderPlan) {
+        self.render_plan = plan;
     }
     pub fn screen_size(&self) -> (u32, u32) {
         (
@@ -638,8 +648,8 @@ pub struct Orchestrator {
 #[derive(Debug, Clone, Copy)]
 enum CalculationMode {
     F64,
-    Multiprecision,
-    Perturbation { fallback: bool },
+    Multiprecision { level: usize },
+    Perturbation { seed_level: usize, fallback: bool },
 }
 
 impl Orchestrator {
@@ -652,8 +662,9 @@ impl Orchestrator {
 
     pub fn from_config(config: &crate::config::RendererConfig) -> Self {
         let mode = match config.rendering_method.as_str() {
-            "multiprecision" => CalculationMode::Multiprecision,
+            "multiprecision" => CalculationMode::Multiprecision { level: 2 },
             "perturbation" => CalculationMode::Perturbation {
+                seed_level: 2,
                 fallback: config.perturbation_fallback,
             },
             _ => CalculationMode::F64,
@@ -665,10 +676,10 @@ impl Orchestrator {
     }
 
     pub fn render_tile(&self, tile: &Tile) {
-        self.render_tile_with_delta(tile, tile.delta);
+        self.render_tile_with_mode(tile, tile.delta, self.mode);
     }
 
-    fn render_tile_with_delta(&self, tile: &Tile, delta: f64) {
+    fn render_tile_with_mode(&self, tile: &Tile, delta: f64, mode: CalculationMode) {
         if tile.status() == TileStatus::Completed {
             return;
         }
@@ -678,9 +689,9 @@ impl Orchestrator {
             .iterations
             .lock()
             .expect("tile iterations mutex poisoned");
-        if !matches!(self.mode, CalculationMode::F64) {
+        if !matches!(mode, CalculationMode::F64) {
             drop(iterations);
-            let values = self.render_fixed(tile, delta);
+            let values = self.render_fixed(tile, delta, mode);
             tile.replace_iterations(values);
             return;
         }
@@ -698,20 +709,38 @@ impl Orchestrator {
             .store(TileStatus::Completed as u8, Ordering::Release);
     }
 
-    fn render_fixed(&self, tile: &Tile, delta: f64) -> Vec<u64> {
-        let fractal = crate::MandelbrotFixed::<2>::new(self.calculator.max_iterations());
+    fn render_fixed(&self, tile: &Tile, delta: f64, mode: CalculationMode) -> Vec<u64> {
+        let level = match mode {
+            CalculationMode::Multiprecision { level } => level,
+            CalculationMode::Perturbation { seed_level, .. } => seed_level,
+            CalculationMode::F64 => unreachable!(),
+        };
+        match level {
+            1 => self.render_fixed_with::<1>(tile, delta, mode),
+            2 => self.render_fixed_with::<2>(tile, delta, mode),
+            _ => self.render_fixed_with::<2>(tile, delta, mode),
+        }
+    }
+
+    fn render_fixed_with<const N: usize>(
+        &self,
+        tile: &Tile,
+        delta: f64,
+        mode: CalculationMode,
+    ) -> Vec<u64> {
+        let fractal = crate::MandelbrotFixed::<N>::new(self.calculator.max_iterations());
         let center_real = crate::Fixed::from_f64(tile.coordinate.x);
         let center_imaginary = crate::Fixed::from_f64(tile.coordinate.y);
         let fixed_delta = crate::Fixed::from_f64(delta);
         let width = tile.width as usize;
         let height = tile.height as usize;
-        match self.mode {
-            CalculationMode::Multiprecision => fractal
+        match mode {
+            CalculationMode::Multiprecision { .. } => fractal
                 .render_tile(center_real, center_imaginary, fixed_delta, width, height)
                 .into_iter()
                 .map(u64::from)
                 .collect(),
-            CalculationMode::Perturbation { fallback } => {
+            CalculationMode::Perturbation { fallback, .. } => {
                 let center_x = crate::Fixed::from_i64((width.saturating_sub(1) / 2) as i64);
                 let center_y = crate::Fixed::from_i64((height.saturating_sub(1) / 2) as i64);
                 let min_real = center_real.sub(fixed_delta.mul(center_x));
@@ -752,8 +781,23 @@ impl Orchestrator {
     pub fn render_layer(&self, layer: &TileLayer) {
         for row in &layer.tiles {
             for tile in row {
-                self.render_tile_with_delta(tile, layer.delta);
+                self.render_tile_with_mode(tile, layer.delta, mode_for_plan(layer.render_plan));
             }
         }
+    }
+}
+
+fn mode_for_plan(plan: crate::PrecisionRenderPlan) -> CalculationMode {
+    match plan.method() {
+        crate::RenderMethod::Direct { precision } => match precision.technique {
+            crate::PrecisionTechnique::Float => CalculationMode::F64,
+            crate::PrecisionTechnique::Fixed => CalculationMode::Multiprecision {
+                level: precision.level,
+            },
+        },
+        crate::RenderMethod::Perturbation { seed, .. } => CalculationMode::Perturbation {
+            seed_level: seed.level,
+            fallback: plan.perturbation_fallback(),
+        },
     }
 }

@@ -1,7 +1,7 @@
 use fractal_explorer::{
     config::AppConfig,
     geometry::{ComplexPoint, ScreenPoint},
-    Orchestrator,
+    Orchestrator, PrecisionDecisionManager,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -35,6 +35,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         position,
         config.renderer.max_apparent_pixel_size(),
     );
+    let plan = PrecisionDecisionManager::from_config(&config.renderer)?;
+    layer.set_render_plan(plan);
     let orchestrator = Orchestrator::from_config(&config.renderer);
     orchestrator.render_layer(&layer);
     fractal_explorer::renderer::run(&mut layer, &orchestrator, &config.renderer)?;

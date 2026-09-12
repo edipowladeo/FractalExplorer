@@ -6,6 +6,7 @@ pub mod fixed;
 pub mod geometry;
 pub mod input;
 pub mod orchestrator;
+pub mod precision;
 pub mod renderer;
 
 pub use calculator::Mandelbrot;
@@ -13,6 +14,9 @@ pub use calculator::MandelbrotFixed;
 pub use fixed::Fixed;
 pub use input::{InputEvent, InputState};
 pub use orchestrator::{Orchestrator, Tile, TileLayer, TileSprite, TileStatus};
+pub use precision::{
+    PrecisionDecisionManager, PrecisionRenderPlan, PrecisionSpec, PrecisionTechnique, RenderMethod,
+};
 
 /// A small, packed RGBA sprite.
 #[derive(Debug, Clone, PartialEq, Eq)]
