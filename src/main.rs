@@ -2,6 +2,13 @@ use fractal_explorer::{config::AppConfig, geometry::ComplexPoint, Mandelbrot, Or
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load("config.toml").unwrap_or_default();
+    #[cfg(feature = "native-ui")]
+    let mut config = {
+        let mut config = config;
+        fractal_explorer::config_ui::run_window(&mut config)?;
+        config
+    };
+
     println!("Paleta em uso: {:?}", config.renderer.palette);
     let center = config
         .renderer
