@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use super::{Orchestrator, Tile, TileSprite, TileStatus};
+    use super::{Orchestrator, Tile, TileLayer, TileSprite, TileStatus};
     use crate::Mandelbrot;
 
     #[test]
@@ -22,6 +22,94 @@ mod tests {
 
         assert_eq!(tile.status(), TileStatus::Completed);
         assert_eq!(tile.iterations().lock().unwrap()[4], 32u64);
+    }
+
+    #[test]
+    fn layer_top_left_maps_to_its_declared_complex_position() {
+        let tile = std::sync::Arc::new(Tile::new(
+            crate::geometry::ComplexPoint::new(99.0, 99.0),
+            2,
+            2,
+            1.0,
+        ));
+        let mut row = std::collections::VecDeque::new();
+        row.push_back(tile);
+        let mut tiles = std::collections::VecDeque::new();
+        tiles.push_back(row);
+        let layer = TileLayer::new(
+            crate::geometry::ComplexPoint::new(-2.0, 1.5),
+            0.5,
+            tiles,
+            crate::geometry::ScreenPoint::new(0, 0),
+            1.0,
+        );
+
+        assert_eq!(
+            layer.complex_point_for_pixel(0, 0),
+            crate::geometry::ComplexPoint::new(-2.0, 1.5)
+        );
+        assert_eq!(
+            layer.complex_point_for_pixel(1, 1),
+            crate::geometry::ComplexPoint::new(-1.5, 1.0)
+        );
+    }
+
+    #[test]
+    fn adjacent_tiles_share_the_complex_coordinates_at_their_boundary() {
+        let left = std::sync::Arc::new(Tile::new(
+            crate::geometry::ComplexPoint::new(0.0, 0.0),
+            2,
+            2,
+            1.0,
+        ));
+        let right = std::sync::Arc::new(Tile::new(
+            crate::geometry::ComplexPoint::new(0.0, 0.0),
+            2,
+            2,
+            1.0,
+        ));
+        let mut row = std::collections::VecDeque::new();
+        row.push_back(left);
+        row.push_back(right);
+        let mut tiles = std::collections::VecDeque::new();
+        tiles.push_back(row);
+        let layer = TileLayer::new(
+            crate::geometry::ComplexPoint::new(-2.0, 1.0),
+            0.5,
+            tiles,
+            crate::geometry::ScreenPoint::new(0, 0),
+            1.0,
+        );
+
+        assert_eq!(
+            layer.complex_point_for_pixel(2, 0),
+            crate::geometry::ComplexPoint::new(-1.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn rendering_a_layer_calculates_its_first_pixel_from_the_layer_top_left() {
+        let tile = std::sync::Arc::new(Tile::new(
+            crate::geometry::ComplexPoint::new(0.0, 0.0),
+            3,
+            3,
+            1.0,
+        ));
+        let mut row = std::collections::VecDeque::new();
+        row.push_back(std::sync::Arc::clone(&tile));
+        let mut tiles = std::collections::VecDeque::new();
+        tiles.push_back(row);
+        let layer = TileLayer::new(
+            crate::geometry::ComplexPoint::new(2.0, 0.0),
+            1.0,
+            tiles,
+            crate::geometry::ScreenPoint::new(0, 0),
+            1.0,
+        );
+
+        Orchestrator::new(Mandelbrot::new(32)).render_layer(&layer);
+
+        assert_eq!(tile.iterations().lock().unwrap()[0], 2);
     }
 
     #[test]
@@ -58,6 +146,37 @@ mod tests {
 
         assert_eq!(sprite.position(), crate::geometry::ScreenPoint::new(50, 60));
         assert_eq!(sprite.zoom(), 2.0);
+    }
+
+    #[test]
+    fn centered_layer_derives_its_top_left_from_the_center_of_its_pixel_grid() {
+        let tile = std::sync::Arc::new(Tile::new(
+            crate::geometry::ComplexPoint::new(0.0, 0.0),
+            4,
+            2,
+            1.0,
+        ));
+        let mut row = std::collections::VecDeque::new();
+        row.push_back(tile);
+        let mut tiles = std::collections::VecDeque::new();
+        tiles.push_back(row);
+
+        let layer = TileLayer::new_centered(
+            crate::geometry::ComplexPoint::new(10.0, -5.0),
+            0.5,
+            tiles,
+            crate::geometry::ScreenPoint::new(0, 0),
+            1.0,
+        );
+
+        assert_eq!(
+            layer.position(),
+            &crate::geometry::ComplexPoint::new(9.25, -4.75)
+        );
+        assert_eq!(
+            layer.complex_point_for_pixel(3, 1),
+            crate::geometry::ComplexPoint::new(10.75, -5.25)
+        );
     }
 }
 
@@ -137,11 +256,42 @@ impl TileLayer {
         }
     }
 
+    /// Creates a layer whose geometric center is the supplied complex coordinate.
+    pub fn new_centered(
+        center: crate::geometry::ComplexPoint<f64>,
+        delta: f64,
+        tiles: VecDeque<VecDeque<Arc<Tile>>>,
+        screen_position: crate::geometry::ScreenPoint,
+        zoom: f64,
+    ) -> Self {
+        let width = tiles
+            .front()
+            .map(|row| row.iter().map(|tile| tile.width()).sum::<u32>())
+            .unwrap_or(0);
+        let height = tiles
+            .iter()
+            .map(|row| row.front().map(|tile| tile.height()).unwrap_or(0))
+            .sum::<u32>();
+        let position = crate::geometry::ComplexPoint::new(
+            center.x - (width.saturating_sub(1) as f64 / 2.0) * delta,
+            center.y + (height.saturating_sub(1) as f64 / 2.0) * delta,
+        );
+        Self::new(position, delta, tiles, screen_position, zoom)
+    }
+
     pub fn position(&self) -> &crate::geometry::ComplexPoint<f64> {
         &self.position
     }
     pub fn delta(&self) -> f64 {
         self.delta
+    }
+
+    /// Maps a logical pixel offset from the layer's top-left corner to the complex plane.
+    pub fn complex_point_for_pixel(&self, x: u32, y: u32) -> crate::geometry::ComplexPoint<f64> {
+        crate::geometry::ComplexPoint::new(
+            self.position.x + x as f64 * self.delta,
+            self.position.y - y as f64 * self.delta,
+        )
     }
     pub fn row_count(&self) -> usize {
         self.tiles.len()
@@ -152,6 +302,23 @@ impl TileLayer {
     pub fn tile(&self, row: usize, column: usize) -> Option<&Arc<Tile>> {
         self.tiles.get(row)?.get(column)
     }
+    pub fn tile_pixel_origin(&self, row: usize, column: usize) -> Option<(u32, u32)> {
+        self.tile(row, column)?;
+        let x = self
+            .tiles
+            .get(row)?
+            .iter()
+            .take(column)
+            .map(|tile| tile.width())
+            .sum();
+        let y = self
+            .tiles
+            .iter()
+            .take(row)
+            .map(|row| row.front().expect("layer rows must not be empty").height())
+            .sum();
+        Some((x, y))
+    }
     pub fn screen_position(&self) -> crate::geometry::ScreenPoint {
         self.screen_position
     }
@@ -159,10 +326,21 @@ impl TileLayer {
         self.zoom
     }
     pub fn screen_size(&self) -> (u32, u32) {
-        let tile = self.tile(0, 0).expect("layer must contain a tile");
+        let width = self
+            .tiles
+            .front()
+            .expect("layer must contain a tile")
+            .iter()
+            .map(|tile| tile.width())
+            .sum::<u32>();
+        let height = self
+            .tiles
+            .iter()
+            .map(|row| row.front().expect("layer rows must not be empty").height())
+            .sum::<u32>();
         (
-            ((tile.width() as f64 * self.zoom).round() as u32).max(1) * self.column_count() as u32,
-            ((tile.height() as f64 * self.zoom).round() as u32).max(1) * self.row_count() as u32,
+            ((width as f64 * self.zoom).round() as u32).max(1),
+            ((height as f64 * self.zoom).round() as u32).max(1),
         )
     }
     pub fn set_screen_position(&mut self, position: crate::geometry::ScreenPoint) {
@@ -306,10 +484,41 @@ impl Orchestrator {
             .store(TileStatus::Completed as u8, Ordering::Release);
     }
 
+    fn render_tile_from_top_left(
+        &self,
+        tile: &Tile,
+        top_left: crate::geometry::ComplexPoint<f64>,
+        delta: f64,
+    ) {
+        tile.status
+            .store(TileStatus::Dispatched as u8, Ordering::Release);
+        let mut iterations = tile
+            .iterations
+            .lock()
+            .expect("tile iterations mutex poisoned");
+        for y in 0..tile.height {
+            for x in 0..tile.width {
+                let real = top_left.x + x as f64 * delta;
+                let imaginary = top_left.y - y as f64 * delta;
+                iterations[y as usize * tile.width as usize + x as usize] =
+                    self.calculator.escape_iterations(real, imaginary) as u64;
+            }
+        }
+        tile.status
+            .store(TileStatus::Completed as u8, Ordering::Release);
+    }
+
     pub fn render_layer(&self, layer: &TileLayer) {
-        for row in &layer.tiles {
-            for tile in row {
-                self.render_tile_with_delta(tile, layer.delta);
+        for (row_index, row) in layer.tiles.iter().enumerate() {
+            for (column_index, tile) in row.iter().enumerate() {
+                let (x, y) = layer
+                    .tile_pixel_origin(row_index, column_index)
+                    .expect("tile must belong to its layer");
+                self.render_tile_from_top_left(
+                    tile,
+                    layer.complex_point_for_pixel(x, y),
+                    layer.delta,
+                );
             }
         }
     }

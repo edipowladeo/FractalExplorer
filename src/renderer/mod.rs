@@ -52,6 +52,44 @@ fn sprite_from_tile(
     Sprite::from_pixels(tile.width() as usize, tile.height() as usize, pixels)
 }
 
+fn draw_layer_into(
+    framebuffer: &mut [u32],
+    framebuffer_width: usize,
+    layer: &TileLayer,
+    config: &RendererConfig,
+) {
+    for row in 0..layer.row_count() {
+        for column in 0..layer.column_count() {
+            let tile = layer
+                .tile(row, column)
+                .expect("tile indices must be inside the layer");
+            let (origin_x, origin_y) = layer
+                .tile_pixel_origin(row, column)
+                .expect("tile indices must be inside the layer");
+            let zoom = layer.zoom();
+            let left = layer.screen_position().x as f64 + origin_x as f64 * zoom;
+            let top = layer.screen_position().y as f64 + origin_y as f64 * zoom;
+            let right = layer.screen_position().x as f64 + (origin_x + tile.width()) as f64 * zoom;
+            let bottom =
+                layer.screen_position().y as f64 + (origin_y + tile.height()) as f64 * zoom;
+            let sprite = sprite_from_tile(
+                tile,
+                config.max_iterations as u64,
+                config.palette,
+                config.palette_period,
+            );
+            sprite.draw_into_scaled(
+                framebuffer,
+                framebuffer_width,
+                left.round() as isize,
+                top.round() as isize,
+                (right.round() - left.round()).max(1.0) as usize,
+                (bottom.round() - top.round()).max(1.0) as usize,
+            );
+        }
+    }
+}
+
 /// Displays one rendered tile layer in a native window.
 pub fn run(layer: &mut TileLayer, config: &RendererConfig) -> Result<(), minifb::Error> {
     let (_sender, receiver) = std::sync::mpsc::channel();
@@ -135,21 +173,7 @@ fn run_window_session(
             let complex = window_envelope.screen_to_complex(cursor, screen_size);
             draw_status_bar(&mut framebuffer, screen_size, &format_coordinates(complex));
         }
-        let sprite = sprite_from_tile(
-            layer.tile(0, 0).expect("layer must contain a tile"),
-            config.max_iterations as u64,
-            config.palette,
-            config.palette_period,
-        );
-        let (sprite_width, sprite_height) = layer.screen_size();
-        sprite.draw_into_scaled(
-            &mut framebuffer,
-            width,
-            layer.screen_position().x as isize,
-            layer.screen_position().y as isize,
-            sprite_width as usize,
-            sprite_height as usize,
-        );
+        draw_layer_into(&mut framebuffer, width, layer, &config);
         if config.debug.show_allocation_envelope {
             let allocation =
                 allocation_screen_rect(screen_size, config.effective_allocation_ratio());
@@ -215,6 +239,11 @@ fn allocation_screen_rect(size: ScreenSize, allocation_ratio: f64) -> ScreenRect
         right: bottom_right.x,
         bottom: bottom_right.y,
     }
+}
+
+pub fn window_delta(width: usize) -> f64 {
+    assert!(width > 1, "a window must have at least 2 pixels per axis");
+    4.0 / (width - 1) as f64
 }
 
 fn window_envelope(size: ScreenSize) -> ComplexEnvelope<f64> {
@@ -391,8 +420,8 @@ fn rainbow_color(iterations: u64, palette_period: f64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        allocation_screen_rect, can_apply_live_update, draw_rectangle_outline, format_coordinates,
-        sprite_from_tile, Palette, ScreenRect,
+        allocation_screen_rect, can_apply_live_update, draw_layer_into, draw_rectangle_outline,
+        format_coordinates, sprite_from_tile, window_delta, Palette, ScreenRect,
     };
     use crate::config::RendererConfig;
     use crate::geometry::{ComplexPoint, ScreenSize};
@@ -410,6 +439,39 @@ mod tests {
     }
 
     #[test]
+    fn draws_every_tile_at_its_layer_relative_position() {
+        use std::collections::VecDeque;
+        use std::sync::Arc;
+
+        let left = Arc::new(Tile::new(ComplexPoint::new(0.0, 0.0), 2, 1, 1.0));
+        let right = Arc::new(Tile::new(ComplexPoint::new(0.0, 0.0), 2, 1, 1.0));
+        left.iterations().lock().unwrap().copy_from_slice(&[1, 1]);
+        right.iterations().lock().unwrap().copy_from_slice(&[2, 2]);
+        let mut row = VecDeque::new();
+        row.push_back(left);
+        row.push_back(right);
+        let mut tiles = VecDeque::new();
+        tiles.push_back(row);
+        let layer = crate::TileLayer::new(
+            ComplexPoint::new(-2.0, 1.0),
+            1.0,
+            tiles,
+            crate::geometry::ScreenPoint::new(0, 0),
+            1.0,
+        );
+        let mut framebuffer = vec![0; 4];
+        let mut config = RendererConfig::default();
+        config.max_iterations = 4;
+        config.palette = Palette::Shade;
+
+        draw_layer_into(&mut framebuffer, 4, &layer, &config);
+
+        assert_eq!(framebuffer[0], framebuffer[1]);
+        assert_eq!(framebuffer[2], framebuffer[3]);
+        assert_ne!(framebuffer[0], framebuffer[2]);
+    }
+
+    #[test]
     fn calculates_a_centered_half_size_allocation_rectangle() {
         let rectangle = allocation_screen_rect(ScreenSize::new(5, 5), 0.5);
 
@@ -422,6 +484,11 @@ mod tests {
                 bottom: 3,
             }
         );
+    }
+
+    #[test]
+    fn uses_the_same_horizontal_delta_as_the_window_coordinate_transform() {
+        assert!((window_delta(800) - 4.0 / 799.0).abs() < f64::EPSILON);
     }
 
     #[test]

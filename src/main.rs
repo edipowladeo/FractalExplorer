@@ -18,11 +18,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Aviso: {error}; usando centro inicial (0, 0)");
             ComplexPoint::new(0.0, 0.0)
         });
+    let delta = fractal_explorer::renderer::window_delta(config.renderer.width);
     let tile = Arc::new(Tile::new(
         center.clone(),
         config.orchestrator.tile.width,
         config.orchestrator.tile.height,
-        4.0 / config.renderer.width as f64,
+        delta,
     ));
     let mut row = VecDeque::new();
     row.push_back(Arc::clone(&tile));
@@ -33,13 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (config.renderer.width.saturating_sub(tile_size.0 as usize) / 2) as i32,
         (config.renderer.height.saturating_sub(tile_size.1 as usize) / 2) as i32,
     );
-    let mut layer = fractal_explorer::TileLayer::new(
-        center,
-        4.0 / config.renderer.width as f64,
-        tiles,
-        position,
-        1.0,
-    );
+    let mut layer = fractal_explorer::TileLayer::new_centered(center, delta, tiles, position, 1.0);
     Orchestrator::new(Mandelbrot::new(config.renderer.max_iterations)).render_layer(&layer);
 
     #[cfg(feature = "native-ui")]
