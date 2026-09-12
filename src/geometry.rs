@@ -41,10 +41,10 @@ impl ScreenSize {
 /// Rectangular region of the complex plane.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComplexEnvelope<T> {
-    pub xmin: T,
-    pub xmax: T,
-    pub ymin: T,
-    pub ymax: T,
+    xmin: T,
+    xmax: T,
+    ymin: T,
+    ymax: T,
 }
 
 impl<T: PartialOrd> ComplexEnvelope<T> {
@@ -58,6 +58,38 @@ impl<T: PartialOrd> ComplexEnvelope<T> {
             ymax,
         }
     }
+
+    pub fn xmin(&self) -> &T {
+        &self.xmin
+    }
+
+    pub fn xmax(&self) -> &T {
+        &self.xmax
+    }
+
+    pub fn ymin(&self) -> &T {
+        &self.ymin
+    }
+
+    pub fn ymax(&self) -> &T {
+        &self.ymax
+    }
+
+    pub fn with_xmin(self, xmin: T) -> Self {
+        Self { xmin, ..self }
+    }
+
+    pub fn with_xmax(self, xmax: T) -> Self {
+        Self { xmax, ..self }
+    }
+
+    pub fn with_ymin(self, ymin: T) -> Self {
+        Self { ymin, ..self }
+    }
+
+    pub fn with_ymax(self, ymax: T) -> Self {
+        Self { ymax, ..self }
+    }
 }
 
 impl ComplexEnvelope<f64> {
@@ -69,8 +101,8 @@ impl ComplexEnvelope<f64> {
         let x_ratio = point.x as f64 / (size.width - 1) as f64;
         let y_ratio = point.y as f64 / (size.height - 1) as f64;
         ComplexPoint::new(
-            self.xmin + x_ratio * (self.xmax - self.xmin),
-            self.ymax - y_ratio * (self.ymax - self.ymin),
+            *self.xmin() + x_ratio * (*self.xmax() - *self.xmin()),
+            *self.ymax() - y_ratio * (*self.ymax() - *self.ymin()),
         )
     }
 }
@@ -87,10 +119,10 @@ mod tests {
 
         assert_eq!(complex, ComplexPoint { x: -2.0, y: 1.5 });
         assert_eq!(screen, ScreenPoint { x: 10, y: 20 });
-        assert_eq!(envelope.xmin, -2.0);
-        assert_eq!(envelope.xmax, 2.0);
-        assert_eq!(envelope.ymin, -1.5);
-        assert_eq!(envelope.ymax, 1.5);
+        assert_eq!(*envelope.xmin(), -2.0);
+        assert_eq!(*envelope.xmax(), 2.0);
+        assert_eq!(*envelope.ymin(), -1.5);
+        assert_eq!(*envelope.ymax(), 1.5);
     }
 
     #[test]
@@ -105,5 +137,14 @@ mod tests {
         let bottom_right = envelope.screen_to_complex(ScreenPoint::new(799, 599), size);
         assert!((bottom_right.x - 2.0).abs() < f64::EPSILON);
         assert!((bottom_right.y + 1.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn changes_a_bound_by_returning_a_new_envelope() {
+        let original = ComplexEnvelope::new(-2.0, 2.0, -1.5, 1.5);
+        let changed = original.clone().with_xmax(3.0);
+
+        assert_eq!(*original.xmax(), 2.0);
+        assert_eq!(*changed.xmax(), 3.0);
     }
 }
