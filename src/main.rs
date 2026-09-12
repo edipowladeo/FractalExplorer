@@ -9,6 +9,7 @@ use fractal_explorer::{
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load("config.toml").unwrap_or_default();
+
     println!("Paleta em uso: {:?}", config.renderer.palette);
     let center = config
         .renderer
@@ -40,6 +41,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         1.0,
     );
     Orchestrator::new(Mandelbrot::new(config.renderer.max_iterations)).render_layer(&layer);
+
+    #[cfg(feature = "native-ui")]
+    {
+        let (renderer_updates, renderer_commands) = std::sync::mpsc::channel();
+        let renderer_config = config.renderer.clone();
+        let renderer_thread = std::thread::spawn(move || {
+            fractal_explorer::renderer::run_with_updates(
+                &mut layer,
+                &renderer_config,
+                renderer_commands,
+            )
+        });
+        let mut config = config;
+        fractal_explorer::config_ui::run_window(&mut config, renderer_updates)?;
+        renderer_thread
+            .join()
+            .map_err(|_| "renderer thread panicked")??;
+    }
+
+    #[cfg(not(feature = "native-ui"))]
     fractal_explorer::renderer::run(&mut layer, &config.renderer)?;
     Ok(())
 }

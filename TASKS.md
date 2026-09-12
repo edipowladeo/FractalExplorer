@@ -17,8 +17,6 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## TODO
 
-_Nenhuma tarefa ativa._
-
 ## BACKLOG
 
 ### T003 — Ampliar o processador CPU determinístico
@@ -94,6 +92,13 @@ _Nenhuma tarefa ativa._
 - Depende da estabilização da barra de status.
 
 ## DONE
+
+### T018 — Criar UI dinâmica para propriedades do TOML
+
+- **Resultado:** adicionada UI opcional `egui/eframe` em janela separada da renderização `minifb`; propriedades TOML são descobertas recursivamente; booleanos usam checkbox; inteiros e floats usam spinner; valores não suportados ficam somente leitura; alterações são enviadas por canal e mudanças de dimensão recriam a janela do renderer.
+- **Evidências:** ciclo TDD RED/GREEN para descoberta, edição e compatibilidade do renderer; `cargo test` passou com 20 testes; `cargo fmt -- --check`, `git diff --check` e `cargo check --features native-ui` passaram; execução manual tentada, mas bloqueada pela ausência de `dlltool.exe` no ambiente.
+- **Commits:** `f562bca`, `f8bc31f`, `638c2a8`, `ab2df2b`, `1fff9e6`, `7e5f23c`, além da integração remota `dc56f6d`.
+- **Push:** branch `feature/dynamic-config-ui` enviado para `origin`.
 
 ### T001 — Desenhar um sprite na tela e exibi-lo
 

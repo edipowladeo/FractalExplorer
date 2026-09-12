@@ -3,6 +3,7 @@ use crate::geometry::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
 use crate::{input::ZoomDirection, InputEvent, InputState, Sprite, Tile, TileLayer};
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 use serde::{Deserialize, Deserializer, Serialize};
+use std::sync::mpsc::Receiver;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -51,18 +52,36 @@ fn sprite_from_tile(
     Sprite::from_pixels(tile.width() as usize, tile.height() as usize, pixels)
 }
 
-/// Displays one rendered sprite in a native window.
+/// Displays one rendered tile layer in a native window.
 pub fn run(layer: &mut TileLayer, config: &RendererConfig) -> Result<(), minifb::Error> {
+    let (_sender, receiver) = std::sync::mpsc::channel();
+    run_with_updates(layer, config, receiver)
+}
+
+/// Displays a rendered tile layer and applies compatible renderer updates as they arrive.
+pub fn run_with_updates(
+    layer: &mut TileLayer,
+    initial_config: &RendererConfig,
+    receiver: Receiver<RendererConfig>,
+) -> Result<(), minifb::Error> {
+    let mut config = initial_config.clone();
+    loop {
+        match run_window_session(layer, &config, &receiver)? {
+            Some(next_config) => config = next_config,
+            None => return Ok(()),
+        }
+    }
+}
+
+fn run_window_session(
+    layer: &mut TileLayer,
+    initial_config: &RendererConfig,
+    receiver: &Receiver<RendererConfig>,
+) -> Result<Option<RendererConfig>, minifb::Error> {
+    let mut config = initial_config.clone();
     let width = config.width;
     let height = config.height;
-    let sprite = sprite_from_tile(
-        layer.tile(0, 0).expect("layer must contain a tile"),
-        config.max_iterations as u64,
-        config.palette,
-        config.palette_period,
-    );
     let screen_size = ScreenSize::new(width, height);
-    let allocation = allocation_screen_rect(screen_size, config.effective_allocation_ratio());
     let window_envelope = window_envelope(screen_size);
     let mut window = Window::new(
         "FractalExplorer - Mandelbrot",
@@ -73,6 +92,14 @@ pub fn run(layer: &mut TileLayer, config: &RendererConfig) -> Result<(), minifb:
     let mut input = InputState::new();
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
+        while let Ok(next_config) = receiver.try_recv() {
+            if can_apply_live_update(width, height, &next_config) {
+                config = next_config;
+            } else {
+                return Ok(Some(next_config));
+            }
+        }
+
         let mut framebuffer = vec![0x101820; width * height];
         let mouse_position = window
             .get_mouse_pos(MouseMode::Clamp)
@@ -108,6 +135,12 @@ pub fn run(layer: &mut TileLayer, config: &RendererConfig) -> Result<(), minifb:
             let complex = window_envelope.screen_to_complex(cursor, screen_size);
             draw_status_bar(&mut framebuffer, screen_size, &format_coordinates(complex));
         }
+        let sprite = sprite_from_tile(
+            layer.tile(0, 0).expect("layer must contain a tile"),
+            config.max_iterations as u64,
+            config.palette,
+            config.palette_period,
+        );
         let (sprite_width, sprite_height) = layer.screen_size();
         sprite.draw_into_scaled(
             &mut framebuffer,
@@ -118,6 +151,8 @@ pub fn run(layer: &mut TileLayer, config: &RendererConfig) -> Result<(), minifb:
             sprite_height as usize,
         );
         if config.debug.show_allocation_envelope {
+            let allocation =
+                allocation_screen_rect(screen_size, config.effective_allocation_ratio());
             draw_rectangle_outline(&mut framebuffer, screen_size, allocation, 0xff0000);
         }
         window.update_with_buffer(&framebuffer, width, height)?;
@@ -126,7 +161,11 @@ pub fn run(layer: &mut TileLayer, config: &RendererConfig) -> Result<(), minifb:
     // Closing the native window leaves the loop and releases the renderer
     // before the application returns from `main`.
     drop(window);
-    Ok(())
+    Ok(None)
+}
+
+fn can_apply_live_update(width: usize, height: usize, config: &RendererConfig) -> bool {
+    config.width == width && config.height == height
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -352,9 +391,10 @@ fn rainbow_color(iterations: u64, palette_period: f64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        allocation_screen_rect, draw_rectangle_outline, format_coordinates, sprite_from_tile,
-        Palette, ScreenRect,
+        allocation_screen_rect, can_apply_live_update, draw_rectangle_outline, format_coordinates,
+        sprite_from_tile, Palette, ScreenRect,
     };
+    use crate::config::RendererConfig;
     use crate::geometry::{ComplexPoint, ScreenSize};
     use crate::{Mandelbrot, Orchestrator, Tile};
 
@@ -423,5 +463,19 @@ mod tests {
         assert_eq!(framebuffer[1 + 5], 0xff0000);
         assert_eq!(framebuffer[2 + 5], 0xff0000);
         assert_eq!(framebuffer[2 + 5 * 2], 0);
+    }
+
+    #[test]
+    fn accepts_live_renderer_updates_without_changing_window_dimensions() {
+        let config = RendererConfig::default();
+        assert!(can_apply_live_update(config.width, config.height, &config));
+
+        let mut resized = config.clone();
+        resized.width += 1;
+        assert!(!can_apply_live_update(
+            config.width,
+            config.height,
+            &resized
+        ));
     }
 }
