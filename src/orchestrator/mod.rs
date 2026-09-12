@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use super::{Orchestrator, Tile, TileStatus};
+    use super::{Orchestrator, Tile, TileSprite, TileStatus};
     use crate::Mandelbrot;
 
     #[test]
@@ -22,6 +22,26 @@ mod tests {
 
         assert_eq!(tile.status(), TileStatus::Completed);
         assert_eq!(tile.iterations().lock().unwrap()[4], 32u64);
+    }
+
+    #[test]
+    fn tile_sprite_keeps_tile_reference_and_top_left_screen_position() {
+        let tile = std::sync::Arc::new(Tile::new(
+            crate::geometry::ComplexPoint::new(0.0, 0.0),
+            200,
+            150,
+            1.0,
+        ));
+        let sprite = TileSprite::new(
+            std::sync::Arc::clone(&tile),
+            crate::geometry::ScreenPoint::new(10, 20),
+            1.5,
+        );
+
+        assert!(std::sync::Arc::ptr_eq(sprite.tile(), &tile));
+        assert_eq!(sprite.position(), crate::geometry::ScreenPoint::new(10, 20));
+        assert_eq!(sprite.zoom(), 1.5);
+        assert_eq!(sprite.screen_size(), (300, 225));
     }
 }
 
@@ -56,6 +76,47 @@ pub struct Tile {
     delta: f64,
     status: AtomicU8,
     iterations: Arc<Mutex<Vec<u64>>>,
+}
+
+/// Places one calculated tile in screen space.
+pub struct TileSprite {
+    tile: Arc<Tile>,
+    position: crate::geometry::ScreenPoint,
+    zoom: f64,
+}
+
+impl TileSprite {
+    pub fn new(tile: Arc<Tile>, position: crate::geometry::ScreenPoint, zoom: f64) -> Self {
+        assert!(zoom > 0.0, "sprite zoom must be positive");
+        Self {
+            tile,
+            position,
+            zoom,
+        }
+    }
+
+    pub fn tile(&self) -> &Arc<Tile> {
+        &self.tile
+    }
+
+    pub fn position(&self) -> crate::geometry::ScreenPoint {
+        self.position
+    }
+
+    pub fn zoom(&self) -> f64 {
+        self.zoom
+    }
+
+    pub fn screen_size(&self) -> (u32, u32) {
+        (
+            ((self.tile.width as f64 * self.zoom).round() as u32).max(1),
+            ((self.tile.height as f64 * self.zoom).round() as u32).max(1),
+        )
+    }
+
+    pub fn set_position(&mut self, position: crate::geometry::ScreenPoint) {
+        self.position = position;
+    }
 }
 
 impl Tile {

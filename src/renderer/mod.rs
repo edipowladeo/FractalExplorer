@@ -1,6 +1,6 @@
 use crate::config::RendererConfig;
 use crate::geometry::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
-use crate::{Sprite, Tile};
+use crate::{InputEvent, InputState, Sprite, Tile, TileSprite};
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -52,48 +52,70 @@ fn sprite_from_tile(
 }
 
 /// Displays one rendered sprite in a native window.
-pub fn run(tile: &Tile, config: &RendererConfig) -> Result<(), minifb::Error> {
+pub fn run(tile_sprite: &mut TileSprite, config: &RendererConfig) -> Result<(), minifb::Error> {
     let width = config.width;
     let height = config.height;
     let sprite = sprite_from_tile(
-        tile,
+        tile_sprite.tile(),
         config.max_iterations as u64,
         config.palette,
         config.palette_period,
     );
-    let mut framebuffer = vec![0x101820; width * height];
     let screen_size = ScreenSize::new(width, height);
-    let tile_x = (width as isize - tile.width() as isize) / 2;
-    let tile_y = (height as isize - tile.height() as isize) / 2;
-    sprite.draw_into(&mut framebuffer, width, tile_x, tile_y);
     let allocation = allocation_screen_rect(screen_size, config.effective_allocation_ratio());
     let window_envelope = window_envelope(screen_size);
-    if config.debug.show_allocation_envelope {
-        draw_rectangle_outline(&mut framebuffer, screen_size, allocation, 0xff0000);
-    }
     let mut window = Window::new(
         "FractalExplorer - Mandelbrot",
         width,
         height,
         WindowOptions::default(),
     )?;
-    let mut middle_button_was_down = false;
+    let mut input = InputState::new();
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
-        if let Some((mouse_x, mouse_y)) = window.get_mouse_pos(MouseMode::Clamp) {
-            let cursor = ScreenPoint::new(mouse_x.round() as i32, mouse_y.round() as i32);
-            let complex = window_envelope.screen_to_complex(cursor, screen_size);
-            let coordinates = format_coordinates(complex);
-            draw_status_bar(&mut framebuffer, screen_size, &coordinates);
-            let middle_button_is_down = window.get_mouse_down(MouseButton::Middle);
-            if middle_button_is_down && !middle_button_was_down {
-                copy_coordinates(&coordinates);
+        let mut framebuffer = vec![0x101820; width * height];
+        let mouse_position = window
+            .get_mouse_pos(MouseMode::Clamp)
+            .map(|(x, y)| ScreenPoint::new(x.round() as i32, y.round() as i32));
+        let events = input.update(
+            mouse_position,
+            window.get_mouse_down(MouseButton::Left),
+            window.get_mouse_down(MouseButton::Middle),
+        );
+        for event in events {
+            match event {
+                InputEvent::Drag { delta } => tile_sprite.set_position(ScreenPoint::new(
+                    tile_sprite.position().x + delta.x,
+                    tile_sprite.position().y + delta.y,
+                )),
+                InputEvent::MiddleClick(cursor) => {
+                    let complex = window_envelope.screen_to_complex(cursor, screen_size);
+                    copy_coordinates(&format_coordinates(complex));
+                }
             }
-            middle_button_was_down = middle_button_is_down;
+        }
+        if let Some(cursor) = mouse_position {
+            let complex = window_envelope.screen_to_complex(cursor, screen_size);
+            draw_status_bar(&mut framebuffer, screen_size, &format_coordinates(complex));
+        }
+        let (sprite_width, sprite_height) = tile_sprite.screen_size();
+        sprite.draw_into_scaled(
+            &mut framebuffer,
+            width,
+            tile_sprite.position().x as isize,
+            tile_sprite.position().y as isize,
+            sprite_width as usize,
+            sprite_height as usize,
+        );
+        if config.debug.show_allocation_envelope {
+            draw_rectangle_outline(&mut framebuffer, screen_size, allocation, 0xff0000);
         }
         window.update_with_buffer(&framebuffer, width, height)?;
     }
 
+    // Closing the native window leaves the loop and releases the renderer
+    // before the application returns from `main`.
+    drop(window);
     Ok(())
 }
 
