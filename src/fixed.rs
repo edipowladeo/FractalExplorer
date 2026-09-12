@@ -1,13 +1,9 @@
 use core::cmp::Ordering;
 
-const FRACTION_BITS: u32 = 32;
-const SCALE: f64 = 4_294_967_296.0;
-
 /// Signed fixed-point value stored as a little-endian magnitude.
 ///
-/// The first implementation uses 32 fractional bits for every limb count.
-/// Increasing `N` therefore increases the integer range first; the precision
-/// policy can be refined independently once the limb arithmetic is stable.
+/// Each limb contributes 32 fractional bits, so `Fixed<1>` is Q32, `Fixed<2>`
+/// is Q64, and larger limb counts extend the fractional precision likewise.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Fixed<const N: usize> {
     negative: bool,
@@ -26,7 +22,7 @@ impl<const N: usize> Fixed<N> {
     pub fn from_i64(value: i64) -> Self {
         let mut result = Self::zero();
         let magnitude = value.unsigned_abs() as u128;
-        result.set_magnitude(magnitude << FRACTION_BITS);
+        result.set_shifted_magnitude(magnitude, Self::fractional_bits());
         result.negative = value < 0 && !result.is_zero();
         result
     }
@@ -34,9 +30,15 @@ impl<const N: usize> Fixed<N> {
     pub fn from_f64(value: f64) -> Self {
         assert!(value.is_finite(), "Fixed requires a finite value");
         let mut result = Self::zero();
-        let scaled = (value.abs() * SCALE).round();
+        let fractional_bits = Self::fractional_bits();
+        assert!(
+            fractional_bits < 128,
+            "from_f64 supports at most 127 fractional bits"
+        );
+        let scale = 2f64.powi(fractional_bits as i32);
+        let scaled = (value.abs() * scale).round();
         assert!(scaled <= u128::MAX as f64, "value does not fit Fixed");
-        result.set_magnitude(scaled as u128);
+        result.set_shifted_magnitude(scaled as u128, 0);
         result.negative = value.is_sign_negative() && !result.is_zero();
         result
     }
@@ -46,12 +48,16 @@ impl<const N: usize> Fixed<N> {
         for &limb in self.limbs.iter().rev() {
             value = value * 18_446_744_073_709_551_616.0 + limb as f64;
         }
-        let value = value / SCALE;
+        let value = value / 2f64.powi(Self::fractional_bits() as i32);
         if self.negative {
             -value
         } else {
             value
         }
+    }
+
+    pub const fn fractional_bits() -> u32 {
+        (N as u32) * 32
     }
 
     pub fn add(self, rhs: Self) -> Self {
@@ -115,12 +121,24 @@ impl<const N: usize> Fixed<N> {
         }
     }
 
-    fn set_magnitude(&mut self, mut magnitude: u128) {
-        for limb in &mut self.limbs {
-            *limb = magnitude as u64;
-            magnitude >>= 64;
+    fn set_shifted_magnitude(&mut self, magnitude: u128, shift: u32) {
+        let word_shift = (shift / 64) as usize;
+        let bit_shift = shift % 64;
+        if word_shift >= N {
+            assert_eq!(magnitude, 0, "value does not fit Fixed");
+            return;
         }
-        assert_eq!(magnitude, 0, "value does not fit Fixed");
+        self.limbs[word_shift] = (magnitude as u64) << bit_shift;
+        if bit_shift != 0 && word_shift + 1 < N {
+            self.limbs[word_shift + 1] |= (magnitude as u64) >> (64 - bit_shift);
+            self.limbs[word_shift + 1] |= ((magnitude >> 64) as u64) << bit_shift;
+        } else if word_shift + 1 < N {
+            self.limbs[word_shift + 1] = (magnitude >> 64) as u64;
+        }
+        assert!(
+            word_shift + 2 >= N || (magnitude >> 64 == 0),
+            "value does not fit Fixed"
+        );
     }
 }
 
@@ -189,8 +207,9 @@ fn multiply_magnitudes<const N: usize>(left: &[u64; N], right: &[u64; N]) -> [u6
         }
     }
 
-    let word_shift = (FRACTION_BITS / 64) as usize;
-    let bit_shift = FRACTION_BITS % 64;
+    let fractional_bits = (N as u32) * 32;
+    let word_shift = (fractional_bits / 64) as usize;
+    let bit_shift = fractional_bits % 64;
     let mut result = [0; N];
     for index in 0..N {
         let source = index + word_shift;
@@ -209,6 +228,13 @@ fn multiply_magnitudes<const N: usize>(left: &[u64; N], right: &[u64; N]) -> [u6
 mod tests {
     use super::Fixed;
     use core::cmp::Ordering;
+
+    #[test]
+    fn limb_count_controls_fractional_precision() {
+        assert_eq!(Fixed::<1>::fractional_bits(), 32);
+        assert_eq!(Fixed::<2>::fractional_bits(), 64);
+        assert_eq!(Fixed::<4>::fractional_bits(), 128);
+    }
 
     #[test]
     fn fixed_one_represents_fractional_values() {

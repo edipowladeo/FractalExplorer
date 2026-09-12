@@ -6,6 +6,8 @@ width = 800
 height = 600
 max_iterations = 10000
 allocation_ratio = 1
+# rendering_method = "multiprecision" # f64, multiprecision ou perturbation
+# perturbation_fallback = false         # true recalcula pixels instáveis
 #palette = "shade"
 palette_period = 50.0
 starting_point = "x=-1.50, y=0.0"

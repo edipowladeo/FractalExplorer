@@ -29,6 +29,8 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - A órbita de referência, a perturbação e `perturbation_fallback` foram
   adicionados; 3 testes de perturbação/configuração passaram. O default mantém
   o fallback desligado para exibir artefatos instáveis.
+- O `main` agora seleciona `f64`, `multiprecision` ou `perturbation` pela
+  configuração e `N` controla a escala fracionária (`32 * N` bits).
 
 ## BACKLOG
 

@@ -98,6 +98,18 @@ impl Tile {
     pub fn iterations(&self) -> Arc<Mutex<Vec<u64>>> {
         Arc::clone(&self.iterations)
     }
+
+    pub fn replace_iterations(&self, values: Vec<u64>) {
+        assert_eq!(
+            values.len(),
+            self.width as usize * self.height as usize,
+            "fixed render result has the wrong size"
+        );
+        *self
+            .iterations
+            .lock()
+            .expect("tile iterations mutex poisoned") = values;
+    }
 }
 
 /// Dispatches tiles to the calculator.
