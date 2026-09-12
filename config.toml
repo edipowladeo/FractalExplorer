@@ -1,0 +1,7 @@
+# Configuração principal do FractalExplorer.
+debug = true
+
+[renderer]
+width = 800
+height = 600
+max_iterations = 256

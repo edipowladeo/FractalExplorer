@@ -1,5 +1,6 @@
 //! Primitives shared by the first Windows sprite renderer.
 
+pub mod config;
 mod mandelbrot;
 mod orchestrator;
 pub mod renderer;
