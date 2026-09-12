@@ -47,7 +47,7 @@ impl Default for RendererConfig {
             height: 480,
             max_iterations: 256,
             allocation_ratio: 1.2,
-            palette: Palette::Shade,
+            palette: Palette::Rainbow,
             palette_period: 5.0,
             debug: RendererDebugConfig::default(),
         }

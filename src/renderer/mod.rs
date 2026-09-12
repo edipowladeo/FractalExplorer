@@ -13,7 +13,7 @@ pub enum Palette {
 
 impl Default for Palette {
     fn default() -> Self {
-        Self::Shade
+        Self::Rainbow
     }
 }
 
@@ -348,6 +348,10 @@ mod tests {
             toml::from_str("palette = \"unknown\"").unwrap();
 
         assert_eq!(config.palette, Palette::Rainbow);
+        assert_eq!(
+            crate::config::RendererConfig::default().palette,
+            Palette::Rainbow
+        );
     }
 
     #[test]
