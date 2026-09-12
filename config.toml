@@ -4,7 +4,7 @@ debug_global = true
 [renderer]
 width = 800
 height = 600
-max_iterations = 10000
+max_iterations = 256
 allocation_ratio = 1
 rendering_method = "multiprecision"
 # perturbation_fallback = false         # true recalcula pixels instáveis
