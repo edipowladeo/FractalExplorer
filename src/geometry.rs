@@ -107,9 +107,87 @@ impl ComplexEnvelope<f64> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct CameraEnvelope {
+    complex: ComplexEnvelope<f64>,
+}
+
+impl CameraEnvelope {
+    pub fn new(center: ComplexPoint<f64>, zoom: f64, size: ScreenSize) -> Self {
+        assert!(zoom > 0.0, "camera zoom must be positive");
+        let half_width = 2.0 / zoom;
+        let half_height = half_width * size.height as f64 / size.width as f64;
+        Self {
+            complex: ComplexEnvelope::new(
+                center.x - half_width,
+                center.x + half_width,
+                center.y - half_height,
+                center.y + half_height,
+            ),
+        }
+    }
+
+    pub fn complex(&self) -> &ComplexEnvelope<f64> {
+        &self.complex
+    }
+
+    pub fn screen_to_complex(&self, point: ScreenPoint, size: ScreenSize) -> ComplexPoint<f64> {
+        self.complex.screen_to_complex(point, size)
+    }
+
+    pub fn complex_to_screen(&self, point: ComplexPoint<f64>, size: ScreenSize) -> ScreenPoint {
+        let x = ((point.x - *self.complex.xmin()) / (*self.complex.xmax() - *self.complex.xmin())
+            * (size.width - 1) as f64)
+            .round() as i32;
+        let y = ((*self.complex.ymax() - point.y) / (*self.complex.ymax() - *self.complex.ymin())
+            * (size.height - 1) as f64)
+            .round() as i32;
+        ScreenPoint::new(x, y)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Camera {
+    center: ComplexPoint<f64>,
+    zoom: f64,
+    size: ScreenSize,
+}
+
+impl Camera {
+    pub fn new(center: ComplexPoint<f64>, zoom: f64, size: ScreenSize) -> Self {
+        assert!(zoom > 0.0, "camera zoom must be positive");
+        Self { center, zoom, size }
+    }
+
+    pub fn center(&self) -> &ComplexPoint<f64> {
+        &self.center
+    }
+
+    pub fn zoom(&self) -> f64 {
+        self.zoom
+    }
+
+    pub fn envelope(&self) -> CameraEnvelope {
+        CameraEnvelope::new(self.center.clone(), self.zoom, self.size)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
+    use super::{Camera, ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
+
+    #[test]
+    fn camera_envelope_round_trips_screen_and_complex_points() {
+        let camera = Camera::new(ComplexPoint::new(0.0, 0.0), 2.0, ScreenSize::new(800, 600));
+        let envelope = camera.envelope();
+        let complex =
+            envelope.screen_to_complex(ScreenPoint::new(400, 300), ScreenSize::new(800, 600));
+        let screen = envelope.complex_to_screen(complex, ScreenSize::new(800, 600));
+
+        assert_eq!(screen, ScreenPoint::new(400, 300));
+        assert_eq!(*envelope.complex().xmin(), -1.0);
+        assert_eq!(*envelope.complex().xmax(), 1.0);
+    }
 
     #[test]
     fn represents_complex_and_screen_coordinates() {
