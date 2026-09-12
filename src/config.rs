@@ -35,6 +35,7 @@ pub struct RendererConfig {
     pub palette: Palette,
     pub palette_period: f64,
     pub starting_point: String,
+    pub perturbation_fallback: bool,
     pub debug: RendererDebugConfig,
 }
 
@@ -83,6 +84,7 @@ impl Default for RendererConfig {
             palette: Palette::Rainbow,
             palette_period: 5.0,
             starting_point: "x=0.0, y=0.0".to_string(),
+            perturbation_fallback: false,
             debug: RendererDebugConfig::default(),
         }
     }
@@ -151,6 +153,7 @@ mod tests {
             palette = "rainbow"
             palette_period = 5.0
             starting_point = "x=-0.743643887037151, y=0.131825904205330"
+            perturbation_fallback = true
 
             [renderer.debug]
             reduced_viewport = true
@@ -170,11 +173,17 @@ mod tests {
         assert_eq!(config.renderer.effective_allocation_ratio(), 0.5);
         assert_eq!(config.renderer.palette, crate::renderer::Palette::Rainbow);
         assert_eq!(config.renderer.palette_period, 5.0);
+        assert!(config.renderer.perturbation_fallback);
         assert_eq!(config.orchestrator.tile.width, 800);
         assert_eq!(config.orchestrator.tile.height, 600);
         assert_eq!(
             config.renderer.starting_point_coordinates().unwrap(),
             crate::geometry::ComplexPoint::new(-0.743643887037151, 0.131825904205330)
         );
+    }
+
+    #[test]
+    fn perturbation_fallback_is_disabled_by_default() {
+        assert!(!AppConfig::default().renderer.perturbation_fallback);
     }
 }

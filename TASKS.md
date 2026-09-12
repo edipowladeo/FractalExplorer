@@ -26,6 +26,9 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   unitários do módulo `fixed` (5) e do calculador Mandelbrot (4) passaram.
 - A geração de tile full multiprecision foi adicionada e seu teste de grade
   `3x3` passou sem coordenadas `f64`.
+- A órbita de referência, a perturbação e `perturbation_fallback` foram
+  adicionados; 3 testes de perturbação/configuração passaram. O default mantém
+  o fallback desligado para exibir artefatos instáveis.
 
 ## BACKLOG
 
