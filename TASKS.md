@@ -60,6 +60,16 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - **Evidências:** análise registrada em
   `PLANO_IMPLEMENTACAO_MULTIPRECISAO.md`; nenhum teste pesado executado nesta
   etapa.
+### T021 — Separar técnica, nível de precisão e método de renderização
+
+- **Implementação local concluída:** `PrecisionDecisionManager` separa técnica
+  (`float`/`fixed`) e nível; `direct` usa esse plano e `perturbation` usa o
+  mesmo plano na semente, com delta fixo `float64` nível 1. Níveis float acima
+  de 1 são normalizados para 1 sem erro. A `TileLayer` recebe o plano e o
+  orquestrador o aplica em todos os tiles.
+- **Bloqueio:** testes e compilação passaram, commit local `6264431` criado,
+  mas o push para `origin/multiprecisao` foi recusado pela política do ambiente.
+
 ## BACKLOG
 
 ### T027 — Representar `delta` como expoente inteiro positivo
@@ -183,17 +193,6 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - Depende da estabilização da barra de status.
 
 ## DONE
-
-### T021 — Separar técnica, nível de precisão e método de renderização
-
-- **Resultado:** criado `PrecisionDecisionManager` com seletor único de técnica
-  (`float`/`fixed`) e nível; `direct` usa esse plano e `perturbation` usa o
-  mesmo plano na semente, mantendo o delta em `float64` nível 1. Níveis float
-  informados acima de 1 são normalizados para 1 sem erro. A `TileLayer` recebe
-  e conserva o plano, e o orquestrador o executa para todos os tiles.
-- **Evidências:** RED/GREEN cobrindo planos, clamp, seed/delta e integração;
-  49 testes, `cargo check --bin sprite-demo`, `cargo fmt` e `git diff --check`
-  passaram.
 
 ### T020 — Integrar multiprecisão na camada e corrigir navegação
 
