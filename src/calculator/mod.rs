@@ -1,3 +1,3 @@
 mod mandelbrot;
 
-pub use mandelbrot::Mandelbrot;
+pub use mandelbrot::{Mandelbrot, MandelbrotFixed};

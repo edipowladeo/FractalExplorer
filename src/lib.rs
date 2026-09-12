@@ -11,7 +11,8 @@ pub mod renderer;
 
 pub use geometry::{Camera, CameraEnvelope};
 
-pub use calculator::Mandelbrot;
+pub use calculator::{Mandelbrot, MandelbrotFixed};
+pub use fixed::Fixed;
 pub use input::{InputEvent, InputState};
 pub use orchestrator::{
     Orchestrator, Tile, TileLayer, TileSprite, TileStatus, TiledInfiniteCanvas,
