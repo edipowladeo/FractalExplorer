@@ -8,9 +8,9 @@ max_iterations = 10000
 allocation_ratio = 1
 #palette = "shade"
 palette_period = 5.0
-starting_point = "x=0.0, y=0.0"
+starting_point = "x=-0.750, y=0.0"
 
 [renderer.debug]
 reduced_viewport = true
-reduced_viewport_allocation_ratio = 0.5
+reduced_viewport_allocation_ratio = 0.7
 show_allocation_envelope = true
