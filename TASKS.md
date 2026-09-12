@@ -46,6 +46,20 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - **Causa isolada:** a regressão sem cobertura de tiles falha igualmente na expansão 4; `adjacent_layer(..., 0.5)` já retorna desalinhada antes da sincronização. O teste mais próximo da causa registra a origem da nova camada em `491x361`, enquanto `canvas.complex_to_screen(layer.position())` produz `491x360`.
 - **Log de criação:** a criação e expansão de camadas imprimem e armazenam `Camada criada com delta: <expoente>` ou `Camada expandida, direcao de incremento: <maior|menor>, delta: <expoente>`. RED/GREEN: `orchestrator::tests::records_the_delta_exponent_and_direction_for_created_layers` passou após a implementação.
 - **Overlays de texto:** adicionadas em `[renderer.debug]` as flags booleanas `text_overlay_global`, `text_overlay_workers`, `text_overlay_layers` e `text_overlay_queue`, todas com padrão `true` e registradas em `config.toml`. RED/GREEN: `cargo test config::tests::` passou com 4 testes e `cargo test renderer::tests::` passou com 15 testes.
+### T018 — Investigar e planejar a multiprecisão u64
+
+- Investigar `fractalExplorer_kotlin2026` e registrar os caminhos de
+  multiprecisão direta e perturbação.
+- Definir o plano para `Fixed<1>`, `Fixed<2>` e `Fixed<N>` com limbs `u64`.
+- Trazer snippets, decisões de representação, riscos e estratégia de testes
+  para `PLANO_IMPLEMENTACAO_MULTIPRECISAO.md`.
+- Registrar que o fallback da perturbação será configurável e começará
+  desabilitado por padrão para permitir a inspeção dos artefatos instáveis.
+- **Critérios de aceitação:** investigação registrada; full multiprecision,
+  órbita de referência e perturbação identificadas; plano TDD definido.
+- **Evidências:** análise registrada em
+  `PLANO_IMPLEMENTACAO_MULTIPRECISAO.md`; nenhum teste pesado executado nesta
+  etapa.
 
 ## BACKLOG
 
