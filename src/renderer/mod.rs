@@ -1,7 +1,7 @@
 use crate::config::RendererConfig;
 use crate::geometry::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
 use crate::{IterationBuffer, Sprite};
-use minifb::{Key, Window, WindowOptions};
+use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -57,6 +57,7 @@ pub fn run(image: IterationBuffer, config: &RendererConfig) -> Result<(), minifb
     sprite.draw_into(&mut framebuffer, width, 0, 0);
     let screen_size = ScreenSize::new(width, height);
     let allocation = allocation_screen_rect(screen_size, config.effective_allocation_ratio());
+    let window_envelope = window_envelope(screen_size);
     if config.debug.show_allocation_envelope {
         draw_rectangle_outline(&mut framebuffer, screen_size, allocation, 0xff0000);
     }
@@ -66,8 +67,20 @@ pub fn run(image: IterationBuffer, config: &RendererConfig) -> Result<(), minifb
         height,
         WindowOptions::default(),
     )?;
+    let mut middle_button_was_down = false;
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
+        if let Some((mouse_x, mouse_y)) = window.get_mouse_pos(MouseMode::Clamp) {
+            let cursor = ScreenPoint::new(mouse_x.round() as i32, mouse_y.round() as i32);
+            let complex = window_envelope.screen_to_complex(cursor, screen_size);
+            let coordinates = format_coordinates(complex);
+            draw_status_bar(&mut framebuffer, screen_size, &coordinates);
+            let middle_button_is_down = window.get_mouse_down(MouseButton::Middle);
+            if middle_button_is_down && !middle_button_was_down {
+                copy_coordinates(&coordinates);
+            }
+            middle_button_was_down = middle_button_is_down;
+        }
         window.update_with_buffer(&framebuffer, width, height)?;
     }
 
@@ -85,12 +98,7 @@ struct ScreenRect {
 fn allocation_screen_rect(size: ScreenSize, allocation_ratio: f64) -> ScreenRect {
     assert!(allocation_ratio > 0.0, "allocation_ratio must be positive");
 
-    let window_envelope = ComplexEnvelope::new(
-        -2.0,
-        2.0,
-        -2.0 * size.height as f64 / size.width as f64,
-        2.0 * size.height as f64 / size.width as f64,
-    );
+    let window_envelope = window_envelope(size);
     let top_left = window_envelope.screen_to_complex(ScreenPoint::new(0, 0), size);
     let bottom_right = window_envelope.screen_to_complex(
         ScreenPoint::new(size.width as i32 - 1, size.height as i32 - 1),
@@ -128,6 +136,15 @@ fn allocation_screen_rect(size: ScreenSize, allocation_ratio: f64) -> ScreenRect
     }
 }
 
+fn window_envelope(size: ScreenSize) -> ComplexEnvelope<f64> {
+    ComplexEnvelope::new(
+        -2.0,
+        2.0,
+        -2.0 * size.height as f64 / size.width as f64,
+        2.0 * size.height as f64 / size.width as f64,
+    )
+}
+
 fn complex_to_screen(
     envelope: &ComplexEnvelope<f64>,
     point: ComplexPoint<f64>,
@@ -162,6 +179,97 @@ fn set_pixel(framebuffer: &mut [u32], size: ScreenSize, x: i32, y: i32, color: u
     if x >= 0 && y >= 0 && x < size.width as i32 && y < size.height as i32 {
         framebuffer[y as usize * size.width + x as usize] = color;
     }
+}
+
+fn format_coordinates(point: ComplexPoint<f64>) -> String {
+    format!("x: {:.15}   y: {:.15}", point.x, point.y)
+}
+
+fn draw_status_bar(framebuffer: &mut [u32], size: ScreenSize, text: &str) {
+    let bar_height = 24usize;
+    let top = size.height.saturating_sub(bar_height);
+    for y in top..size.height {
+        for x in 0..size.width {
+            framebuffer[y * size.width + x] = 0x202020;
+        }
+    }
+    draw_text(framebuffer, size, 8, top as i32 + 8, &text, 0xffffff);
+}
+
+fn copy_coordinates(coordinates: &str) {
+    match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(coordinates)) {
+        Ok(()) => println!("Coordenadas copiadas: {coordinates}"),
+        Err(error) => eprintln!("Não foi possível copiar as coordenadas: {error}"),
+    }
+}
+
+fn draw_text(framebuffer: &mut [u32], size: ScreenSize, x: i32, y: i32, text: &str, color: u32) {
+    let mut cursor_x = x;
+    for character in text.chars() {
+        if let Some(glyph) = glyph(character) {
+            for (row, bits) in glyph.iter().enumerate() {
+                for column in 0..5 {
+                    if bits & (1 << (4 - column)) != 0 {
+                        set_pixel(framebuffer, size, cursor_x + column, y + row as i32, color);
+                    }
+                }
+            }
+        }
+        cursor_x += 6;
+    }
+}
+
+fn glyph(character: char) -> Option<[u8; 7]> {
+    let glyph = match character {
+        '0' => [
+            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+        ],
+        '1' => [
+            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+        '2' => [
+            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
+        ],
+        '3' => [
+            0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
+        '4' => [
+            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+        ],
+        '5' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110,
+        ],
+        '6' => [
+            0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
+        ],
+        '7' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
+        ],
+        '8' => [
+            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+        ],
+        '9' => [
+            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b11100,
+        ],
+        'x' => [
+            0b00000, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b00000,
+        ],
+        'y' => [
+            0b00000, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b11100,
+        ],
+        ':' => [
+            0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000,
+        ],
+        '.' => [
+            0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00110, 0b00110,
+        ],
+        '-' => [
+            0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000,
+        ],
+        ' ' => [0; 7],
+        _ => return None,
+    };
+    Some(glyph)
 }
 
 fn color(iterations: u32, max_iterations: u32, palette: Palette, palette_period: f64) -> u32 {
@@ -202,9 +310,10 @@ fn rainbow_color(iterations: u32, palette_period: f64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        allocation_screen_rect, draw_rectangle_outline, sprite_from_iterations, Palette, ScreenRect,
+        allocation_screen_rect, draw_rectangle_outline, format_coordinates, sprite_from_iterations,
+        Palette, ScreenRect,
     };
-    use crate::geometry::ScreenSize;
+    use crate::geometry::{ComplexPoint, ScreenSize};
     use crate::{Mandelbrot, Orchestrator, RenderConfig};
 
     #[test]
@@ -239,6 +348,13 @@ mod tests {
             toml::from_str("palette = \"unknown\"").unwrap();
 
         assert_eq!(config.palette, Palette::Rainbow);
+    }
+
+    #[test]
+    fn formats_the_complex_coordinates_for_the_status_bar() {
+        let text = format_coordinates(ComplexPoint::new(-0.743643887037151, 0.131825904205330));
+
+        assert_eq!(text, "x: -0.743643887037151   y: 0.131825904205330");
     }
 
     #[test]
