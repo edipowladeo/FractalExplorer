@@ -57,8 +57,7 @@ impl Orchestrator {
 
         for pixel_y in 0..config.height {
             for pixel_x in 0..config.width {
-                let real =
-                    ((pixel_x as f64 + 0.5) / config.width as f64 - 0.5) * config.view_width;
+                let real = ((pixel_x as f64 + 0.5) / config.width as f64 - 0.5) * config.view_width;
                 let imaginary = ((pixel_y as f64 + 0.5) / config.height as f64 - 0.5)
                     * config.view_width
                     * aspect_ratio;
