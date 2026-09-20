@@ -17,6 +17,19 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## TODO
 
+### T029 — Renderização integral na GPU com texturas e shaders
+
+- **Objetivo:** substituir a composição CPU de sprites por texturas e shaders GPU,
+  preservando o caminho CPU como referência e fallback durante a migração.
+- **Plano:** ver [plano de implementação de T029](task-descriptions/T029-gpu-textures-shaders.md).
+- **Dependências:** T003, T005, T006 e T007; a primeira fatia pode reutilizar o
+  processador CPU e os tiles atuais, migrando inicialmente apenas a composição.
+- **Critérios de aceitação:** composição por GPU sem `Sprite::draw_into_scaled`
+  no caminho GPU; equivalência CPU/GPU dentro de tolerância documentada;
+  navegação, camadas, resize, tiles progressivos, overlays e fallback CPU
+  preservados; testes GREEN, refactor, commit e push confirmados.
+- **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
+
 ### T026 — Investigar e melhorar a precisão para zoom profundo
 
 - **Critério de aceitação:** a câmera, camadas e tiles preservam coordenadas e passo suficientes para zoom profundo; copiar uma localização e restaurá-la na mesma versão mantém a mesma visão. Ver [diretriz de precisão](task-descriptions/T026-deep-zoom-precision.md).
