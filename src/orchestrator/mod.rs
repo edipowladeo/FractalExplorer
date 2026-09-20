@@ -414,6 +414,23 @@ mod tests {
     }
 
     #[test]
+    fn skips_layer_creation_log_when_disabled() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-1.0, 1.0),
+            30,
+            20,
+            0.01,
+            crate::geometry::ScreenPoint::new(300, 225),
+            8.0,
+            0.8,
+        );
+        canvas.set_layer_creation_log_enabled(false);
+
+        assert!(canvas.expand_one_layer_per_frame());
+        assert!(canvas.layer_creation_log().is_empty());
+    }
+
+    #[test]
     fn all_layers_map_the_same_complex_point_to_the_same_screen_point() {
         let mut canvas = TiledInfiniteCanvas::new(
             crate::geometry::ComplexPoint::new(-1.0, 1.0),
@@ -723,6 +740,7 @@ pub struct TiledInfiniteCanvas {
     camera_scale: f64,
     navigation_history: Vec<CanvasNavigationEvent>,
     layer_creation_log: Vec<String>,
+    layer_creation_log_enabled: bool,
     render_plan: crate::PrecisionRenderPlan,
 }
 
@@ -787,6 +805,7 @@ impl TiledInfiniteCanvas {
             camera_scale: max_apparent_pixel_size / delta,
             navigation_history: Vec::new(),
             layer_creation_log: Vec::new(),
+            layer_creation_log_enabled: true,
             render_plan: crate::PrecisionRenderPlan::default(),
         }
     }
@@ -909,6 +928,10 @@ impl TiledInfiniteCanvas {
         &self.layer_creation_log
     }
 
+    pub fn set_layer_creation_log_enabled(&mut self, enabled: bool) {
+        self.layer_creation_log_enabled = enabled;
+    }
+
     /// Parameters supplied at canvas creation, before any navigation command.
     pub fn initial_state(&self) -> CanvasInitialState {
         CanvasInitialState {
@@ -923,6 +946,9 @@ impl TiledInfiniteCanvas {
     }
 
     fn record_layer_creation(&mut self, direction: Option<&str>, delta: f64) {
+        if !self.layer_creation_log_enabled {
+            return;
+        }
         let delta_exponent = -delta.log2();
         let line = match direction {
             Some(direction) => format!("Camada {direction} criada, delta: {delta_exponent:.3}"),

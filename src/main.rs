@@ -1,7 +1,7 @@
 use fractal_explorer::{
     config::AppConfig,
     geometry::{ComplexPoint, ScreenPoint},
-    Mandelbrot, Orchestrator,
+    Mandelbrot, Orchestrator, PrecisionDecisionManager,
 };
 
 fn centered_tile_position(
@@ -29,6 +29,7 @@ fn initial_view_parameters(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load("config.toml").unwrap_or_default();
+    let render_plan = PrecisionDecisionManager::from_config(&config.renderer)?;
     println!("Paleta em uso: {:?}", config.renderer.palette);
     let (center, starting_zoom) = config.renderer.starting_view().unwrap_or_else(|error| {
         eprintln!("Aviso: {error}; usando visão inicial padrão");
@@ -63,9 +64,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.renderer.min_apparent_pixel_size,
     );
     canvas.set_initial_zoom(initial_layer_zoom);
-    let orchestrator = Orchestrator::with_worker_count(
+    canvas.set_layer_creation_log_enabled(config.renderer.debug.layer_creation_log);
+    canvas.set_render_plan(render_plan);
+    let orchestrator = Orchestrator::with_worker_count_and_plan(
         Mandelbrot::new(config.renderer.effective_max_iterations()),
         config.orchestrator.workers,
+        render_plan,
     );
     #[cfg(feature = "native-ui")]
     {
