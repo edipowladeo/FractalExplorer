@@ -431,11 +431,13 @@ pub fn run_with_updates(
         }
         canvas.record_frame_event("overlays desenhados");
         canvas.record_frame_event("buffer pronto para apresentacao");
+        canvas.record_frame_presentation_started();
         window.update_with_buffer(
             &surface.framebuffer,
             surface.screen_size.width,
             surface.screen_size.height,
         )?;
+        canvas.record_frame_presentation_finished();
         canvas.finish_frame();
         if let Some((frame_number, duration)) = canvas.last_finished_frame_timing() {
             frame_timing_ring.push(frame_number, duration);
