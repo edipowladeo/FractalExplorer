@@ -54,38 +54,88 @@ fn sprite_from_tile(
     Sprite::from_pixels(tile.width() as usize, tile.height() as usize, pixels)
 }
 
+/// Framebuffer and viewport-derived regions for the current native window size.
+struct RenderSurface {
+    screen_size: ScreenSize,
+    framebuffer: Vec<u32>,
+    allocation: ScreenRect,
+    deallocation: ScreenRect,
+    allocation_ratio: f64,
+    deallocation_ratio: f64,
+}
+
+impl RenderSurface {
+    fn new(width: usize, height: usize, allocation_ratio: f64, deallocation_ratio: f64) -> Self {
+        let screen_size = ScreenSize::new(width, height);
+        Self {
+            screen_size,
+            framebuffer: vec![0x101820; width * height],
+            allocation: allocation_screen_rect(screen_size, allocation_ratio),
+            deallocation: deallocation_screen_rect(screen_size, deallocation_ratio),
+            allocation_ratio,
+            deallocation_ratio,
+        }
+    }
+
+    /// Applies a size reported by the window immediately, ignoring transient zero-sized states.
+    fn update_window_size(&mut self, (width, height): (usize, usize)) -> bool {
+        if width == 0
+            || height == 0
+            || (width, height) == (self.screen_size.width, self.screen_size.height)
+        {
+            return false;
+        }
+
+        self.screen_size = ScreenSize::new(width, height);
+        self.framebuffer = vec![0x101820; width * height];
+        self.allocation = allocation_screen_rect(self.screen_size, self.allocation_ratio);
+        self.deallocation = deallocation_screen_rect(self.screen_size, self.deallocation_ratio);
+        true
+    }
+
+    fn clear(&mut self) {
+        self.framebuffer.fill(0x101820);
+    }
+}
+
 /// Displays one rendered sprite in a native window.
 pub fn run(
     canvas: &mut TiledInfiniteCanvas,
     orchestrator: &Orchestrator,
     config: &RendererConfig,
 ) -> Result<(), minifb::Error> {
-    let width = config.width;
-    let height = config.height;
-    let screen_size = ScreenSize::new(width, height);
-    let allocation = allocation_screen_rect(screen_size, config.effective_allocation_ratio());
-    let deallocation = deallocation_screen_rect(screen_size, config.effective_deallocation_ratio());
+    let mut surface = RenderSurface::new(
+        config.width,
+        config.height,
+        config.effective_allocation_ratio(),
+        config.effective_deallocation_ratio(),
+    );
     let mut window = Window::new(
         "FractalExplorer - Mandelbrot",
-        width,
-        height,
-        WindowOptions::default(),
+        config.width,
+        config.height,
+        WindowOptions {
+            resize: true,
+            ..WindowOptions::default()
+        },
     )?;
     let mut input = InputState::new();
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
-        let mut framebuffer = vec![0x101820; width * height];
+        // `get_size` changes while the resize gesture is in progress, not only when it ends.
+        surface.update_window_size(window.get_size());
+        surface.clear();
         canvas.trim_outside_allocation((
-            deallocation.left,
-            deallocation.top,
-            deallocation.right,
-            deallocation.bottom,
+            surface.deallocation.left,
+            surface.deallocation.top,
+            surface.deallocation.right,
+            surface.deallocation.bottom,
         ));
         canvas.ensure_screen_coverage((
-            allocation.left,
-            allocation.top,
-            allocation.right,
-            allocation.bottom,
+            surface.allocation.left,
+            surface.allocation.top,
+            surface.allocation.right,
+            surface.allocation.bottom,
         ));
         for layer in canvas.layers() {
             orchestrator.render_layer(layer);
@@ -104,11 +154,16 @@ pub fn run(
                 InputEvent::Drag { delta } => canvas.drag(delta),
                 InputEvent::MiddleClick(cursor) => {
                     let complex = canvas.screen_to_complex(cursor);
-                    copy_coordinates(&format_coordinates(complex.clone()));
-                    println!(
-                        "{}",
-                        middle_click_coordinate_report(canvas, cursor, complex)
-                    );
+                    copy_coordinates(&format_copied_coordinates(
+                        complex.clone(),
+                        canvas.apparent_pixel_size(),
+                    ));
+                    if config.debug.middle_click_coordinate_report {
+                        println!(
+                            "{}",
+                            middle_click_coordinate_report(canvas, cursor, complex)
+                        );
+                    }
                 }
                 InputEvent::Zoom { direction, cursor } => {
                     let multiplier = config.zoom_multiplier;
@@ -127,7 +182,11 @@ pub fn run(
         if config.debug.text_overlay_global {
             if let Some(cursor) = mouse_position {
                 let complex = canvas.screen_to_complex(cursor);
-                draw_status_bar(&mut framebuffer, screen_size, &format_coordinates(complex));
+                draw_status_bar(
+                    &mut surface.framebuffer,
+                    surface.screen_size,
+                    &format_coordinates(complex),
+                );
             }
         }
         for layer in canvas.layers() {
@@ -150,8 +209,8 @@ pub fn run(
                     });
                     let tile_position = canvas.complex_to_screen(tile.coordinate().clone());
                     sprite.draw_into_scaled(
-                        &mut framebuffer,
-                        width,
+                        &mut surface.framebuffer,
+                        surface.screen_size.width,
                         tile_position.x as isize,
                         tile_position.y as isize,
                         tile_width as usize,
@@ -161,11 +220,26 @@ pub fn run(
             }
         }
         if let Some(cursor) = mouse_position {
-            draw_mouse_marker(&mut framebuffer, screen_size, cursor, 0x00ffff);
+            draw_mouse_marker(
+                &mut surface.framebuffer,
+                surface.screen_size,
+                cursor,
+                0x00ffff,
+            );
         }
         if config.debug.show_allocation_envelope {
-            draw_rectangle_outline(&mut framebuffer, screen_size, allocation, 0xff0000);
-            draw_rectangle_outline(&mut framebuffer, screen_size, deallocation, 0xffff00);
+            draw_rectangle_outline(
+                &mut surface.framebuffer,
+                surface.screen_size,
+                surface.allocation,
+                0xff0000,
+            );
+            draw_rectangle_outline(
+                &mut surface.framebuffer,
+                surface.screen_size,
+                surface.deallocation,
+                0xffff00,
+            );
         }
         if config.debug.text_overlay_layers {
             let overlays: Vec<_> = canvas
@@ -183,11 +257,15 @@ pub fn run(
                     )
                 })
                 .collect();
-            let first_overlay_y = height.saturating_sub(24 + overlays.len() * 8 + 4) as i32;
+            let first_overlay_y = surface
+                .screen_size
+                .height
+                .saturating_sub(24 + overlays.len() * 8 + 4)
+                as i32;
             for (line, overlay) in overlays.iter().enumerate() {
                 draw_text(
-                    &mut framebuffer,
-                    screen_size,
+                    &mut surface.framebuffer,
+                    surface.screen_size,
                     8,
                     first_overlay_y + line as i32 * 8,
                     overlay,
@@ -215,10 +293,14 @@ pub fn run(
                 })
                 .collect();
             for (line, queue_line) in queue_lines.iter().enumerate() {
-                let x = width.saturating_sub(queue_line.chars().count() * 6 + 8) as i32;
+                let x = surface
+                    .screen_size
+                    .width
+                    .saturating_sub(queue_line.chars().count() * 6 + 8)
+                    as i32;
                 draw_text(
-                    &mut framebuffer,
-                    screen_size,
+                    &mut surface.framebuffer,
+                    surface.screen_size,
                     x,
                     8 + line as i32 * 8,
                     queue_line,
@@ -230,8 +312,8 @@ pub fn run(
             for (line, worker) in orchestrator.worker_statuses().iter().enumerate() {
                 let worker_line = format_worker_status_line(worker.id, worker.tile.as_ref());
                 draw_text(
-                    &mut framebuffer,
-                    screen_size,
+                    &mut surface.framebuffer,
+                    surface.screen_size,
                     8,
                     8 + line as i32 * 8,
                     &worker_line,
@@ -239,7 +321,11 @@ pub fn run(
                 );
             }
         }
-        window.update_with_buffer(&framebuffer, width, height)?;
+        window.update_with_buffer(
+            &surface.framebuffer,
+            surface.screen_size.width,
+            surface.screen_size.height,
+        )?;
     }
 
     // Closing the native window leaves the loop and releases the renderer
@@ -350,6 +436,10 @@ fn format_coordinates(point: ComplexPoint<f64>) -> String {
     format!("x: {:.15}   y: {:.15}", point.x, point.y)
 }
 
+fn format_copied_coordinates(point: ComplexPoint<f64>, zoom: f64) -> String {
+    format!("{}   zoom: {:.15}", format_coordinates(point), zoom.log2())
+}
+
 fn format_layer_overlay(
     index: usize,
     zoom: f64,
@@ -361,7 +451,10 @@ fn format_layer_overlay(
     let mouse_text = mouse.map_or_else(String::new, |point| {
         format!(" mouse={:.15}x{:.15}", point.x, point.y)
     });
-    format!("Camada {index}: zoom={zoom:.3} delta={delta:.3} {columns}x{rows} tiles{mouse_text}")
+    format!(
+        "Camada {index}: zoom={:.3} delta={delta:.3} {columns}x{rows} tiles{mouse_text}",
+        zoom.log2()
+    )
 }
 
 fn format_worker_queue_line(layer: usize, row: usize, column: usize, delta: f64) -> String {
@@ -620,8 +713,9 @@ fn rainbow_color(iterations: u64, palette_period: f64) -> u32 {
 mod tests {
     use super::{
         allocation_screen_rect, draw_mouse_marker, draw_rectangle_outline, format_coordinates,
-        format_layer_overlay, format_worker_queue_line, format_worker_status_line,
-        middle_click_coordinate_report, sprite_from_tile, Palette, ScreenRect,
+        format_copied_coordinates, format_layer_overlay, format_worker_queue_line,
+        format_worker_status_line, middle_click_coordinate_report, sprite_from_tile, Palette,
+        RenderSurface, ScreenRect,
     };
     use crate::geometry::{ComplexPoint, ScreenPoint, ScreenSize};
     use crate::{Mandelbrot, Orchestrator, Tile, TiledInfiniteCanvas};
@@ -653,6 +747,26 @@ mod tests {
     }
 
     #[test]
+    fn render_surface_reallocates_the_framebuffer_for_each_live_window_size() {
+        let mut surface = RenderSurface::new(800, 600, 1.2, 1.5);
+
+        assert!(surface.update_window_size((960, 540)));
+        assert_eq!(surface.screen_size, ScreenSize::new(960, 540));
+        assert_eq!(surface.framebuffer.len(), 960 * 540);
+        assert_eq!(
+            surface.allocation,
+            allocation_screen_rect(ScreenSize::new(960, 540), 1.2)
+        );
+        assert_eq!(
+            surface.deallocation,
+            allocation_screen_rect(ScreenSize::new(960, 540), 1.5)
+        );
+
+        assert!(!surface.update_window_size((960, 540)));
+        assert!(!surface.update_window_size((0, 540)));
+    }
+
+    #[test]
     fn invalid_palette_falls_back_to_rainbow() {
         let config: crate::config::RendererConfig =
             toml::from_str("palette = \"unknown\"").unwrap();
@@ -668,7 +782,7 @@ mod tests {
     fn formats_layer_overlay_with_grid_dimensions() {
         assert_eq!(
             format_layer_overlay(2, 4.0, 0.005, 3, 4, None),
-            "Camada 2: zoom=4.000 delta=0.005 3x4 tiles"
+            "Camada 2: zoom=2.000 delta=0.005 3x4 tiles"
         );
     }
 
@@ -683,7 +797,7 @@ mod tests {
                 1,
                 Some(ComplexPoint::new(-0.743643887037151, 0.131825904205330)),
             ),
-            "Camada 0: zoom=8.000 delta=7.644 1x1 tiles mouse=-0.743643887037151x0.131825904205330"
+            "Camada 0: zoom=3.000 delta=7.644 1x1 tiles mouse=-0.743643887037151x0.131825904205330"
         );
     }
 
@@ -714,6 +828,19 @@ mod tests {
         let text = format_coordinates(ComplexPoint::new(-0.743643887037151, 0.131825904205330));
 
         assert_eq!(text, "x: -0.743643887037151   y: 0.131825904205330");
+    }
+
+    #[test]
+    fn formats_copied_coordinates_with_the_current_zoom() {
+        let text = format_copied_coordinates(
+            ComplexPoint::new(-0.743643887037151, 0.131825904205330),
+            2.5,
+        );
+
+        assert_eq!(
+            text,
+            "x: -0.743643887037151   y: 0.131825904205330   zoom: 1.321928094887362"
+        );
     }
 
     #[test]

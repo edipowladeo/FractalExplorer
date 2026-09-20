@@ -53,6 +53,7 @@ pub struct RendererDebugConfig {
     pub text_overlay_workers: bool,
     pub text_overlay_layers: bool,
     pub text_overlay_queue: bool,
+    pub middle_click_coordinate_report: bool,
 }
 
 impl Default for AppConfig {
@@ -96,7 +97,8 @@ impl Default for RendererConfig {
             zoom_multiplier: 1.1,
             palette: Palette::Rainbow,
             palette_period: 5.0,
-            starting_point: "x=0.0, y=0.0".to_string(),
+            starting_point: "x: 0.000000000000000   y: 0.000000000000000   zoom: 3.000000000000000"
+                .to_string(),
             debug: RendererDebugConfig::default(),
         }
     }
@@ -112,6 +114,7 @@ impl Default for RendererDebugConfig {
             text_overlay_workers: true,
             text_overlay_layers: true,
             text_overlay_queue: true,
+            middle_click_coordinate_report: false,
         }
     }
 }
@@ -121,23 +124,29 @@ impl RendererConfig {
         2.0_f64.powi(self.max_apparent_pixel_size_exponent)
     }
 
-    pub fn starting_point_coordinates(&self) -> Result<crate::geometry::ComplexPoint<f64>, String> {
-        let (x_text, y_text) = self.starting_point.split_once(',').ok_or_else(|| {
-            "starting_point deve usar o formato 'x=<valor>, y=<valor>'".to_string()
-        })?;
-        let x = x_text
-            .trim()
-            .strip_prefix("x=")
-            .ok_or_else(|| "starting_point deve iniciar com 'x='".to_string())?
-            .parse::<f64>()
-            .map_err(|_| "valor x inválido em starting_point".to_string())?;
-        let y = y_text
-            .trim()
-            .strip_prefix("y=")
-            .ok_or_else(|| "starting_point deve conter 'y='".to_string())?
-            .parse::<f64>()
-            .map_err(|_| "valor y inválido em starting_point".to_string())?;
-        Ok(crate::geometry::ComplexPoint::new(x, y))
+    pub fn starting_view(&self) -> Result<(crate::geometry::ComplexPoint<f64>, f64), String> {
+        let mut fields = self.starting_point.split_whitespace();
+        let parse = |label: &str, fields: &mut std::str::SplitWhitespace<'_>| {
+            if fields.next() != Some(label) {
+                return Err(format!("starting_point deve conter '{label} <valor>'"));
+            }
+            fields
+                .next()
+                .ok_or_else(|| format!("valor ausente após '{label}' em starting_point"))?
+                .parse::<f64>()
+                .map_err(|_| format!("valor inválido após '{label}' em starting_point"))
+        };
+        let x = parse("x:", &mut fields)?;
+        let y = parse("y:", &mut fields)?;
+        let zoom_exponent = parse("zoom:", &mut fields)?;
+        if fields.next().is_some() {
+            return Err("starting_point contém dados adicionais".to_string());
+        }
+        let zoom = 2.0_f64.powf(zoom_exponent);
+        if !zoom.is_finite() || zoom <= 0.0 {
+            return Err("expoente de zoom inválido em starting_point".to_string());
+        }
+        Ok((crate::geometry::ComplexPoint::new(x, y), zoom))
     }
 
     pub fn effective_allocation_ratio(&self) -> f64 {
@@ -186,7 +195,7 @@ mod tests {
             zoom_multiplier = 1.1
             palette = "rainbow"
             palette_period = 5.0
-            starting_point = "x=-0.743643887037151, y=0.131825904205330"
+            starting_point = "x: -0.743643887037151   y: 0.131825904205330   zoom: 1.321928094887362"
 
             [renderer.debug]
             reduced_viewport = true
@@ -222,10 +231,12 @@ mod tests {
         assert_eq!(config.renderer.zoom_multiplier, 1.1);
         assert_eq!(config.orchestrator.tile.width, 800);
         assert_eq!(config.orchestrator.tile.height, 600);
+        let (point, zoom) = config.renderer.starting_view().unwrap();
         assert_eq!(
-            config.renderer.starting_point_coordinates().unwrap(),
+            point,
             crate::geometry::ComplexPoint::new(-0.743643887037151, 0.131825904205330)
         );
+        assert!((zoom - 2.5).abs() < 1e-12);
     }
 
     #[test]
@@ -243,5 +254,36 @@ mod tests {
         assert_eq!(config.max_apparent_pixel_size_exponent, 3);
         assert_eq!(config.max_apparent_pixel_size(), 8.0);
         assert_eq!(config.min_apparent_pixel_size, 0.8);
+    }
+
+    #[test]
+    fn disables_middle_click_coordinate_reports_by_default_without_disabling_global_overlay() {
+        let debug = super::RendererDebugConfig::default();
+
+        assert!(!debug.middle_click_coordinate_report);
+        assert!(debug.text_overlay_global);
+    }
+
+    #[test]
+    fn loads_the_middle_click_coordinate_report_flag_from_toml() {
+        let config: super::RendererConfig =
+            toml::from_str("[debug]\nmiddle_click_coordinate_report = true").unwrap();
+
+        assert!(config.debug.middle_click_coordinate_report);
+    }
+
+    #[test]
+    fn loads_starting_point_and_zoom_from_the_copied_coordinate_format() {
+        let config: super::RendererConfig = toml::from_str(
+            "starting_point = \"x: -0.743643887037151   y: 0.131825904205330   zoom: 1.321928094887362\"",
+        )
+        .unwrap();
+
+        let (point, zoom) = config.starting_view().unwrap();
+        assert_eq!(
+            point,
+            crate::geometry::ComplexPoint::new(-0.743643887037151, 0.131825904205330)
+        );
+        assert!((zoom - 2.5).abs() < 1e-12);
     }
 }

@@ -331,6 +331,25 @@ mod tests {
     }
 
     #[test]
+    fn canvas_can_start_at_a_configured_zoom_within_its_limits() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-1.0, 1.0),
+            30,
+            20,
+            0.01,
+            crate::geometry::ScreenPoint::new(300, 225),
+            8.0,
+            0.5,
+        );
+
+        canvas.set_initial_zoom(2.5);
+        canvas.expand_one_layer_per_frame();
+
+        assert_eq!(canvas.layer(0).unwrap().zoom(), 2.5);
+        assert_eq!(canvas.apparent_pixel_size(), 2.5);
+    }
+
+    #[test]
     fn records_the_delta_exponent_and_direction_for_created_layers() {
         let mut canvas = TiledInfiniteCanvas::new(
             crate::geometry::ComplexPoint::new(-1.5725, 0.0475),
@@ -659,6 +678,7 @@ pub struct TiledInfiniteCanvas {
     screen_position: crate::geometry::ScreenPoint,
     max_apparent_pixel_size: f64,
     min_apparent_pixel_size: f64,
+    initial_apparent_pixel_size: f64,
     camera_anchor_complex: crate::geometry::ComplexPoint<f64>,
     camera_anchor_screen: crate::geometry::ScreenPoint,
     camera_scale: f64,
@@ -721,6 +741,7 @@ impl TiledInfiniteCanvas {
             screen_position,
             max_apparent_pixel_size,
             min_apparent_pixel_size,
+            initial_apparent_pixel_size: max_apparent_pixel_size,
             camera_anchor_complex,
             camera_anchor_screen,
             camera_scale: max_apparent_pixel_size / delta,
@@ -738,7 +759,7 @@ impl TiledInfiniteCanvas {
                 self.tile_height,
                 self.delta,
                 self.screen_position,
-                self.max_apparent_pixel_size,
+                self.initial_apparent_pixel_size,
             ));
             self.synchronize_layer_positions();
             self.record_layer_creation(None, self.layers.back().unwrap().delta());
@@ -775,6 +796,29 @@ impl TiledInfiniteCanvas {
 
     pub fn layer_count(&self) -> usize {
         self.layers.len()
+    }
+
+    /// Selects the apparent pixel size used when the first layer is created.
+    pub fn set_initial_zoom(&mut self, zoom: f64) {
+        assert!(
+            self.layers.is_empty(),
+            "initial zoom must be set before layers are created"
+        );
+        assert!(
+            zoom >= self.min_apparent_pixel_size && zoom <= self.max_apparent_pixel_size,
+            "initial zoom must be within the configured limits"
+        );
+        self.initial_apparent_pixel_size = zoom;
+        self.camera_anchor_screen = crate::geometry::ScreenPoint::new(
+            self.screen_position.x + ((self.tile_width as f64 * zoom - 1.0) / 2.0).round() as i32,
+            self.screen_position.y + ((self.tile_height as f64 * zoom - 1.0) / 2.0).round() as i32,
+        );
+        self.camera_scale = zoom / self.delta;
+    }
+
+    /// Current apparent size of one complex-plane sample in screen pixels.
+    pub fn apparent_pixel_size(&self) -> f64 {
+        self.camera_scale * self.delta
     }
 
     pub fn layer(&self, index: usize) -> Option<&TileLayer> {
@@ -949,7 +993,7 @@ impl TiledInfiniteCanvas {
         let current_zoom = self
             .layers
             .front()
-            .map_or(self.max_apparent_pixel_size, TileLayer::zoom);
+            .map_or(self.initial_apparent_pixel_size, TileLayer::zoom);
         let scale = zoom / current_zoom;
         let cursor_complex = self.screen_to_complex(cursor);
         self.camera_anchor_complex = cursor_complex;
