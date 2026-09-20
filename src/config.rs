@@ -58,7 +58,7 @@ pub struct RendererDebugConfig {
     pub text_overlay_layers: bool,
     pub text_overlay_queue: bool,
     pub middle_click_coordinate_report: bool,
-    pub layer_creation_log: bool,
+    pub layer_creation_diagnostics: bool,
 }
 
 impl Default for AppConfig {
@@ -123,7 +123,7 @@ impl Default for RendererDebugConfig {
             text_overlay_layers: true,
             text_overlay_queue: true,
             middle_click_coordinate_report: false,
-            layer_creation_log: true,
+            layer_creation_diagnostics: true,
         }
     }
 }
@@ -285,8 +285,13 @@ mod tests {
     }
 
     #[test]
-    fn layer_creation_log_is_enabled_by_default() {
-        assert!(AppConfig::default().renderer.debug.layer_creation_log);
+    fn layer_creation_diagnostics_are_enabled_by_default() {
+        assert!(
+            AppConfig::default()
+                .renderer
+                .debug
+                .layer_creation_diagnostics
+        );
     }
 
     #[test]
