@@ -8,6 +8,55 @@ use crate::{
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::mpsc::Receiver;
+use std::time::Duration;
+
+const FRAME_HISTORY_CAPACITY: usize = 30;
+
+#[derive(Debug, Clone, Copy, Default)]
+struct FrameHistoryEntry {
+    frame_number: u64,
+    duration: Duration,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FrameTimingRing {
+    entries: [Option<FrameHistoryEntry>; FRAME_HISTORY_CAPACITY],
+    next_slot: usize,
+}
+
+impl Default for FrameTimingRing {
+    fn default() -> Self {
+        Self {
+            entries: [None; FRAME_HISTORY_CAPACITY],
+            next_slot: 0,
+        }
+    }
+}
+
+impl FrameTimingRing {
+    fn push(&mut self, frame_number: u64, duration: Duration) {
+        self.entries[self.next_slot] = Some(FrameHistoryEntry {
+            frame_number,
+            duration,
+        });
+        self.next_slot = (self.next_slot + 1) % FRAME_HISTORY_CAPACITY;
+    }
+
+    fn entries_in_ring_order(&self) -> impl Iterator<Item = Option<FrameHistoryEntry>> + '_ {
+        self.entries.iter().copied()
+    }
+}
+
+fn format_frame_history_line(entry: Option<FrameHistoryEntry>) -> String {
+    match entry {
+        Some(entry) => format!(
+            "Frame #{}, {:.3} ms",
+            entry.frame_number,
+            entry.duration.as_secs_f64() * 1_000.0,
+        ),
+        None => "Frame #---, ---.--- ms".to_string(),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -133,6 +182,7 @@ pub fn run_with_updates(
         },
     )?;
     let mut input = InputState::new();
+    let mut frame_timing_ring = FrameTimingRing::default();
     canvas.set_frame_dump_events(config.debug.frame_dump_events.clone());
     canvas.set_slow_frame_threshold_ms(config.debug.slow_frame_threshold_ms);
     let mut render_plan = PrecisionDecisionManager::from_config(initial_config).map_err(|_| {
@@ -366,6 +416,19 @@ pub fn run_with_updates(
                 );
             }
         }
+        if config.debug.text_overlay_frames {
+            let x = surface.screen_size.width.saturating_sub(240) as i32;
+            for (line, entry) in frame_timing_ring.entries_in_ring_order().enumerate() {
+                draw_text(
+                    &mut surface.framebuffer,
+                    surface.screen_size,
+                    x,
+                    8 + line as i32 * 8,
+                    &format_frame_history_line(entry),
+                    0xffffff,
+                );
+            }
+        }
         canvas.record_frame_event("overlays desenhados");
         canvas.record_frame_event("buffer pronto para apresentacao");
         window.update_with_buffer(
@@ -374,6 +437,9 @@ pub fn run_with_updates(
             surface.screen_size.height,
         )?;
         canvas.finish_frame();
+        if let Some((frame_number, duration)) = canvas.last_finished_frame_timing() {
+            frame_timing_ring.push(frame_number, duration);
+        }
     }
 
     // Closing the native window leaves the loop and releases the renderer
@@ -632,6 +698,9 @@ fn glyph(character: char) -> Option<[u8; 7]> {
         'C' => [
             0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110,
         ],
+        '#' => [
+            0b01010, 0b11111, 0b01010, 0b01010, 0b11111, 0b01010, 0b00000,
+        ],
         '0' => [
             0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
         ],
@@ -765,12 +834,14 @@ fn has_live_window_size((width, height): (usize, usize)) -> bool {
 mod tests {
     use super::{
         allocation_screen_rect, draw_mouse_marker, draw_rectangle_outline, format_coordinates,
-        format_copied_coordinates, format_layer_overlay, format_worker_queue_line,
-        format_worker_status_line, has_live_window_size, middle_click_coordinate_report,
-        sprite_from_tile, Palette, RenderSurface, ScreenRect,
+        format_copied_coordinates, format_frame_history_line, format_layer_overlay,
+        format_worker_queue_line, format_worker_status_line, has_live_window_size,
+        middle_click_coordinate_report, sprite_from_tile, FrameTimingRing, Palette, RenderSurface,
+        ScreenRect,
     };
     use crate::geometry::{ComplexPoint, ScreenPoint, ScreenSize};
     use crate::{Mandelbrot, Orchestrator, Tile, TiledInfiniteCanvas};
+    use std::time::Duration;
 
     #[test]
     fn converts_tile_iterations_to_a_sprite() {
@@ -880,6 +951,31 @@ mod tests {
             "Worker 2: tile pos -2.000x3.000 delta=1.000"
         );
         assert_eq!(format_worker_status_line(3, None), "Worker 3: ocioso");
+    }
+
+    #[test]
+    fn frame_timing_ring_keeps_physical_slot_order() {
+        let mut ring = FrameTimingRing::default();
+        for frame_number in 1..=31 {
+            ring.push(frame_number, Duration::from_millis(frame_number));
+        }
+
+        let entries: Vec<_> = ring.entries_in_ring_order().collect();
+        assert_eq!(entries[0].unwrap().frame_number, 31);
+        assert_eq!(entries[1].unwrap().frame_number, 2);
+        assert_eq!(entries[29].unwrap().frame_number, 30);
+    }
+
+    #[test]
+    fn formats_frame_timing_history_lines() {
+        assert_eq!(
+            format_frame_history_line(Some(super::FrameHistoryEntry {
+                frame_number: 42,
+                duration: Duration::from_micros(123_456),
+            })),
+            "Frame #42, 123.456 ms"
+        );
+        assert_eq!(format_frame_history_line(None), "Frame #---, ---.--- ms");
     }
 
     #[test]
