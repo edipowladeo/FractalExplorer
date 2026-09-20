@@ -17,26 +17,6 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## TODO
 
-### T029 — Renderização modular com destinos plugáveis
-
-- **Objetivo:** transformar o spike GPU validado em apenas mais um destino de
-  renderização, preservando um único caminho comum para configuração, janela,
-  input, canvas, tiles, overlays, instrumentação e encerramento.
-- **Plano:** ver [plano de implementação de T029](task-descriptions/T029-gpu-textures-shaders.md).
-- **Dependências:** T003, T005, T006 e T007; a primeira fatia pode reutilizar o
-  processador CPU e os tiles atuais, migrando inicialmente apenas a composição.
-- **Decisão arquitetural:** `RenderTarget` (apresentação) e `TileProcessor`
-  (cálculo CPU/GPGPU) serão plugins independentes. Recursos gráficos serão
-  encapsulados por handles, descritores, command lists e `GraphicsDevice`, sem
-  tipos de `wgpu`, `winit`, `minifb`, Metal ou OpenCL no domínio.
-- **Critérios de aceitação:** um único `ApplicationController` e `FrameBuilder`;
-  CPU/GPU selecionáveis por factory; equivalência dentro de tolerância
-  documentada; recursos comuns independentes do destino; buffers e texturas
-  persistentes; renderer legado como fallback; Metal e GPGPU adicionáveis sem
-  modificar canvas, UI, overlays ou instrumentação; testes GREEN, refactor,
-  commits focados e push confirmados.
-- **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
-
 ### T026 — Investigar e melhorar a precisão para zoom profundo
 
 - **Critério de aceitação:** a câmera, camadas e tiles preservam coordenadas e passo suficientes para zoom profundo; copiar uma localização e restaurá-la na mesma versão mantém a mesma visão. Ver [diretriz de precisão](task-descriptions/T026-deep-zoom-precision.md).
@@ -92,31 +72,6 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## BACKLOG
 
-### T030 - Filtrar tiles totalmente sobrepostos na composicao
-
-- Identificar tiles cuja area visivel esteja completamente coberta por tiles de
-  camadas superiores ja incluidos no batch.
-- Remover esses tiles do batch de renderizacao sem alterar o resultado visual,
-  respeitando ordem de camadas, opacidade, viewport reduzida e envelope de
-  debug.
-- Manter o filtro independente do destino de renderizacao, para que CPU e GPU
-  recebam a mesma selecao logica de tiles.
-- Cobrir com testes a sobreposicao parcial, total, transparencia, camadas
-  invertidas e a ausencia de tiles cobertos no batch final.
-
-### T031 - Reorganizar a documentacao do repositorio
-
-- Criar as pastas `docs/`, `skills/` e `plans/`.
-- Separar as instrucoes atualmente concentradas em `AGENTS.md` entre
-  documentacao geral em `docs/` e instrucoes operacionais reutilizaveis em
-  `skills/`.
-- Mover os planos de implementacao para `plans/`.
-- Garantir que todos os arquivos `.md` do repositorio fiquem em `docs/`,
-  `skills/` ou `plans/`, preservando links relativos e referencias usadas por
-  ferramentas e agentes.
-- Adicionar uma verificacao automatica que falhe quando um novo `.md` for
-  criado fora dessas pastas.
-
 ### T027 — Representar `delta` como expoente inteiro positivo
 
 - Fazer com que `delta` seja representado exclusivamente por um expoente inteiro positivo na camada, no tile e em todos os demais pontos em que essa informação for necessária.
@@ -141,7 +96,7 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - Verificar visualmente se as camadas se alinham como níveis equivalentes de uma quadtree.
 - Usar o diagnóstico para orientar a futura conversão de coordenadas da camada pela câmera.
 
-### T029 — Resolver desalinhamento de tiles usando tipos pequenos
+### T021 — Resolver desalinhamento de tiles usando tipos pequenos
 
 - Investigar e corrigir o desalinhamento entre camadas sem implementar conversão de cada tile do plano complexo para a tela durante o desenho.
 - Reavaliar a solução atual de posicionamento relativo mantendo o custo e a representação numérica reduzidos quando possível.
@@ -159,7 +114,7 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - Validar o ciclo: retrair → verificar se ficou vazia → criar uma camada com um tile → expandir.
 - Confirmar que a mesma sequência é segura tanto para `TiledInfiniteCanvas`/camadas quanto para `TileLayer`/tiles.
 
-### T030 — Revisar invariância do pivô no zoom
+### T018 — Revisar invariância do pivô no zoom
 
 - Revisar o fluxo de zoom para garantir que o ponto do plano complexo sob o cursor permaneça na mesma posição do botão do mouse durante a operação.
 - Verificar a interação entre conversão tela/plano, transformação da camada, expansão/desalocação de tiles e processamento assíncrono.
@@ -239,13 +194,13 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## DONE
 
-### T031 — Integrar multiprecisão na camada e corrigir navegação (reconstrução histórica)
+### T020 — Integrar multiprecisão na camada e corrigir navegação
 
 - **Resultado:** a integração foi preservada para a reconstrução histórica; a
   implementação compatível com o canvas atual será reaplicada pelo merge
   `4bc041b`.
 
-### T032 — Integrar multiprecisão na camada e corrigir navegação
+### T020 — Integrar multiprecisão na camada e corrigir navegação
 
 - **Resultado:** `Orchestrator::from_config` aplica `multiprecision` ou
   `perturbation` a todos os tiles, inclusive os criados por expansão; o loop do
@@ -254,7 +209,7 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   GREEN passou com 44 testes, `cargo check --bin sprite-demo`, `cargo fmt` e
   `git diff --check`. A validação visual da navegação fica a cargo do usuário.
 
-### T033 — Implementar núcleo `Fixed<N>` com limbs `u64`
+### T019 — Implementar núcleo `Fixed<N>` com limbs `u64`
 
 - **Resultado:** implementados `Fixed<1>`, `Fixed<2>` e `Fixed<N>` com limbs
   `u64`, escala fracionária `32 * N`, cálculo Mandelbrot direto por pixel,
@@ -266,7 +221,7 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   sprite-demo` passou; `cargo fmt` e `git diff --check` passaram. A validação
   visual da janela fica a cargo do usuário.
 
-### T034 — Investigar e planejar a multiprecisão u64
+### T018 — Investigar e planejar a multiprecisão u64
 
 - **Resultado:** investigação do `fractalExplorer_kotlin2026` registrada em
   `PLANO_IMPLEMENTACAO_MULTIPRECISAO.md`, cobrindo full multiprecision,
