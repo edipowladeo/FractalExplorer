@@ -123,7 +123,7 @@ impl Default for RendererDebugConfig {
             text_overlay_layers: true,
             text_overlay_queue: true,
             middle_click_coordinate_report: false,
-            frame_dump_events: vec!["layer_created".to_string()],
+            frame_dump_events: vec!["layer_created".to_string(), "slow_frame".to_string()],
         }
     }
 }
@@ -288,7 +288,7 @@ mod tests {
     fn layer_creation_dump_is_triggered_by_new_layer_by_default() {
         assert_eq!(
             AppConfig::default().renderer.debug.frame_dump_events,
-            vec!["layer_created"]
+            vec!["layer_created", "slow_frame"]
         );
     }
 
