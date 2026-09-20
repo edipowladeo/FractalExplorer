@@ -415,6 +415,7 @@ mod tests {
             8.0,
             0.5,
         );
+        canvas.set_frame_dump_events(vec!["layer_created".to_string()]);
 
         for _ in 0..3 {
             canvas.begin_frame();
@@ -1098,7 +1099,7 @@ impl TiledInfiniteCanvas {
             camera_scale: max_apparent_pixel_size / delta,
             navigation_history: Vec::new(),
             layer_creation_log: Vec::new(),
-            frame_dump_events: vec!["layer_created".to_string(), "slow_frame".to_string()],
+            frame_dump_events: vec!["slow_frame".to_string()],
             slow_frame_threshold: Duration::from_millis(1_000),
             frame_number: 0,
             pending_layer_creation: None,
