@@ -134,6 +134,7 @@ pub fn run_with_updates(
     )?;
     let mut input = InputState::new();
     canvas.set_frame_dump_events(config.debug.frame_dump_events.clone());
+    canvas.set_slow_frame_threshold_ms(config.debug.slow_frame_threshold_ms);
     let mut render_plan = PrecisionDecisionManager::from_config(initial_config).map_err(|_| {
         minifb::Error::WindowCreate("invalid renderer precision configuration".to_string())
     })?;
@@ -151,6 +152,7 @@ pub fn run_with_updates(
                 }
                 config = next_config;
                 canvas.set_frame_dump_events(config.debug.frame_dump_events.clone());
+                canvas.set_slow_frame_threshold_ms(config.debug.slow_frame_threshold_ms);
             }
         }
         canvas.record_frame_event("configuracao processada");
