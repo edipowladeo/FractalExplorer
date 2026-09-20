@@ -17,7 +17,70 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## TODO
 
+### T026 — Investigar e melhorar a precisão para zoom profundo
+
+- **Critério de aceitação:** a câmera, camadas e tiles preservam coordenadas e passo suficientes para zoom profundo; copiar uma localização e restaurá-la na mesma versão mantém a mesma visão. Ver [diretriz de precisão](task-descriptions/T026-deep-zoom-precision.md).
+
+### T025 — Unificar coordenada copiada, zoom e visão inicial
+
+- **Critério de aceitação:** o clique do meio sempre deve copiar e registrar `x`, `y` e o zoom atual em uma única string; `renderer.starting_point` deve aceitar essa mesma string para restaurar a visão inicial. O relatório detalhado por camadas deve permanecer opcional, controlado somente por `renderer.debug.middle_click_coordinate_report`, cujo padrão é `false`.
+- **RED/GREEN:** testes criados para a flag de relatório, a serialização da coordenada com zoom e o carregamento da visão inicial. RED confirmou os campos e APIs ausentes; GREEN: `cargo test` passou com 61 testes. A validação manual e o commit/push dependem de liberar o executável bloqueado.
+
+### T024 — Atualizar o renderizador progressivamente durante o redimensionamento
+
+- **Critério de aceitação:** a janela deve aceitar redimensionamento e o framebuffer, os envelopes de alocação e a renderização devem acompanhar cada tamanho informado pela janela durante o gesto, sem esperar a soltura da borda. Em cada frame do arrasto, os tiles devem manter seu tamanho correto e a cobertura deve adicionar/renderizar novos tiles progressivamente à medida que ficam prontos.
+- **RED/GREEN:** `renderer::tests::render_surface_reallocates_the_framebuffer_for_each_live_window_size` falhou pela ausência de `RenderSurface`; após a implementação, confirma a realocação para `960x540`, o recálculo dos envelopes e a rejeição de tamanhos transitórios nulos. `cargo test` passou com 56 testes; `cargo fmt -- --check` e `git diff --check` passaram.
+- **Validação manual:** ao aumentar a janela durante o arrasto, cada frame mostra a imagem anterior esticada, sem novos tiles; a cobertura só é atualizada após soltar o mouse, quando os tiles corretos aparecem. Isso não atende ao critério: investigar o ciclo de eventos/redimensionamento e garantir atualização, alocação e renderização progressivas durante o gesto antes do commit/push.
+
+### T023 — Registrar percurso de navegação no relatório de coordenadas
+
+- **Critério de aceitação:** o relatório de clique do meio deve informar todos os arrastos e zooms aplicados ao canvas, com dados suficientes para reproduzir a sequência em um teste de regressão de alinhamento das camadas.
+- **Decisão:** registrar os comandos de navegação no próprio canvas, pois um retrato final das coordenadas não permite reconstruir de forma determinística a sequência de transformações.
+- **Evidências:** RED confirmado para a ausência do percurso e para o uso incorreto da transformação global no relatório de cada camada. GREEN: `cargo test renderer::tests::` passou com 13 testes; `cargo fmt` e `git diff --check` passaram. Regressão RED criada em `orchestrator::tests::reported_navigation_keeps_all_layer_coordinates_under_the_cursor_aligned`: reproduz os 31 zooms informados e confirma que a camada 0 mapeia o cursor para `-1.5913955983658463x0.04982497959951243`, em vez do ponto global `-1.5912597012720062x0.04979363767123237`. O valor absoluto diverge do relatório por ele ainda não registrar o estado inicial do canvas, mas a sequência de comandos e a inconsistência de transformação são reproduzidas. `cargo test` completo também permanece RED no teste preexistente `orchestrator::tests::tiled_infinite_canvas_expands_by_one_layer_per_frame` (`esperado 360x265`, `obtido 362x267`); por isso a tarefa permanece em `TODO`, sem commit/push ou validação manual.
+- **Atualização:** o relatório passou a registrar o estado inicial (`posição`, `tile`, `delta`, `tela`, `zoom_max` e `zoom_min`), e `cargo test renderer::tests::` passou com 14 testes. É necessário gerar um novo relatório para ajustar a regressão aos valores absolutos do caso visual.
+- **Regressão mínima:** `orchestrator::tests::initial_layer_expansion_keeps_the_cursor_complex_coordinate_aligned` reproduz o estado inicial informado e cinco expansões de frame, sem pan ou zoom. RED confirmado na camada 3: `-1.5565625x0.0009375`, em vez de `-1.55625x0.00125`; a tolerância de `1e-12` elimina somente ruído de ponto flutuante.
+- **Isolamento progressivo:** `orchestrator::tests::each_initial_layer_expansion_keeps_the_cursor_complex_coordinate_aligned` valida a invariante depois de cada expansão. As expansões 1, 2 e 3 passam; a primeira ruptura é a expansão 4, na camada 3 (`zoom=1`), com o mesmo desvio do relatório.
+- **Diagnóstico visual:** o relatório marca uma camada divergente com `DESALINHADA dx=... dy=...` e informa `Discrepancias detectadas: N`. RED/GREEN: o teste do marcador falhou antes da implementação e `cargo test renderer::tests::` passou com 15 testes depois dela.
+- **Causa isolada:** a regressão sem cobertura de tiles falha igualmente na expansão 4; `adjacent_layer(..., 0.5)` já retorna desalinhada antes da sincronização. O teste mais próximo da causa registra a origem da nova camada em `491x361`, enquanto `canvas.complex_to_screen(layer.position())` produz `491x360`.
+- **Log de criação:** a criação e expansão de camadas imprimem e armazenam `Camada criada com delta: <expoente>` ou `Camada expandida, direcao de incremento: <maior|menor>, delta: <expoente>`. RED/GREEN: `orchestrator::tests::records_the_delta_exponent_and_direction_for_created_layers` passou após a implementação.
+- **Overlays de texto:** adicionadas em `[renderer.debug]` as flags booleanas `text_overlay_global`, `text_overlay_workers`, `text_overlay_layers` e `text_overlay_queue`, todas com padrão `true` e registradas em `config.toml`. RED/GREEN: `cargo test config::tests::` passou com 4 testes e `cargo test renderer::tests::` passou com 15 testes.
+
 ## BACKLOG
+
+### Nota — Remover artefatos que remetem ao estado local
+
+- Avaliar a remoção ou realocação de `fractal_projects_review.md` e `legacy-worktrees.json`, pois ambos registram caminhos, worktrees e inventário específicos da máquina local. Preservar antes qualquer informação que deva virar documentação portátil do projeto.
+
+### T022 — Diagnosticar alinhamento das camadas com envelopes de tiles
+
+- Adicionar retângulos de debug ao redor dos tiles.
+- Usar uma cor aleatória por camada, consistente para todos os tiles daquela camada.
+- Verificar visualmente se as camadas se alinham como níveis equivalentes de uma quadtree.
+- Usar o diagnóstico para orientar a futura conversão de coordenadas da camada pela câmera.
+
+### T021 — Resolver desalinhamento de tiles usando tipos pequenos
+
+- Investigar e corrigir o desalinhamento entre camadas sem implementar conversão de cada tile do plano complexo para a tela durante o desenho.
+- Reavaliar a solução atual de posicionamento relativo mantendo o custo e a representação numérica reduzidos quando possível.
+- Usar sempre o menor tipo numérico adequado para índices, dimensões e posições de tela, sem alterar desnecessariamente os tipos de coordenadas complexas.
+
+### T020 — Cobrir invariantes da sequência de camadas
+
+- Validar a sequência completa de zooms, por exemplo `8, 4, 2, 1`.
+- Garantir que cada camada adjacente tenha exatamente o dobro ou a metade do zoom e do delta da ponta anterior.
+- Verificar ausência de zooms repetidos após zoom in/out, retração e expansão.
+
+### T019 — Verificar camada vazia no ciclo de retração e expansão
+
+- Avaliar se aplicar a ordem de retração às camadas e aos tiles pode deixar uma camada com zero tiles.
+- Validar o ciclo: retrair → verificar se ficou vazia → criar uma camada com um tile → expandir.
+- Confirmar que a mesma sequência é segura tanto para `TiledInfiniteCanvas`/camadas quanto para `TileLayer`/tiles.
+
+### T018 — Revisar invariância do pivô no zoom
+
+- Revisar o fluxo de zoom para garantir que o ponto do plano complexo sob o cursor permaneça na mesma posição do botão do mouse durante a operação.
+- Verificar a interação entre conversão tela/plano, transformação da camada, expansão/desalocação de tiles e processamento assíncrono.
+- Criar testes que cubram zoom in/out, múltiplas operações e cursor fora do centro.
 
 ### T003 — Ampliar o processador CPU determinístico
 
@@ -92,13 +155,6 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - Depende da estabilização da barra de status.
 
 ## DONE
-
-### T018 — Criar UI dinâmica para propriedades do TOML
-
-- **Resultado:** adicionada UI opcional `egui/eframe` em janela separada da renderização `minifb`; propriedades TOML são descobertas recursivamente; booleanos usam checkbox; inteiros e floats usam spinner; valores não suportados ficam somente leitura; alterações são enviadas por canal e mudanças de dimensão recriam a janela do renderer.
-- **Evidências:** ciclo TDD RED/GREEN para descoberta, edição e compatibilidade do renderer; `cargo test` passou com 20 testes; `cargo fmt -- --check`, `git diff --check` e `cargo check --features native-ui` passaram; execução manual tentada, mas bloqueada pela ausência de `dlltool.exe` no ambiente.
-- **Commits:** `f562bca`, `f8bc31f`, `638c2a8`, `ab2df2b`, `1fff9e6`, `7e5f23c`, além da integração remota `dc56f6d`.
-- **Push:** branch `feature/dynamic-config-ui` enviado para `origin`.
 
 ### T001 — Desenhar um sprite na tela e exibi-lo
 

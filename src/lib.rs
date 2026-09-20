@@ -8,9 +8,13 @@ pub mod input;
 pub mod orchestrator;
 pub mod renderer;
 
+pub use geometry::{Camera, CameraEnvelope};
+
 pub use calculator::Mandelbrot;
 pub use input::{InputEvent, InputState};
-pub use orchestrator::{Orchestrator, Tile, TileLayer, TileSprite, TileStatus};
+pub use orchestrator::{
+    Orchestrator, Tile, TileLayer, TileSprite, TileStatus, TiledInfiniteCanvas,
+};
 
 /// A small, packed RGBA sprite.
 #[derive(Debug, Clone, PartialEq, Eq)]
