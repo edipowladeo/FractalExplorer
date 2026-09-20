@@ -132,6 +132,26 @@ mod tests {
     }
 
     #[test]
+    fn workers_use_a_precision_plan_updated_after_startup() {
+        let tile = Arc::new(Tile::new(
+            crate::geometry::ComplexPoint::new(-1.0, 1.0),
+            3,
+            3,
+            1.0,
+        ));
+        let orchestrator = Orchestrator::new(Mandelbrot::new(32));
+        orchestrator.set_render_plan(crate::PrecisionRenderPlan::direct(
+            crate::PrecisionSpec::fixed(2),
+        ));
+
+        orchestrator.render_tile(&tile);
+        wait_for_completion(&tile);
+
+        assert_eq!(tile.status(), TileStatus::Completed);
+        assert_eq!(tile.iterations().lock().unwrap()[4], 32u64);
+    }
+
+    #[test]
     fn orchestrator_exposes_the_worker_pool() {
         let orchestrator = Orchestrator::new(Mandelbrot::new(32));
 
@@ -627,7 +647,7 @@ mod tests {
 use std::collections::VecDeque;
 use std::sync::{
     atomic::{AtomicBool, AtomicU8, Ordering},
-    Arc, Condvar, Mutex,
+    Arc, Condvar, Mutex, RwLock,
 };
 use std::thread::{self, JoinHandle};
 
@@ -1463,6 +1483,7 @@ pub struct Orchestrator {
     stop_worker: Arc<AtomicBool>,
     worker_statuses: Arc<Mutex<Vec<WorkerStatus>>>,
     workers: Vec<JoinHandle<()>>,
+    render_plan: Arc<RwLock<crate::PrecisionRenderPlan>>,
 }
 
 struct RegisteredQueue {
@@ -1505,6 +1526,7 @@ impl Orchestrator {
         assert!(worker_count > 0, "worker count must be positive");
         let layer_queues = Arc::new(Mutex::new(VecDeque::new()));
         let calculator = Arc::new(calculator);
+        let render_plan = Arc::new(RwLock::new(render_plan));
         let available = Arc::new(Condvar::new());
         let stop_worker = Arc::new(AtomicBool::new(false));
         let worker_statuses = Arc::new(Mutex::new(
@@ -1519,6 +1541,7 @@ impl Orchestrator {
             let worker_stop = Arc::clone(&stop_worker);
             let worker_states = Arc::clone(&worker_statuses);
             let worker_calculator = Arc::clone(&calculator);
+            let worker_render_plan = Arc::clone(&render_plan);
             workers.push(thread::spawn(move || {
                 while let Some(queued) = next_tile(&worker_queues, &worker_available, &worker_stop)
                 {
@@ -1527,7 +1550,10 @@ impl Orchestrator {
                             coordinate: queued.tile.coordinate().clone(),
                             delta: queued.tile.delta(),
                         });
-                    calculate_tile_with_plan(&worker_calculator, &queued.tile, render_plan);
+                    let plan = *worker_render_plan
+                        .read()
+                        .expect("render plan lock poisoned");
+                    calculate_tile_with_plan(&worker_calculator, &queued.tile, plan);
                     worker_states.lock().expect("worker status mutex poisoned")[worker_id].tile =
                         None;
                 }
@@ -1540,6 +1566,7 @@ impl Orchestrator {
             stop_worker,
             worker_statuses,
             workers,
+            render_plan,
         }
     }
 
@@ -1567,6 +1594,11 @@ impl Orchestrator {
             .lock()
             .expect("worker status mutex poisoned")
             .clone()
+    }
+
+    pub fn set_render_plan(&self, plan: crate::PrecisionRenderPlan) {
+        *self.render_plan.write().expect("render plan lock poisoned") = plan;
+        self.available.notify_all();
     }
 
     fn register_queue(&self, queue: Arc<TileWorkQueue>, zoom: f64) {

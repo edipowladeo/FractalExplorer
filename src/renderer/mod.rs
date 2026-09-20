@@ -2,7 +2,8 @@ use crate::config::RendererConfig;
 use crate::geometry::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
 use crate::orchestrator::CanvasNavigationEvent;
 use crate::{
-    input::ZoomDirection, InputEvent, InputState, Orchestrator, Sprite, Tile, TiledInfiniteCanvas,
+    input::ZoomDirection, InputEvent, InputState, Orchestrator, PrecisionDecisionManager, Sprite,
+    Tile, TiledInfiniteCanvas,
 };
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -132,10 +133,21 @@ pub fn run_with_updates(
         },
     )?;
     let mut input = InputState::new();
+    let mut render_plan = PrecisionDecisionManager::from_config(initial_config).map_err(|_| {
+        minifb::Error::WindowCreate("invalid renderer precision configuration".to_string())
+    })?;
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         while let Ok(next_config) = receiver.try_recv() {
             if next_config.width == config.width && next_config.height == config.height {
+                if let Ok(next_plan) = PrecisionDecisionManager::from_config(&next_config) {
+                    if next_plan != render_plan {
+                        render_plan = next_plan;
+                        orchestrator.set_render_plan(next_plan);
+                        canvas.set_render_plan(next_plan);
+                        canvas.invalidate_tiles();
+                    }
+                }
                 config = next_config;
             }
         }

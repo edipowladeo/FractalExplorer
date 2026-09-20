@@ -159,6 +159,11 @@ impl RendererConfig {
     }
 
     pub fn starting_view(&self) -> Result<(crate::geometry::ComplexPoint<f64>, f64), String> {
+        if !self.starting_point.contains("zoom:") {
+            return self
+                .starting_point_coordinates()
+                .map(|point| (point, self.max_apparent_pixel_size()));
+        }
         let mut fields = self.starting_point.split_whitespace();
         let parse = |label: &str, fields: &mut std::str::SplitWhitespace<'_>| {
             if fields.next() != Some(label) {
@@ -206,7 +211,7 @@ impl AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::AppConfig;
+    use super::{AppConfig, RendererConfig};
 
     #[test]
     fn loads_window_size_and_debug_from_toml() {
@@ -258,6 +263,17 @@ mod tests {
         assert_eq!(
             config.renderer.starting_point_coordinates().unwrap(),
             crate::geometry::ComplexPoint::new(-0.743643887037151, 0.131825904205330)
+        );
+    }
+
+    #[test]
+    fn accepts_coordinate_starting_point_without_zoom() {
+        let mut config = RendererConfig::default();
+        config.starting_point = "x=-1.50, y=0.0".to_string();
+
+        assert_eq!(
+            config.starting_view().unwrap(),
+            (crate::geometry::ComplexPoint::new(-1.5, 0.0), 8.0)
         );
     }
 
