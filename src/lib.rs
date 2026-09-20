@@ -1,19 +1,14 @@
 //! Primitives shared by the first Windows sprite renderer.
 
-pub mod app;
 pub mod calculator;
 pub mod config;
 pub mod config_ui;
 pub mod fixed;
 pub mod geometry;
-pub mod gpu;
-pub mod gpu_window;
 pub mod input;
 pub mod orchestrator;
 pub mod output;
 pub mod precision;
-pub mod profiling;
-pub mod render;
 pub mod renderer;
 
 pub use geometry::{Camera, CameraEnvelope};
@@ -34,21 +29,6 @@ pub struct Sprite {
     width: usize,
     height: usize,
     pixels: Vec<u32>,
-}
-
-#[cfg(test)]
-mod profiling_tests {
-    #[test]
-    fn profiling_reports_whether_the_tracy_feature_is_enabled() {
-        assert_eq!(crate::profiling::enabled(), cfg!(feature = "tracy"));
-    }
-
-    #[cfg(feature = "tracy")]
-    #[test]
-    fn profiling_client_can_start_without_a_connected_profiler() {
-        let client = crate::profiling::start();
-        drop(client);
-    }
 }
 
 impl Sprite {
