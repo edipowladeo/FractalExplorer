@@ -10,6 +10,12 @@ O caminho CPU deve permanecer disponível durante a migração como referência 
 correção e fallback. A primeira entrega deve preservar navegação, camadas,
 tiles progressivos, overlays e dumps de instrumentação.
 
+O renderer legado deve permanecer ativável por uma flag de configuração, pois o
+backend GPU inicial será implementado para Windows. A API pública do renderer
+deve continuar multiplataforma: tipos e contratos comuns não podem depender de
+`minifb`, `winit` ou `wgpu`; essas dependências devem ficar isoladas nos
+backends de plataforma.
+
 ## Plano de implementação
 
 1. **Definir a fronteira do backend**
@@ -17,6 +23,9 @@ tiles progressivos, overlays e dumps de instrumentação.
      redimensionamento, upload/atualização de textura, composição e apresentação.
    - Separar o estado da janela do estado do backend gráfico.
    - Manter `CpuRenderer` como implementação de referência.
+   - Introduzir seleção explícita, por exemplo `renderer.backend = "cpu"` ou
+     `renderer.backend = "gpu"`, com `cpu` como fallback seguro.
+   - Manter o contrato comum compilável nas plataformas sem o backend Windows.
 
 2. **Escolher e configurar a API GPU**
    - Avaliar `wgpu` como backend multiplataforma, aproveitando Vulkan/Metal/DX12
@@ -24,6 +33,8 @@ tiles progressivos, overlays e dumps de instrumentação.
    - Criar dispositivo, fila, surface, swapchain/configuração de surface e
      tratamento de resize.
    - Não acoplar o orquestrador de tiles a tipos específicos de `wgpu`.
+   - Isolar `winit`/`wgpu` em módulo/backend Windows; o núcleo deve depender
+     somente de traits e estruturas próprias do projeto.
 
 3. **Migrar o formato dos tiles para texturas**
    - Definir o formato de pixel e o contrato de cor/paleta.
@@ -78,6 +89,11 @@ tiles progressivos, overlays e dumps de instrumentação.
 - A composição normal dos tiles ocorre na GPU por texturas e shaders.
 - O loop não executa `Sprite::draw_into_scaled` para compor cada tile no caminho
   GPU.
+- O caminho legado CPU pode ser selecionado explicitamente por flag e continua
+  funcional como fallback.
+- A seleção de backend e os contratos comuns compilam sem dependências Windows;
+  a implementação GPU específica fica isolada por backend/condicional de
+  plataforma.
 - Navegação, camadas, resize, tiles progressivos e overlays preservam o
   comportamento existente.
 - CPU e GPU produzem imagens equivalentes dentro da tolerância documentada.
@@ -91,6 +107,9 @@ tiles progressivos, overlays e dumps de instrumentação.
 - `minifb` pode não expor uma surface adequada para `wgpu`; nesse caso será
   necessário substituir apenas a camada de janela/apresentação, sem mover a
   lógica de orquestração.
+- A primeira integração de surface será Windows, mas não deve contaminar o
+  contrato multiplataforma nem impedir futuros backends macOS, Linux, Web ou
+  mobile.
 - Renderização do fractal diretamente no fragment/compute shader é uma etapa
   posterior: esta tarefa começa acelerando a composição dos tiles existentes.
 - A estratégia por textura individual versus atlas deve ser decidida após medir
