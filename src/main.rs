@@ -7,13 +7,13 @@ use fractal_explorer::{
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load("config.toml").unwrap_or_default();
     println!("Paleta em uso: {:?}", config.renderer.palette);
-    let center = config
-        .renderer
-        .starting_point_coordinates()
-        .unwrap_or_else(|error| {
-            eprintln!("Aviso: {error}; usando centro inicial (0, 0)");
-            ComplexPoint::new(0.0, 0.0)
-        });
+    let (center, starting_zoom) = config.renderer.starting_view().unwrap_or_else(|error| {
+        eprintln!("Aviso: {error}; usando visão inicial padrão");
+        (
+            ComplexPoint::new(0.0, 0.0),
+            config.renderer.max_apparent_pixel_size(),
+        )
+    });
     let tile_size = (
         config.orchestrator.tile.width,
         config.orchestrator.tile.height,
@@ -33,9 +33,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tile_size.1,
         delta,
         position,
-        config.renderer.max_apparent_pixel_size(),
-        config.renderer.min_apparent_pixel_size,
+        config.renderer.max_apparent_pixel_size().max(starting_zoom),
+        config.renderer.min_apparent_pixel_size.min(starting_zoom),
     );
+    canvas.set_initial_zoom(starting_zoom);
     let orchestrator = Orchestrator::with_worker_count(
         Mandelbrot::new(config.renderer.max_iterations),
         config.orchestrator.workers,

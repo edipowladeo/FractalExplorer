@@ -17,6 +17,21 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## TODO
 
+### T026 — Investigar e melhorar a precisão para zoom profundo
+
+- **Critério de aceitação:** a câmera, camadas e tiles preservam coordenadas e passo suficientes para zoom profundo; copiar uma localização e restaurá-la na mesma versão mantém a mesma visão. Ver [diretriz de precisão](task-descriptions/T026-deep-zoom-precision.md).
+
+### T025 — Unificar coordenada copiada, zoom e visão inicial
+
+- **Critério de aceitação:** o clique do meio sempre deve copiar e registrar `x`, `y` e o zoom atual em uma única string; `renderer.starting_point` deve aceitar essa mesma string para restaurar a visão inicial. O relatório detalhado por camadas deve permanecer opcional, controlado somente por `renderer.debug.middle_click_coordinate_report`, cujo padrão é `false`.
+- **RED/GREEN:** testes criados para a flag de relatório, a serialização da coordenada com zoom e o carregamento da visão inicial. RED confirmou os campos e APIs ausentes; GREEN: `cargo test` passou com 61 testes. A validação manual e o commit/push dependem de liberar o executável bloqueado.
+
+### T024 — Atualizar o renderizador progressivamente durante o redimensionamento
+
+- **Critério de aceitação:** a janela deve aceitar redimensionamento e o framebuffer, os envelopes de alocação e a renderização devem acompanhar cada tamanho informado pela janela durante o gesto, sem esperar a soltura da borda. Em cada frame do arrasto, os tiles devem manter seu tamanho correto e a cobertura deve adicionar/renderizar novos tiles progressivamente à medida que ficam prontos.
+- **RED/GREEN:** `renderer::tests::render_surface_reallocates_the_framebuffer_for_each_live_window_size` falhou pela ausência de `RenderSurface`; após a implementação, confirma a realocação para `960x540`, o recálculo dos envelopes e a rejeição de tamanhos transitórios nulos. `cargo test` passou com 56 testes; `cargo fmt -- --check` e `git diff --check` passaram.
+- **Validação manual:** ao aumentar a janela durante o arrasto, cada frame mostra a imagem anterior esticada, sem novos tiles; a cobertura só é atualizada após soltar o mouse, quando os tiles corretos aparecem. Isso não atende ao critério: investigar o ciclo de eventos/redimensionamento e garantir atualização, alocação e renderização progressivas durante o gesto antes do commit/push.
+
 ### T023 — Registrar percurso de navegação no relatório de coordenadas
 
 - **Critério de aceitação:** o relatório de clique do meio deve informar todos os arrastos e zooms aplicados ao canvas, com dados suficientes para reproduzir a sequência em um teste de regressão de alinhamento das camadas.
