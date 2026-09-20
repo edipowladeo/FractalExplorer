@@ -444,6 +444,7 @@ mod tests {
     fn formats_frame_events_with_elapsed_and_delta_times() {
         let started_at = Instant::now();
         let instrumentation = super::FrameInstrumentation {
+            frame_number: 7,
             started_at,
             events: Vec::new(),
             triggered_events: Vec::new(),
@@ -457,6 +458,26 @@ mod tests {
         assert_eq!(
             instrumentation.format_event(&event, previous_timestamp),
             "Frame: 113.183 Δ: 0.009, trabalho das camadas agendado."
+        );
+    }
+
+    #[test]
+    fn slow_frame_is_a_dump_trigger_without_layer_creation() {
+        let started_at = Instant::now() - Duration::from_millis(1_001);
+        let instrumentation = super::FrameInstrumentation {
+            frame_number: 42,
+            started_at,
+            events: vec![super::FrameEvent {
+                description: "finalizacao de frame".to_string(),
+                timestamp: Instant::now(),
+            }],
+            triggered_events: Vec::new(),
+        };
+
+        assert!(instrumentation.is_slow());
+        assert_eq!(
+            instrumentation.matching_triggers(&["slow_frame".to_string()]),
+            vec!["slow_frame"]
         );
     }
 
@@ -789,15 +810,17 @@ struct FrameEvent {
 
 #[derive(Debug)]
 struct FrameInstrumentation {
+    frame_number: u64,
     started_at: Instant,
     events: Vec<FrameEvent>,
     triggered_events: Vec<String>,
 }
 
 impl FrameInstrumentation {
-    fn new() -> Self {
+    fn new(frame_number: u64) -> Self {
         let started_at = Instant::now();
         Self {
+            frame_number,
             started_at,
             events: vec![FrameEvent {
                 description: "novo frame".to_string(),
@@ -808,23 +831,47 @@ impl FrameInstrumentation {
     }
 
     fn record(&mut self, description: impl Into<String>) {
+        self.record_at(description, Instant::now());
+    }
+
+    fn record_at(&mut self, description: impl Into<String>, timestamp: Instant) {
         self.events.push(FrameEvent {
             description: description.into(),
-            timestamp: Instant::now(),
+            timestamp,
         });
     }
 
     fn record_trigger(&mut self, trigger: impl Into<String>, description: impl Into<String>) {
+        self.record_trigger_at(trigger, description, Instant::now());
+    }
+
+    fn record_trigger_at(
+        &mut self,
+        trigger: impl Into<String>,
+        description: impl Into<String>,
+        timestamp: Instant,
+    ) {
         self.triggered_events.push(trigger.into());
-        self.record(description);
+        self.record_at(description, timestamp);
     }
 
     fn matching_triggers(&self, configured_events: &[String]) -> Vec<String> {
         configured_events
             .iter()
-            .filter(|configured| self.triggered_events.contains(configured))
+            .filter(|configured| {
+                self.triggered_events.contains(configured)
+                    || (configured.as_str() == "slow_frame" && self.is_slow())
+            })
             .cloned()
             .collect()
+    }
+
+    fn is_slow(&self) -> bool {
+        self.duration() > Duration::from_millis(1_000)
+    }
+
+    fn is_slow_at(&self, timestamp: Instant) -> bool {
+        timestamp.duration_since(self.started_at) > Duration::from_millis(1_000)
     }
 
     fn duration(&self) -> Duration {
@@ -891,6 +938,7 @@ pub struct TiledInfiniteCanvas {
     navigation_history: Vec<CanvasNavigationEvent>,
     layer_creation_log: Vec<String>,
     frame_dump_events: Vec<String>,
+    frame_number: u64,
     pending_layer_creation: Option<PendingLayerCreation>,
     completed_layer_creation: Option<CompletedLayerCreation>,
     frame_instrumentation: Option<FrameInstrumentation>,
@@ -969,7 +1017,8 @@ impl TiledInfiniteCanvas {
             camera_scale: max_apparent_pixel_size / delta,
             navigation_history: Vec::new(),
             layer_creation_log: Vec::new(),
-            frame_dump_events: vec!["layer_created".to_string()],
+            frame_dump_events: vec!["layer_created".to_string(), "slow_frame".to_string()],
+            frame_number: 0,
             pending_layer_creation: None,
             completed_layer_creation: None,
             frame_instrumentation: None,
@@ -1110,7 +1159,11 @@ impl TiledInfiniteCanvas {
         if let Some(frame) = previous_frame.as_ref() {
             let triggering_events = frame.matching_triggers(&self.frame_dump_events);
             if !triggering_events.is_empty() {
-                println!("Frame dump disparado por: {}", triggering_events.join(", "));
+                println!(
+                    "Frame #{} dump disparado por: {}",
+                    frame.frame_number,
+                    triggering_events.join(", ")
+                );
                 if let Some(mut creation) = completed_layer_creation {
                     creation.diagnostics.frame_interval = frame.duration();
                     self.record_layer_creation(
@@ -1122,7 +1175,8 @@ impl TiledInfiniteCanvas {
                 frame.dump();
             }
         }
-        self.frame_instrumentation = Some(FrameInstrumentation::new());
+        self.frame_number = self.frame_number.saturating_add(1);
+        self.frame_instrumentation = Some(FrameInstrumentation::new(self.frame_number));
     }
 
     pub fn record_frame_event(&mut self, description: impl Into<String>) {
@@ -1132,7 +1186,13 @@ impl TiledInfiniteCanvas {
     }
 
     pub fn finish_frame(&mut self) {
-        self.record_frame_event("finalizacao de frame");
+        let finished_at = Instant::now();
+        if let Some(frame) = self.frame_instrumentation.as_mut() {
+            if frame.is_slow_at(finished_at) {
+                frame.record_trigger_at("slow_frame", "frame maior que 1000 ms", finished_at);
+            }
+            frame.record_at("finalizacao de frame", finished_at);
+        }
     }
 
     /// Parameters supplied at canvas creation, before any navigation command.
@@ -1208,7 +1268,8 @@ impl TiledInfiniteCanvas {
 
     pub fn ensure_screen_coverage(&mut self, bounds: (i32, i32, i32, i32)) {
         if self.frame_instrumentation.is_none() {
-            self.frame_instrumentation = Some(FrameInstrumentation::new());
+            self.frame_number = self.frame_number.saturating_add(1);
+            self.frame_instrumentation = Some(FrameInstrumentation::new(self.frame_number));
         }
         if self.retract_one_layer_per_frame() && self.layers.is_empty() {
             self.expand_one_layer_per_frame();
