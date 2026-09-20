@@ -24,8 +24,13 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   mesmo plano na semente, com delta fixo `float64` nível 1. Níveis float acima
   de 1 são normalizados para 1 sem erro. A `TileLayer` recebe o plano e o
   orquestrador o aplica em todos os tiles.
-- **Bloqueio:** testes e compilação passaram, commit local `6264431` criado,
-  mas o push para `origin/multiprecisao` foi recusado pela política do ambiente.
+ - **Bloqueio:** testes e compilação passaram, commit local `6264431` criado,
+   mas o push para `origin/multiprecisao` foi recusado pela política do ambiente.
+
+### T026 — Investigar e melhorar a precisão para zoom profundo
+
+- **Integração:** preservada a separação entre zoom inicial da câmera e escala visual da camada semente; os parâmetros compatíveis do `master` foram incorporados à configuração.
+- **Verificação pendente:** executar os testes após a resolução deste merge e validar visualmente o zoom profundo.
 
 ## BACKLOG
 

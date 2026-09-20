@@ -1,0 +1,51 @@
+﻿[
+    {
+        "repository":  "FractalExplorer",
+        "worktree":  "C:\\Users\\lidia\\edipinhu\\legacy-fractal-explorer-worktrees\\FractalExplorer",
+        "sourceRef":  "legacy",
+        "commit":  "79fe6f36479ff12dee0dfe15a122cea02ffb592c",
+        "mode":  "branch"
+    },
+    {
+        "repository":  "Fractal",
+        "worktree":  "C:\\Users\\lidia\\edipinhu\\legacy-fractal-explorer-worktrees\\Fractal",
+        "sourceRef":  "origin/master",
+        "commit":  "6d34cc8d702ac67ec0a77214e79d40f81c3303bd",
+        "mode":  "detached"
+    },
+    {
+        "repository":  "FractalExplorerAndroid",
+        "worktree":  "C:\\Users\\lidia\\edipinhu\\legacy-fractal-explorer-worktrees\\FractalExplorerAndroid",
+        "sourceRef":  "origin/master",
+        "commit":  "0128720756eeae0dd2ff01095296934d8fcf76e2",
+        "mode":  "detached"
+    },
+    {
+        "repository":  "FractalExplorerAndroid",
+        "worktree":  "C:\\Users\\lidia\\edipinhu\\legacy-fractal-explorer-worktrees\\FractalExplorerAndroid-lifecycle",
+        "sourceRef":  "origin/new",
+        "commit":  "080c6d895ae0aa21e0baabff9b43b10e3836ccf0",
+        "mode":  "detached"
+    },
+    {
+        "repository":  "FractalExplorerPC",
+        "worktree":  "C:\\Users\\lidia\\edipinhu\\legacy-fractal-explorer-worktrees\\FractalExplorerPC",
+        "sourceRef":  "origin/master",
+        "commit":  "1d78194acf7a66bf430298ef840c3a267f3d56ba",
+        "mode":  "detached"
+    },
+    {
+        "repository":  "MandelbrotPC",
+        "worktree":  "C:\\Users\\lidia\\edipinhu\\legacy-fractal-explorer-worktrees\\MandelbrotPC",
+        "sourceRef":  "origin/master",
+        "commit":  "522822e473284862bbaa247e0e3175095a3d110a",
+        "mode":  "detached"
+    },
+    {
+        "repository":  "MandelbrotPC",
+        "worktree":  "C:\\Users\\lidia\\edipinhu\\legacy-fractal-explorer-worktrees\\MandelbrotPC-numeric-experiment",
+        "sourceRef":  "origin/tipos_especiais_classe",
+        "commit":  "e118fe1edf27cc882be4eaae2e5a46445fba68a5",
+        "mode":  "detached"
+    }
+]

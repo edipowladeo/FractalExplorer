@@ -15,6 +15,7 @@ pub struct AppConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct OrchestratorConfig {
+    pub workers: usize,
     pub tile: TileConfig,
 }
 
@@ -52,6 +53,11 @@ pub struct RendererDebugConfig {
     pub reduced_viewport: bool,
     pub reduced_viewport_allocation_ratio: f64,
     pub show_allocation_envelope: bool,
+    pub text_overlay_global: bool,
+    pub text_overlay_workers: bool,
+    pub text_overlay_layers: bool,
+    pub text_overlay_queue: bool,
+    pub middle_click_coordinate_report: bool,
 }
 
 impl Default for AppConfig {
@@ -67,6 +73,7 @@ impl Default for AppConfig {
 impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
+            workers: 8,
             tile: TileConfig::default(),
         }
     }
@@ -110,16 +117,29 @@ impl Default for RendererDebugConfig {
             reduced_viewport: false,
             reduced_viewport_allocation_ratio: 0.5,
             show_allocation_envelope: false,
+            text_overlay_global: true,
+            text_overlay_workers: true,
+            text_overlay_layers: true,
+            text_overlay_queue: true,
+            middle_click_coordinate_report: false,
         }
     }
 }
 
 impl RendererConfig {
+    pub fn effective_max_iterations(&self) -> u32 {
+        self.max_iterations
+            .saturating_mul(self.precision_level as u32)
+    }
+
     pub fn max_apparent_pixel_size(&self) -> f64 {
         2.0_f64.powi(self.max_apparent_pixel_size_exponent)
     }
 
     pub fn starting_point_coordinates(&self) -> Result<crate::geometry::ComplexPoint<f64>, String> {
+        if self.starting_point.contains("zoom:") {
+            return self.starting_view().map(|(point, _)| point);
+        }
         let (x_text, y_text) = self.starting_point.split_once(',').ok_or_else(|| {
             "starting_point deve usar o formato 'x=<valor>, y=<valor>'".to_string()
         })?;
@@ -136,6 +156,31 @@ impl RendererConfig {
             .parse::<f64>()
             .map_err(|_| "valor y inválido em starting_point".to_string())?;
         Ok(crate::geometry::ComplexPoint::new(x, y))
+    }
+
+    pub fn starting_view(&self) -> Result<(crate::geometry::ComplexPoint<f64>, f64), String> {
+        let mut fields = self.starting_point.split_whitespace();
+        let parse = |label: &str, fields: &mut std::str::SplitWhitespace<'_>| {
+            if fields.next() != Some(label) {
+                return Err(format!("starting_point deve conter '{label} <valor>'"));
+            }
+            fields
+                .next()
+                .ok_or_else(|| format!("valor ausente após '{label}' em starting_point"))?
+                .parse::<f64>()
+                .map_err(|_| format!("valor inválido após '{label}' em starting_point"))
+        };
+        let x = parse("x:", &mut fields)?;
+        let y = parse("y:", &mut fields)?;
+        let zoom_exponent = parse("zoom:", &mut fields)?;
+        if fields.next().is_some() {
+            return Err("starting_point contém dados adicionais".to_string());
+        }
+        let zoom = 2.0_f64.powf(zoom_exponent);
+        if !zoom.is_finite() || zoom <= 0.0 {
+            return Err("expoente de zoom inválido em starting_point".to_string());
+        }
+        Ok((crate::geometry::ComplexPoint::new(x, y), zoom))
     }
 
     pub fn effective_allocation_ratio(&self) -> f64 {

@@ -22,6 +22,14 @@ starting_point = "x=-1.50, y=0.0"
 reduced_viewport = true
 reduced_viewport_allocation_ratio = 0.7
 show_allocation_envelope = true
+text_overlay_global = false
+text_overlay_workers = false
+text_overlay_layers = false
+text_overlay_queue = false
+middle_click_coordinate_report = false
+
+[orchestrator]
+workers = 8
 
 [orchestrator.tile]
 width = 30
