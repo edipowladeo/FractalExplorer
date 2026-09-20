@@ -29,6 +29,7 @@ text_overlay_workers = false
 text_overlay_layers = false
 text_overlay_queue = false
 middle_click_coordinate_report = false
+frame_dump_events = ["layer_created"]
 
 [orchestrator]
 workers = 8
