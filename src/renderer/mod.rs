@@ -1,11 +1,11 @@
 use crate::config::RendererConfig;
 use crate::geometry::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
 use crate::orchestrator::CanvasNavigationEvent;
+use crate::output::OutputService;
 use crate::{
     input::ZoomDirection, InputEvent, InputState, Orchestrator, PrecisionDecisionManager, Sprite,
     Tile, TiledInfiniteCanvas,
 };
-use crate::output::OutputService;
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::mpsc::Receiver;
@@ -82,7 +82,9 @@ impl<'de> Deserialize<'de> for Palette {
             "shade" => Ok(Self::Shade),
             "rainbow" => Ok(Self::Rainbow),
             invalid => {
-                crate::print_local!("Aviso: paleta inválida '{invalid}'; usando fallback 'rainbow'");
+                crate::print_local!(
+                    "Aviso: paleta inválida '{invalid}'; usando fallback 'rainbow'"
+                );
                 Ok(Self::Rainbow)
             }
         }
