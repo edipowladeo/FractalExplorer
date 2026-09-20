@@ -28,8 +28,7 @@ mod tests {
         assert_eq!(tile.width(), 3);
         assert_eq!(tile.height(), 2);
         assert_eq!(tile.delta(), 0.25);
-        assert_eq!(tile.iterations().lock().unwrap().len(), 6);
-        assert_eq!(tile.iterations().lock().unwrap()[0], 0u64);
+        assert!(tile.iterations().lock().unwrap().is_empty());
     }
 
     #[test]
@@ -110,6 +109,7 @@ mod tests {
 
         wait_for_completion(&tile);
         assert_eq!(tile.status(), TileStatus::Completed);
+        assert_eq!(tile.iterations().lock().unwrap().len(), 9);
         assert_eq!(tile.iterations().lock().unwrap()[4], 32u64);
     }
 
@@ -1449,7 +1449,7 @@ impl Tile {
             height,
             delta,
             status: AtomicU8::new(TileStatus::NotStarted as u8),
-            iterations: Arc::new(Mutex::new(vec![0; width as usize * height as usize])),
+            iterations: Arc::new(Mutex::new(Vec::new())),
             sprite: Arc::new(Mutex::new(None)),
         }
     }
@@ -1474,6 +1474,15 @@ impl Tile {
 
     pub fn iterations(&self) -> Arc<Mutex<Vec<u64>>> {
         Arc::clone(&self.iterations)
+    }
+
+    fn prepare_iterations(&self) -> std::sync::MutexGuard<'_, Vec<u64>> {
+        let mut iterations = self
+            .iterations
+            .lock()
+            .expect("tile iterations mutex poisoned");
+        iterations.resize(self.width as usize * self.height as usize, 0);
+        iterations
     }
 
     pub fn sprite(&self) -> Option<Arc<crate::Sprite>> {
@@ -1783,10 +1792,7 @@ fn calculate_fixed_tile<const N: usize>(max_iterations: u32, tile: &Tile) {
     let center_real = crate::Fixed::from_f64(tile.coordinate.x);
     let center_imaginary = crate::Fixed::from_f64(tile.coordinate.y);
     let delta = crate::Fixed::from_f64(tile.delta);
-    let mut iterations = tile
-        .iterations
-        .lock()
-        .expect("tile iterations mutex poisoned");
+    let mut iterations = tile.prepare_iterations();
     for y in 0..tile.height {
         for x in 0..tile.width {
             let real = center_real.add(delta.mul(crate::Fixed::from_i64(x as i64)));
@@ -1800,10 +1806,7 @@ fn calculate_fixed_tile<const N: usize>(max_iterations: u32, tile: &Tile) {
 }
 
 fn calculate_tile(calculator: &crate::Mandelbrot, tile: &Tile) {
-    let mut iterations = tile
-        .iterations
-        .lock()
-        .expect("tile iterations mutex poisoned");
+    let mut iterations = tile.prepare_iterations();
     for y in 0..tile.height {
         for x in 0..tile.width {
             let real = tile.coordinate.x + x as f64 * tile.delta;
