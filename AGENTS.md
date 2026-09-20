@@ -20,6 +20,7 @@ Este é o único checkbox de HIL do repositório e é controlado exclusivamente 
    - **RED**: escrever ou ajustar um teste que falha e confirmar a falha pela razão esperada.
    - **GREEN**: implementar o mínimo necessário para fazer o teste passar.
    - **REFACTOR**: melhorar o design, a legibilidade e a manutenção sem alterar o comportamento; confirmar que os testes continuam passando.
+   - **Exceção:** alterações exclusivamente de configuração ou de documentação de configuração não exigem o fluxo TDD.
 2. Se a estratégia de testes não for óbvia, discutir a estratégia com o usuário antes de implementar.
 3. Uma tarefa só pode ser considerada concluída depois de: testes em estado **GREEN**, refactor realizado, commit criado e push enviado ao remoto.
 4. Mover a tarefa para `DONE` imediatamente após todas as condições do item anterior serem atendidas.
