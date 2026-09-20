@@ -4,7 +4,7 @@ Estas instruções se aplicam a todo agente que atuar neste repositório.
 
 ## Controle global de HIL
 
-- [x] HIL tests
+- [ ] HIL tests
 
 Este é o único checkbox de HIL do repositório e é controlado exclusivamente pelo usuário.
 
