@@ -407,8 +407,8 @@ mod tests {
             canvas.layer_creation_log(),
             [
                 "Camada criada com delta: 7.644",
-                "Camada expandida, direcao de incremento: menor, delta: 8.644",
-                "Camada expandida, direcao de incremento: menor, delta: 9.644",
+                "Camada menor criada, delta: 8.644",
+                "Camada menor criada, delta: 9.644",
             ]
         );
     }
@@ -925,9 +925,7 @@ impl TiledInfiniteCanvas {
     fn record_layer_creation(&mut self, direction: Option<&str>, delta: f64) {
         let delta_exponent = -delta.log2();
         let line = match direction {
-            Some(direction) => format!(
-                "Camada expandida, direcao de incremento: {direction}, delta: {delta_exponent:.3}"
-            ),
+            Some(direction) => format!("Camada {direction} criada, delta: {delta_exponent:.3}"),
             None => format!("Camada criada com delta: {delta_exponent:.3}"),
         };
         println!("{line}");

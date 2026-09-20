@@ -152,7 +152,8 @@ pub fn run_with_updates(
             }
         }
         // `get_size` changes while the resize gesture is in progress, not only when it ends.
-        surface.update_window_size(window.get_size());
+        let window_size = window.get_size();
+        surface.update_window_size(window_size);
         surface.clear();
         canvas.trim_outside_allocation((
             surface.deallocation.left,
@@ -169,9 +170,13 @@ pub fn run_with_updates(
         for layer in canvas.layers() {
             orchestrator.render_layer(layer);
         }
-        let mouse_position = window
-            .get_mouse_pos(MouseMode::Clamp)
-            .map(|(x, y)| ScreenPoint::new(x.round() as i32, y.round() as i32));
+        let mouse_position = if has_live_window_size(window_size) {
+            window
+                .get_mouse_pos(MouseMode::Clamp)
+                .map(|(x, y)| ScreenPoint::new(x.round() as i32, y.round() as i32))
+        } else {
+            None
+        };
         let events = input.update(
             mouse_position,
             window.get_mouse_down(MouseButton::Left),
@@ -738,13 +743,17 @@ fn rainbow_color(iterations: u64, palette_period: f64) -> u32 {
     ((red * 255.0) as u32) << 16 | ((green * 255.0) as u32) << 8 | (blue * 255.0) as u32
 }
 
+fn has_live_window_size((width, height): (usize, usize)) -> bool {
+    width > 0 && height > 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         allocation_screen_rect, draw_mouse_marker, draw_rectangle_outline, format_coordinates,
         format_copied_coordinates, format_layer_overlay, format_worker_queue_line,
-        format_worker_status_line, middle_click_coordinate_report, sprite_from_tile, Palette,
-        RenderSurface, ScreenRect,
+        format_worker_status_line, has_live_window_size, middle_click_coordinate_report,
+        sprite_from_tile, Palette, RenderSurface, ScreenRect,
     };
     use crate::geometry::{ComplexPoint, ScreenPoint, ScreenSize};
     use crate::{Mandelbrot, Orchestrator, Tile, TiledInfiniteCanvas};
@@ -793,6 +802,13 @@ mod tests {
 
         assert!(!surface.update_window_size((960, 540)));
         assert!(!surface.update_window_size((0, 540)));
+    }
+
+    #[test]
+    fn does_not_poll_mouse_position_for_a_zero_sized_window() {
+        assert!(!has_live_window_size((0, 540)));
+        assert!(!has_live_window_size((960, 0)));
+        assert!(has_live_window_size((960, 540)));
     }
 
     #[test]
