@@ -47,6 +47,10 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## BACKLOG
 
+### Nota — Remover artefatos que remetem ao estado local
+
+- Avaliar a remoção ou realocação de `fractal_projects_review.md` e `legacy-worktrees.json`, pois ambos registram caminhos, worktrees e inventário específicos da máquina local. Preservar antes qualquer informação que deva virar documentação portátil do projeto.
+
 ### T022 — Diagnosticar alinhamento das camadas com envelopes de tiles
 
 - Adicionar retângulos de debug ao redor dos tiles.
