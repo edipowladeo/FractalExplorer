@@ -190,6 +190,9 @@ pub fn run_with_updates(
     })?;
     while window.is_open() && !window.is_key_down(Key::Escape) {
         canvas.begin_frame();
+        if let Some((frame_number, duration)) = canvas.last_finished_frame_timing() {
+            frame_timing_ring.push(frame_number, duration);
+        }
         while let Ok(next_config) = receiver.try_recv() {
             if next_config.width == config.width && next_config.height == config.height {
                 if let Ok(next_plan) = PrecisionDecisionManager::from_config(&next_config) {
@@ -439,9 +442,6 @@ pub fn run_with_updates(
         )?;
         canvas.record_frame_presentation_finished();
         canvas.finish_frame();
-        if let Some((frame_number, duration)) = canvas.last_finished_frame_timing() {
-            frame_timing_ring.push(frame_number, duration);
-        }
     }
 
     // Closing the native window leaves the loop and releases the renderer

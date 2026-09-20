@@ -485,8 +485,9 @@ mod tests {
 
     #[test]
     fn finalization_precedes_slow_trigger_and_preserves_total_frame_duration() {
-        let started_at = Instant::now() - Duration::from_millis(4_671);
-        let finished_at = Instant::now();
+        let started_at = Instant::now();
+        let finished_at = started_at + Duration::from_millis(4_671);
+        let next_frame_started_at = finished_at + Duration::from_millis(1);
         let mut instrumentation = super::FrameInstrumentation {
             frame_number: 5,
             started_at,
@@ -497,7 +498,10 @@ mod tests {
             triggered_events: Vec::new(),
         };
 
-        let total_duration = instrumentation.finish_at(finished_at, Duration::from_millis(1_000));
+        instrumentation.record_finalization_at(finished_at);
+        let total_duration = instrumentation.duration_at(next_frame_started_at);
+        instrumentation
+            .record_slow_if_needed_at(next_frame_started_at, Duration::from_millis(1_000));
 
         assert_eq!(
             instrumentation.events[1].description,
@@ -509,14 +513,46 @@ mod tests {
         );
         assert_eq!(
             total_duration,
-            finished_at.duration_since(instrumentation.started_at)
+            next_frame_started_at.duration_since(instrumentation.started_at)
         );
         assert!(instrumentation.events[1].timestamp > instrumentation.events[0].timestamp);
-        assert_eq!(
-            instrumentation.events[2].timestamp,
-            instrumentation.events[1].timestamp
-        );
+        assert_eq!(instrumentation.events[2].timestamp, next_frame_started_at);
         assert_eq!(instrumentation.triggered_events, vec!["slow_frame"]);
+    }
+
+    #[test]
+    fn frame_duration_uses_the_same_boundary_as_the_next_frame_start() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-1.0, 1.0),
+            30,
+            20,
+            0.01,
+            crate::geometry::ScreenPoint::new(300, 225),
+            8.0,
+            0.8,
+        );
+        canvas.set_frame_dump_events(Vec::new());
+
+        let first_frame_started_at = Instant::now();
+        let first_frame_finished_at = first_frame_started_at + Duration::from_millis(10);
+        let second_frame_started_at = first_frame_started_at + Duration::from_millis(100);
+
+        canvas.begin_frame_at(first_frame_started_at);
+        canvas.finish_frame_at(first_frame_finished_at);
+        canvas.begin_frame_at(second_frame_started_at);
+
+        assert_eq!(
+            canvas.last_finished_frame_timing(),
+            Some((1, Duration::from_millis(100)))
+        );
+        assert_eq!(
+            canvas
+                .frame_instrumentation
+                .as_ref()
+                .expect("second frame should be active")
+                .started_at,
+            second_frame_started_at
+        );
     }
 
     #[test]
@@ -890,7 +926,10 @@ struct FrameInstrumentation {
 
 impl FrameInstrumentation {
     fn new(frame_number: u64) -> Self {
-        let started_at = Instant::now();
+        Self::new_at(frame_number, Instant::now())
+    }
+
+    fn new_at(frame_number: u64, started_at: Instant) -> Self {
         Self {
             frame_number,
             started_at,
@@ -966,19 +1005,29 @@ impl FrameInstrumentation {
         timestamp.duration_since(self.started_at) > threshold
     }
 
-    fn finish_at(&mut self, finished_at: Instant, slow_frame_threshold: Duration) -> Duration {
-        let is_slow = self.is_slow_at(finished_at, slow_frame_threshold);
+    fn record_finalization_at(&mut self, finished_at: Instant) {
         self.record_at("finalizacao de frame", finished_at);
-        if is_slow {
-            self.record_trigger_at("slow_frame", "frame maior que 1000 ms", finished_at);
+    }
+
+    fn record_slow_if_needed_at(&mut self, timestamp: Instant, threshold: Duration) {
+        if self.is_slow_at(timestamp, threshold)
+            && !self
+                .triggered_events
+                .iter()
+                .any(|event| event == "slow_frame")
+        {
+            self.record_trigger_at("slow_frame", "frame maior que 1000 ms", timestamp);
         }
-        self.duration()
     }
 
     fn duration(&self) -> Duration {
         self.events.last().map_or(Duration::ZERO, |event| {
             event.timestamp.duration_since(self.started_at)
         })
+    }
+
+    fn duration_at(&self, timestamp: Instant) -> Duration {
+        timestamp.duration_since(self.started_at)
     }
 
     fn dump(&self) {
@@ -1275,10 +1324,15 @@ impl TiledInfiniteCanvas {
     }
 
     pub fn begin_frame(&mut self) {
+        self.begin_frame_at(Instant::now());
+    }
+
+    fn begin_frame_at(&mut self, frame_started_at: Instant) {
         let previous_frame = self.frame_instrumentation.take();
         let completed_layer_creation = self.completed_layer_creation.take();
-        if let Some(mut frame) = previous_frame {
-            let frame_duration = frame.duration();
+        let timing = if let Some(mut frame) = previous_frame {
+            let frame_duration = frame.duration_at(frame_started_at);
+            frame.record_slow_if_needed_at(frame_started_at, self.slow_frame_threshold);
             let triggering_events =
                 frame.matching_triggers(&self.frame_dump_events, self.slow_frame_threshold);
             if !triggering_events.is_empty() {
@@ -1303,9 +1357,16 @@ impl TiledInfiniteCanvas {
                 frame.dump_last_event();
                 let _ = std::io::stdout().flush();
             }
-        }
+            Some((frame.frame_number, frame_duration))
+        } else {
+            None
+        };
+        self.last_finished_frame_timing = timing;
         self.frame_number = self.frame_number.saturating_add(1);
-        self.frame_instrumentation = Some(FrameInstrumentation::new(self.frame_number));
+        self.frame_instrumentation = Some(FrameInstrumentation::new_at(
+            self.frame_number,
+            frame_started_at,
+        ));
     }
 
     pub fn record_frame_event(&mut self, description: impl Into<String>) {
@@ -1327,14 +1388,13 @@ impl TiledInfiniteCanvas {
     }
 
     pub fn finish_frame(&mut self) {
-        let finished_at = Instant::now();
-        let timing = if let Some(frame) = self.frame_instrumentation.as_mut() {
-            let duration = frame.finish_at(finished_at, self.slow_frame_threshold);
-            Some((frame.frame_number, duration))
-        } else {
-            None
-        };
-        self.last_finished_frame_timing = timing;
+        self.finish_frame_at(Instant::now());
+    }
+
+    fn finish_frame_at(&mut self, finished_at: Instant) {
+        if let Some(frame) = self.frame_instrumentation.as_mut() {
+            frame.record_finalization_at(finished_at);
+        }
     }
 
     pub fn last_finished_frame_timing(&self) -> Option<(u64, Duration)> {
