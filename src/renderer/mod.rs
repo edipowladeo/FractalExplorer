@@ -8,7 +8,6 @@ use crate::{
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::mpsc::Receiver;
-use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -138,9 +137,8 @@ pub fn run_with_updates(
     let mut render_plan = PrecisionDecisionManager::from_config(initial_config).map_err(|_| {
         minifb::Error::WindowCreate("invalid renderer precision configuration".to_string())
     })?;
-    let mut last_frame_rendered: Option<Instant> = None;
-
     while window.is_open() && !window.is_key_down(Key::Escape) {
+        canvas.begin_frame();
         while let Ok(next_config) = receiver.try_recv() {
             if next_config.width == config.width && next_config.height == config.height {
                 if let Ok(next_plan) = PrecisionDecisionManager::from_config(&next_config) {
@@ -157,25 +155,30 @@ pub fn run_with_updates(
                 );
             }
         }
+        canvas.record_frame_event("configuracao processada");
         // `get_size` changes while the resize gesture is in progress, not only when it ends.
         let window_size = window.get_size();
         surface.update_window_size(window_size);
         surface.clear();
+        canvas.record_frame_event("superficie preparada");
         canvas.trim_outside_allocation((
             surface.deallocation.left,
             surface.deallocation.top,
             surface.deallocation.right,
             surface.deallocation.bottom,
         ));
+        canvas.record_frame_event("tiles fora da alocacao removidos");
         canvas.ensure_screen_coverage((
             surface.allocation.left,
             surface.allocation.top,
             surface.allocation.right,
             surface.allocation.bottom,
         ));
+        canvas.record_frame_event("cobertura da tela concluida");
         for layer in canvas.layers() {
             orchestrator.render_layer(layer);
         }
+        canvas.record_frame_event("trabalho das camadas agendado");
         let mouse_position = if has_live_window_size(window_size) {
             window
                 .get_mouse_pos(MouseMode::Clamp)
@@ -219,6 +222,7 @@ pub fn run_with_updates(
                 }
             }
         }
+        canvas.record_frame_event("entrada processada");
         if config.debug.text_overlay_global {
             if let Some(cursor) = mouse_position {
                 let complex = canvas.screen_to_complex(cursor);
@@ -259,6 +263,7 @@ pub fn run_with_updates(
                 }
             }
         }
+        canvas.record_frame_event("tiles desenhados");
         if let Some(cursor) = mouse_position {
             draw_mouse_marker(
                 &mut surface.framebuffer,
@@ -361,16 +366,14 @@ pub fn run_with_updates(
                 );
             }
         }
+        canvas.record_frame_event("overlays desenhados");
+        canvas.record_frame_event("buffer pronto para apresentacao");
         window.update_with_buffer(
             &surface.framebuffer,
             surface.screen_size.width,
             surface.screen_size.height,
         )?;
-        let frame_rendered = Instant::now();
-        let frame_interval =
-            last_frame_rendered.map_or(Duration::ZERO, |last| frame_rendered.duration_since(last));
-        canvas.finish_frame(frame_interval);
-        last_frame_rendered = Some(frame_rendered);
+        canvas.finish_frame();
     }
 
     // Closing the native window leaves the loop and releases the renderer

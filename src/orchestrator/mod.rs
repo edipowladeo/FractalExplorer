@@ -414,9 +414,12 @@ mod tests {
         );
 
         for _ in 0..3 {
+            canvas.begin_frame();
             canvas.ensure_screen_coverage((0, 0, 29, 19));
-            canvas.finish_frame(Duration::from_millis(123));
+            canvas.finish_frame();
         }
+        assert_eq!(canvas.layer_creation_log().len(), 2);
+        canvas.begin_frame();
 
         let log = canvas.layer_creation_log();
         assert_eq!(log.len(), 3);
@@ -430,7 +433,7 @@ mod tests {
             assert!(line.contains("grade_ms="));
             assert!(line.contains("fila_ms="));
             assert!(line.contains("cobertura_ms="));
-            assert!(line.contains("frame_ms=123.000"));
+            assert!(line.contains("frame_ms="));
         }
     }
 
@@ -752,6 +755,66 @@ struct LayerCreationDiagnostics {
     tiles_enqueued: usize,
 }
 
+#[derive(Debug)]
+struct FrameEvent {
+    description: String,
+    timestamp: Instant,
+}
+
+#[derive(Debug)]
+struct FrameInstrumentation {
+    started_at: Instant,
+    events: Vec<FrameEvent>,
+    has_layer_creation: bool,
+}
+
+impl FrameInstrumentation {
+    fn new() -> Self {
+        let started_at = Instant::now();
+        Self {
+            started_at,
+            events: vec![FrameEvent {
+                description: "novo frame".to_string(),
+                timestamp: started_at,
+            }],
+            has_layer_creation: false,
+        }
+    }
+
+    fn record(&mut self, description: impl Into<String>) {
+        self.events.push(FrameEvent {
+            description: description.into(),
+            timestamp: Instant::now(),
+        });
+    }
+
+    fn record_layer_creation(&mut self, description: impl Into<String>) {
+        self.has_layer_creation = true;
+        self.record(description);
+    }
+
+    fn duration(&self) -> Duration {
+        self.events.last().map_or(Duration::ZERO, |event| {
+            event.timestamp.duration_since(self.started_at)
+        })
+    }
+
+    fn dump(&self) {
+        let mut previous_timestamp = self.started_at;
+        for event in &self.events {
+            let since_start = event.timestamp.duration_since(self.started_at);
+            let since_previous = event.timestamp.duration_since(previous_timestamp);
+            println!(
+                "Frame evento: {}, desde_inicio_ms={:.3}, desde_anterior_ms={:.3}",
+                event.description,
+                since_start.as_secs_f64() * 1_000.0,
+                since_previous.as_secs_f64() * 1_000.0,
+            );
+            previous_timestamp = event.timestamp;
+        }
+    }
+}
+
 impl LayerCreationDiagnostics {
     fn format(self) -> String {
         format!(
@@ -791,12 +854,20 @@ pub struct TiledInfiniteCanvas {
     layer_creation_log: Vec<String>,
     layer_creation_diagnostics_enabled: bool,
     pending_layer_creation: Option<PendingLayerCreation>,
+    completed_layer_creation: Option<CompletedLayerCreation>,
+    frame_instrumentation: Option<FrameInstrumentation>,
     render_plan: crate::PrecisionRenderPlan,
 }
 
 struct PendingLayerCreation {
     direction: Option<&'static str>,
     layer_index: usize,
+}
+
+struct CompletedLayerCreation {
+    direction: Option<&'static str>,
+    delta: f64,
+    diagnostics: LayerCreationDiagnostics,
 }
 
 /// A navigation command applied to a canvas, retained for diagnostic replay.
@@ -862,6 +933,8 @@ impl TiledInfiniteCanvas {
             layer_creation_log: Vec::new(),
             layer_creation_diagnostics_enabled: true,
             pending_layer_creation: None,
+            completed_layer_creation: None,
+            frame_instrumentation: None,
             render_plan: crate::PrecisionRenderPlan::default(),
         }
     }
@@ -993,17 +1066,38 @@ impl TiledInfiniteCanvas {
         self.layer_creation_diagnostics_enabled = enabled;
     }
 
-    /// Completes the frame and records any layer created during it.
-    ///
-    /// The interval is measured between two presented frames, so it must be
-    /// supplied after the current frame has been sent to the window.
-    pub fn finish_frame(&mut self, interval: Duration) {
-        if let Some(pending) = self.pending_layer_creation.take() {
-            let mut diagnostics = self.layers[pending.layer_index].take_creation_diagnostics();
-            diagnostics.frame_interval = interval;
-            let delta = self.layers[pending.layer_index].delta();
-            self.record_layer_creation(pending.direction, delta, diagnostics);
+    pub fn begin_frame(&mut self) {
+        let previous_frame = self.frame_instrumentation.take();
+        if self.layer_creation_diagnostics_enabled {
+            if let Some(frame) = previous_frame.as_ref() {
+                if frame.has_layer_creation {
+                    if let Some(mut creation) = self.completed_layer_creation.take() {
+                        creation.diagnostics.frame_interval = frame.duration();
+                        self.record_layer_creation(
+                            creation.direction,
+                            creation.delta,
+                            creation.diagnostics,
+                        );
+                        frame.dump();
+                    }
+                }
+            }
+        } else {
+            self.completed_layer_creation = None;
         }
+        self.frame_instrumentation = self
+            .layer_creation_diagnostics_enabled
+            .then(FrameInstrumentation::new);
+    }
+
+    pub fn record_frame_event(&mut self, description: impl Into<String>) {
+        if let Some(frame) = self.frame_instrumentation.as_mut() {
+            frame.record(description);
+        }
+    }
+
+    pub fn finish_frame(&mut self) {
+        self.record_frame_event("finalizacao de frame");
     }
 
     /// Parameters supplied at canvas creation, before any navigation command.
@@ -1088,6 +1182,23 @@ impl TiledInfiniteCanvas {
         }
         for layer in &mut self.layers {
             layer.ensure_screen_coverage(bounds);
+        }
+        if let Some(pending) = self.pending_layer_creation.take() {
+            let mut diagnostics = self.layers[pending.layer_index].take_creation_diagnostics();
+            let delta = self.layers[pending.layer_index].delta();
+            let description = match pending.direction {
+                Some(direction) => format!("camada {direction} criada"),
+                None => "camada criada".to_string(),
+            };
+            if let Some(frame) = self.frame_instrumentation.as_mut() {
+                frame.record_layer_creation(description);
+            }
+            diagnostics.frame_interval = Duration::ZERO;
+            self.completed_layer_creation = Some(CompletedLayerCreation {
+                direction: pending.direction,
+                delta,
+                diagnostics,
+            });
         }
     }
 
