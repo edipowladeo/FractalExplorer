@@ -79,11 +79,32 @@ Feche todas as janelas do PowerShell e abra uma nova. Confirme:
 ```powershell
 $env:Path -split ";" | Select-String "msys64"
 gcc --version
+dlltool --version
 ```
 
 Não use `setx PATH "$env:PATH;..."` para essa configuração: ele pode truncar um PATH longo.
 
-## 5. Compilar e testar
+O `dlltool.exe` é instalado pelo pacote `mingw-w64-ucrt-x86_64-binutils`, incluído no grupo `mingw-w64-ucrt-x86_64-toolchain`. Ele é necessário quando o alvo GNU do Rust compila dependências nativas da feature `native-ui`, como `eframe`, `winit` e `wgpu`.
+
+Se o MSYS2 já estiver instalado, a instalação pode ser feita pelo PowerShell com:
+
+```powershell
+& "C:\msys64\usr\bin\pacman.exe" -S --needed mingw-w64-ucrt-x86_64-toolchain
+```
+
+## 5. Validar a UI nativa
+
+Depois de reabrir o PowerShell para carregar o `PATH` persistido, execute:
+
+```powershell
+cd C:\Users\edipo\repo\fractalrenderers\FractalExplorer
+cargo check --features native-ui
+cargo run --features native-ui --bin sprite-demo
+```
+
+O segundo comando abre a janela de configuração `egui/eframe` e a janela de renderização `minifb` ao mesmo tempo. Feche a janela de configuração para deixar o renderer continuar, ou pressione `Esc` na janela do fractal para encerrá-lo.
+
+## 6. Compilar e testar
 
 No PowerShell novo:
 
@@ -114,4 +135,4 @@ Ela deve indicar:
 stable-x86_64-pc-windows-gnu
 ```
 
-Se `cargo` não for reconhecido, reabra o terminal e confirme se `C:\Users\<seu-usuário>\.cargo\bin` está no PATH. Se `gcc` não for reconhecido, confirme se `C:\msys64\ucrt64\bin` está no PATH.
+Se `cargo` não for reconhecido, reabra o terminal e confirme se `C:\Users\<seu-usuário>\.cargo\bin` está no PATH. Se `gcc` ou `dlltool` não forem reconhecidos, confirme se `C:\msys64\ucrt64\bin` está no PATH e repita a instalação do grupo `mingw-w64-ucrt-x86_64-toolchain`.
