@@ -28,11 +28,13 @@ fn initial_view_parameters(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let output = std::sync::Arc::new(fractal_explorer::output::OutputService::start());
+    let _output_scope = output.attach_to_current_thread();
     let config = AppConfig::load("config.toml").unwrap_or_default();
     let render_plan = PrecisionDecisionManager::from_config(&config.renderer)?;
-    println!("Paleta em uso: {:?}", config.renderer.palette);
+    fractal_explorer::print_local!("Paleta em uso: {:?}", config.renderer.palette);
     let (center, starting_zoom) = config.renderer.starting_view().unwrap_or_else(|error| {
-        eprintln!("Aviso: {error}; usando visão inicial padrão");
+        fractal_explorer::print_local!("Aviso: {error}; usando visão inicial padrão");
         (
             ComplexPoint::new(0.0, 0.0),
             config.renderer.max_apparent_pixel_size(),
@@ -63,6 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.renderer.max_apparent_pixel_size(),
         config.renderer.min_apparent_pixel_size,
     );
+    fractal_explorer::output::flush_frame();
     canvas.set_initial_zoom(initial_layer_zoom);
     canvas.set_frame_dump_events(config.renderer.debug.frame_dump_events.clone());
     canvas.set_slow_frame_threshold_ms(config.renderer.debug.slow_frame_threshold_ms);
@@ -76,12 +79,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let (renderer_updates, renderer_commands) = std::sync::mpsc::channel();
         let renderer_config = config.renderer.clone();
+        let renderer_output = std::sync::Arc::clone(&output);
         let renderer_thread = std::thread::spawn(move || {
             fractal_explorer::renderer::run_with_updates(
                 &mut canvas,
                 &orchestrator,
                 &renderer_config,
                 renderer_commands,
+                &renderer_output,
             )
         });
         let mut config = config;
@@ -92,7 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     #[cfg(not(feature = "native-ui"))]
-    fractal_explorer::renderer::run(&mut canvas, &orchestrator, &config.renderer)?;
+    fractal_explorer::renderer::run(&mut canvas, &orchestrator, &config.renderer, &output)?;
     Ok(())
 }
 

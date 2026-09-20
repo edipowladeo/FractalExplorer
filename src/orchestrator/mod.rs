@@ -835,7 +835,6 @@ mod tests {
 }
 
 use std::collections::VecDeque;
-use std::io::Write;
 use std::sync::{
     atomic::{AtomicBool, AtomicU8, Ordering},
     Arc, Condvar, Mutex, RwLock,
@@ -1047,7 +1046,7 @@ impl FrameInstrumentation {
         let previous_timestamp = event_index
             .checked_sub(1)
             .map_or(self.started_at, |index| self.events[index].timestamp);
-        println!("{}", self.format_event(event, previous_timestamp));
+        crate::print_local!("{}", self.format_event(event, previous_timestamp));
     }
 
     fn format_event(&self, event: &FrameEvent, previous_timestamp: Instant) -> String {
@@ -1337,12 +1336,11 @@ impl TiledInfiniteCanvas {
                 frame.matching_triggers(&self.frame_dump_events, self.slow_frame_threshold);
             if !triggering_events.is_empty() {
                 frame.record_dump_started();
-                println!(
+                crate::print_local!(
                     "Frame #{} dump disparado por: {}",
                     frame.frame_number,
                     triggering_events.join(", ")
                 );
-                let _ = std::io::stdout().flush();
                 if let Some(mut creation) = completed_layer_creation {
                     creation.diagnostics.frame_interval = frame_duration;
                     self.record_layer_creation(
@@ -1352,10 +1350,8 @@ impl TiledInfiniteCanvas {
                     );
                 }
                 frame.dump();
-                let _ = std::io::stdout().flush();
                 frame.record_dump_finished();
                 frame.dump_last_event();
-                let _ = std::io::stdout().flush();
             }
             Some((frame.frame_number, frame_duration))
         } else {
@@ -1431,7 +1427,7 @@ impl TiledInfiniteCanvas {
                 diagnostics.format()
             ),
         };
-        println!("{line}");
+        crate::print_local!("{line}");
         self.layer_creation_log.push(line);
     }
 
