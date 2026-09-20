@@ -27,7 +27,9 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - **Critérios de aceitação:** composição por GPU sem `Sprite::draw_into_scaled`
   no caminho GPU; equivalência CPU/GPU dentro de tolerância documentada;
   navegação, camadas, resize, tiles progressivos, overlays e fallback CPU
-  preservados; testes GREEN, refactor, commit e push confirmados.
+  preservados; renderer legado selecionável por flag; contratos comuns
+  multiplataforma sem dependência Windows; backend GPU Windows isolado; testes
+  GREEN, refactor, commit e push confirmados.
 - **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
 
 ### T026 — Investigar e melhorar a precisão para zoom profundo
