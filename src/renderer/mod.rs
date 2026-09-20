@@ -157,8 +157,6 @@ pub fn run_with_updates(
                 );
             }
         }
-        let frame_interval = last_frame_rendered.map_or(Duration::ZERO, |last| last.elapsed());
-        canvas.set_frame_interval_since_last_render(frame_interval);
         // `get_size` changes while the resize gesture is in progress, not only when it ends.
         let window_size = window.get_size();
         surface.update_window_size(window_size);
@@ -368,7 +366,11 @@ pub fn run_with_updates(
             surface.screen_size.width,
             surface.screen_size.height,
         )?;
-        last_frame_rendered = Some(Instant::now());
+        let frame_rendered = Instant::now();
+        let frame_interval =
+            last_frame_rendered.map_or(Duration::ZERO, |last| frame_rendered.duration_since(last));
+        canvas.finish_frame(frame_interval);
+        last_frame_rendered = Some(frame_rendered);
     }
 
     // Closing the native window leaves the loop and releases the renderer
