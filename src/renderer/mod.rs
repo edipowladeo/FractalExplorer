@@ -5,6 +5,7 @@ use crate::{
     input::ZoomDirection, InputEvent, InputState, Orchestrator, PrecisionDecisionManager, Sprite,
     Tile, TiledInfiniteCanvas,
 };
+use crate::output::OutputService;
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::mpsc::Receiver;
@@ -81,7 +82,7 @@ impl<'de> Deserialize<'de> for Palette {
             "shade" => Ok(Self::Shade),
             "rainbow" => Ok(Self::Rainbow),
             invalid => {
-                eprintln!("Aviso: paleta inválida '{invalid}'; usando fallback 'rainbow'");
+                crate::print_local!("Aviso: paleta inválida '{invalid}'; usando fallback 'rainbow'");
                 Ok(Self::Rainbow)
             }
         }
@@ -154,9 +155,10 @@ pub fn run(
     canvas: &mut TiledInfiniteCanvas,
     orchestrator: &Orchestrator,
     config: &RendererConfig,
+    output: &OutputService,
 ) -> Result<(), minifb::Error> {
     let (_sender, receiver) = std::sync::mpsc::channel();
-    run_with_updates(canvas, orchestrator, config, receiver)
+    run_with_updates(canvas, orchestrator, config, receiver, output)
 }
 
 pub fn run_with_updates(
@@ -164,6 +166,7 @@ pub fn run_with_updates(
     orchestrator: &Orchestrator,
     initial_config: &RendererConfig,
     receiver: Receiver<RendererConfig>,
+    output: &OutputService,
 ) -> Result<(), minifb::Error> {
     let mut config = initial_config.clone();
     let mut surface = RenderSurface::new(
@@ -181,6 +184,7 @@ pub fn run_with_updates(
             ..WindowOptions::default()
         },
     )?;
+    let _output_scope = output.attach_to_current_thread();
     let mut input = InputState::new();
     let mut frame_timing_ring = FrameTimingRing::default();
     canvas.set_frame_dump_events(config.debug.frame_dump_events.clone());
@@ -189,6 +193,7 @@ pub fn run_with_updates(
         minifb::Error::WindowCreate("invalid renderer precision configuration".to_string())
     })?;
     while window.is_open() && !window.is_key_down(Key::Escape) {
+        crate::output::begin_frame();
         canvas.begin_frame();
         if let Some((frame_number, duration)) = canvas.last_finished_frame_timing() {
             frame_timing_ring.push(frame_number, duration);
@@ -255,7 +260,7 @@ pub fn run_with_updates(
                         canvas.apparent_pixel_size(),
                     ));
                     if config.debug.middle_click_coordinate_report {
-                        println!(
+                        crate::print_local!(
                             "{}",
                             middle_click_coordinate_report(canvas, cursor, complex)
                         );
@@ -442,6 +447,7 @@ pub fn run_with_updates(
         )?;
         canvas.record_frame_presentation_finished();
         canvas.finish_frame();
+        crate::output::flush_frame();
     }
 
     // Closing the native window leaves the loop and releases the renderer
@@ -613,8 +619,8 @@ fn draw_mouse_marker(framebuffer: &mut [u32], size: ScreenSize, position: Screen
 
 fn copy_coordinates(coordinates: &str) {
     match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(coordinates)) {
-        Ok(()) => println!("Coordenadas copiadas: {coordinates}"),
-        Err(error) => eprintln!("Não foi possível copiar as coordenadas: {error}"),
+        Ok(()) => crate::print_local!("Coordenadas copiadas: {coordinates}"),
+        Err(error) => crate::print_local!("Não foi possível copiar as coordenadas: {error}"),
     }
 }
 

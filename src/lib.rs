@@ -7,6 +7,7 @@ pub mod fixed;
 pub mod geometry;
 pub mod input;
 pub mod orchestrator;
+pub mod output;
 pub mod precision;
 pub mod renderer;
 
