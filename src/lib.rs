@@ -2,6 +2,7 @@
 
 pub mod calculator;
 pub mod config;
+pub mod config_ui;
 pub mod geometry;
 pub mod input;
 pub mod orchestrator;

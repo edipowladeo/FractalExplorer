@@ -6,6 +6,7 @@ use crate::{
 };
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 use serde::{Deserialize, Deserializer, Serialize};
+use std::sync::mpsc::Receiver;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -104,6 +105,17 @@ pub fn run(
     orchestrator: &Orchestrator,
     config: &RendererConfig,
 ) -> Result<(), minifb::Error> {
+    let (_sender, receiver) = std::sync::mpsc::channel();
+    run_with_updates(canvas, orchestrator, config, receiver)
+}
+
+pub fn run_with_updates(
+    canvas: &mut TiledInfiniteCanvas,
+    orchestrator: &Orchestrator,
+    initial_config: &RendererConfig,
+    receiver: Receiver<RendererConfig>,
+) -> Result<(), minifb::Error> {
+    let mut config = initial_config.clone();
     let mut surface = RenderSurface::new(
         config.width,
         config.height,
@@ -122,6 +134,11 @@ pub fn run(
     let mut input = InputState::new();
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
+        while let Ok(next_config) = receiver.try_recv() {
+            if next_config.width == config.width && next_config.height == config.height {
+                config = next_config;
+            }
+        }
         // `get_size` changes while the resize gesture is in progress, not only when it ends.
         surface.update_window_size(window.get_size());
         surface.clear();
