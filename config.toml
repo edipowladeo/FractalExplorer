@@ -2,26 +2,25 @@
 debug_global = true
 
 [renderer]
-width = 1400
-height = 800
+width = 800
+height = 600
 max_iterations = 256
-precision = 1
 allocation_ratio = 1
-deallocation_ratio = 1
-max_apparent_pixel_size_exponent = 3
-min_apparent_pixel_size = 1
-zoom_multiplier = 2.0
-rendering_method = "multiprecision"
 rendering_method = "direct"
 precision_technique = "fixed"
 precision_level = 2
 perturbation_fallback = false
+deallocation_ratio = 0.8
+max_apparent_pixel_size_exponent = 3
+min_apparent_pixel_size = 0.8
+zoom_multiplier = 1.8
 #palette = "shade"
-palette_period = 150.0
-starting_point = "x: -1.500000000000000   y: 0.000000000000000   zoom: 3.000000000000000"
-
+palette_period = 50.0
+#starting_point = "x=-1.50, y=0.0"
+#starting_point = "x: -1.484298587562009   y: 0.000113534008705   zoom: 15.787827708743960"
+starting_point = "x: -1.484300952308614   y: 0.000109681311738   zoom: 37.767873168752949"
 [renderer.debug]
-reduced_viewport = false
+reduced_viewport = true
 reduced_viewport_allocation_ratio = 0.7
 show_allocation_envelope = true
 text_overlay_global = false
@@ -29,6 +28,7 @@ text_overlay_workers = false
 text_overlay_layers = false
 text_overlay_queue = false
 middle_click_coordinate_report = false
+#frame_dump_events = ["layer_created", "slow_frame"]
 frame_dump_events = ["layer_created", "slow_frame"]
 slow_frame_threshold_ms = 1000
 
@@ -36,5 +36,5 @@ slow_frame_threshold_ms = 1000
 workers = 8
 
 [orchestrator.tile]
-width = 64
-height = 64
+width = 30
+height = 20
