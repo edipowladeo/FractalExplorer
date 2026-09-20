@@ -94,11 +94,11 @@ impl ConfigUi {
                         ui.horizontal(|ui| {
                             ui.label(&path);
                             let mut spinner = eframe::egui::DragValue::new(&mut number);
-                            if path == "renderer.precision" {
+                            if path == "renderer.precision_level" {
                                 spinner = spinner.range(1..=i64::MAX);
                             }
                             let mut changed = ui.add(spinner).changed();
-                            if path == "renderer.precision" {
+                            if path == "renderer.precision_level" {
                                 if ui.small_button("−").clicked() {
                                     if let Some(next) = precision_step(number, -1) {
                                         number = next;
@@ -287,7 +287,7 @@ mod tests {
         assert_eq!(
             ui.fields()
                 .iter()
-                .find(|field| field.path == "renderer.precision")
+                .find(|field| field.path == "renderer.precision_level")
                 .unwrap()
                 .kind,
             ControlKind::IntegerSpinner
@@ -295,7 +295,7 @@ mod tests {
         assert_eq!(
             ui.fields()
                 .iter()
-                .find(|field| field.path == "renderer.precision")
+                .find(|field| field.path == "renderer.precision_level")
                 .unwrap()
                 .value
                 .as_integer(),
@@ -360,11 +360,11 @@ mod tests {
     fn rejects_non_positive_renderer_precision() {
         let mut ui = ConfigUi::from_config(&AppConfig::default());
 
-        assert!(!ui.step("renderer.precision", -1));
+        assert!(!ui.step("renderer.precision_level", -1));
         assert_eq!(
             ui.fields()
                 .iter()
-                .find(|field| field.path == "renderer.precision")
+                .find(|field| field.path == "renderer.precision_level")
                 .unwrap()
                 .value
                 .as_integer(),
@@ -381,7 +381,7 @@ mod tests {
 }
 
 fn is_valid_value(path: &str, value: &toml::Value) -> bool {
-    path != "renderer.precision" || value.as_integer().is_some_and(|value| value > 0)
+    path != "renderer.precision_level" || value.as_integer().is_some_and(|value| value > 0)
 }
 
 fn precision_step(value: i64, direction: i8) -> Option<i64> {
