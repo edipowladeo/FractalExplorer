@@ -414,6 +414,7 @@ mod tests {
         );
 
         for _ in 0..3 {
+            canvas.set_frame_interval_since_last_render(Duration::from_millis(123));
             canvas.ensure_screen_coverage((0, 0, 29, 19));
         }
 
@@ -429,6 +430,7 @@ mod tests {
             assert!(line.contains("grade_ms="));
             assert!(line.contains("fila_ms="));
             assert!(line.contains("cobertura_ms="));
+            assert!(line.contains("frame_ms=123.000"));
         }
     }
 
@@ -745,6 +747,7 @@ struct LayerCreationDiagnostics {
     grid_insertion: Duration,
     queue_enqueuing: Duration,
     coverage: Duration,
+    frame_interval: Duration,
     tiles_created: usize,
     tiles_enqueued: usize,
 }
@@ -752,13 +755,14 @@ struct LayerCreationDiagnostics {
 impl LayerCreationDiagnostics {
     fn format(self) -> String {
         format!(
-            "tiles={} enfileirados={} tile_ms={:.3} grade_ms={:.3} fila_ms={:.3} cobertura_ms={:.3}",
+            "tiles={} enfileirados={} tile_ms={:.3} grade_ms={:.3} fila_ms={:.3} cobertura_ms={:.3} frame_ms={:.3}",
             self.tiles_created,
             self.tiles_enqueued,
             self.tile_creation.as_secs_f64() * 1_000.0,
             self.grid_insertion.as_secs_f64() * 1_000.0,
             self.queue_enqueuing.as_secs_f64() * 1_000.0,
             self.coverage.as_secs_f64() * 1_000.0,
+            self.frame_interval.as_secs_f64() * 1_000.0,
         )
     }
 }
@@ -787,6 +791,7 @@ pub struct TiledInfiniteCanvas {
     layer_creation_log: Vec<String>,
     layer_creation_diagnostics_enabled: bool,
     pending_layer_creation: Option<PendingLayerCreation>,
+    last_frame_interval: Duration,
     render_plan: crate::PrecisionRenderPlan,
 }
 
@@ -858,6 +863,7 @@ impl TiledInfiniteCanvas {
             layer_creation_log: Vec::new(),
             layer_creation_diagnostics_enabled: true,
             pending_layer_creation: None,
+            last_frame_interval: Duration::ZERO,
             render_plan: crate::PrecisionRenderPlan::default(),
         }
     }
@@ -989,6 +995,10 @@ impl TiledInfiniteCanvas {
         self.layer_creation_diagnostics_enabled = enabled;
     }
 
+    pub fn set_frame_interval_since_last_render(&mut self, interval: Duration) {
+        self.last_frame_interval = interval;
+    }
+
     /// Parameters supplied at canvas creation, before any navigation command.
     pub fn initial_state(&self) -> CanvasInitialState {
         CanvasInitialState {
@@ -1073,7 +1083,8 @@ impl TiledInfiniteCanvas {
             layer.ensure_screen_coverage(bounds);
         }
         if let Some(pending) = self.pending_layer_creation.take() {
-            let diagnostics = self.layers[pending.layer_index].take_creation_diagnostics();
+            let mut diagnostics = self.layers[pending.layer_index].take_creation_diagnostics();
+            diagnostics.frame_interval = self.last_frame_interval;
             let delta = self.layers[pending.layer_index].delta();
             self.record_layer_creation(pending.direction, delta, diagnostics);
         }
