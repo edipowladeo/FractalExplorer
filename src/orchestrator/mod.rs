@@ -4,7 +4,7 @@ mod tests {
 
     use super::{Orchestrator, Tile, TileLayer, TileSprite, TileStatus, TiledInfiniteCanvas};
     use crate::Mandelbrot;
-    use std::{thread, time::Duration};
+    use std::{thread, time::{Duration, Instant}};
 
     fn wait_for_completion(tile: &Tile) {
         for _ in 0..1000 {
@@ -438,6 +438,26 @@ mod tests {
     }
 
     #[test]
+    fn formats_frame_events_with_elapsed_and_delta_times() {
+        let started_at = Instant::now();
+        let instrumentation = super::FrameInstrumentation {
+            started_at,
+            events: Vec::new(),
+            has_layer_creation: false,
+        };
+        let event = super::FrameEvent {
+            description: "trabalho das camadas agendado".to_string(),
+            timestamp: started_at + Duration::from_micros(113_183),
+        };
+        let previous_timestamp = started_at + Duration::from_micros(113_174);
+
+        assert_eq!(
+            instrumentation.format_event(&event, previous_timestamp),
+            "Frame: 113.183 Δ: 0.009, trabalho das camadas agendado."
+        );
+    }
+
+    #[test]
     fn skips_layer_creation_log_when_disabled() {
         let mut canvas = TiledInfiniteCanvas::new(
             crate::geometry::ComplexPoint::new(-1.0, 1.0),
@@ -802,16 +822,20 @@ impl FrameInstrumentation {
     fn dump(&self) {
         let mut previous_timestamp = self.started_at;
         for event in &self.events {
-            let since_start = event.timestamp.duration_since(self.started_at);
-            let since_previous = event.timestamp.duration_since(previous_timestamp);
-            println!(
-                "Frame evento: {}, desde_inicio_ms={:.3}, desde_anterior_ms={:.3}",
-                event.description,
-                since_start.as_secs_f64() * 1_000.0,
-                since_previous.as_secs_f64() * 1_000.0,
-            );
+            println!("{}", self.format_event(event, previous_timestamp));
             previous_timestamp = event.timestamp;
         }
+    }
+
+    fn format_event(&self, event: &FrameEvent, previous_timestamp: Instant) -> String {
+        let since_start = event.timestamp.duration_since(self.started_at);
+        let since_previous = event.timestamp.duration_since(previous_timestamp);
+        format!(
+            "Frame: {:.3} Δ: {:.3}, {}.",
+            since_start.as_secs_f64() * 1_000.0,
+            since_previous.as_secs_f64() * 1_000.0,
+            event.description,
+        )
     }
 }
 
