@@ -65,6 +65,20 @@ mod tests {
     }
 
     #[test]
+    fn tile_layer_enqueues_its_initial_tile_when_created() {
+        let layer = TileLayer::new(
+            crate::geometry::ComplexPoint::new(0.0, 0.0),
+            2,
+            2,
+            1.0,
+            crate::geometry::ScreenPoint::new(0, 0),
+            1.0,
+        );
+
+        assert_eq!(layer.pending_work_positions(), [(0, 0)]);
+    }
+
+    #[test]
     fn layer_position_is_redirected_to_the_top_left_tile() {
         let tile = Arc::new(Tile::new(
             crate::geometry::ComplexPoint::new(-2.0, 3.0),
@@ -400,17 +414,22 @@ mod tests {
         );
 
         for _ in 0..3 {
-            assert!(canvas.expand_one_layer_per_frame());
+            canvas.ensure_screen_coverage((0, 0, 29, 19));
         }
 
-        assert_eq!(
-            canvas.layer_creation_log(),
-            [
-                "Camada criada com delta: 7.644",
-                "Camada menor criada, delta: 8.644",
-                "Camada menor criada, delta: 9.644",
-            ]
-        );
+        let log = canvas.layer_creation_log();
+        assert_eq!(log.len(), 3);
+        assert!(log[0].starts_with("Camada criada, delta: 7.644, "));
+        assert!(log[1].starts_with("Camada menor criada, delta: 8.644, "));
+        assert!(log[2].starts_with("Camada menor criada, delta: 9.644, "));
+        for line in log {
+            assert!(line.contains("tiles="));
+            assert!(line.contains("enfileirados="));
+            assert!(line.contains("tile_ms="));
+            assert!(line.contains("grade_ms="));
+            assert!(line.contains("fila_ms="));
+            assert!(line.contains("cobertura_ms="));
+        }
     }
 
     #[test]
@@ -424,7 +443,7 @@ mod tests {
             8.0,
             0.8,
         );
-        canvas.set_layer_creation_log_enabled(false);
+        canvas.set_layer_creation_diagnostics_enabled(false);
 
         assert!(canvas.expand_one_layer_per_frame());
         assert!(canvas.layer_creation_log().is_empty());
@@ -667,6 +686,7 @@ use std::sync::{
     Arc, Condvar, Mutex, RwLock,
 };
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -716,6 +736,31 @@ pub struct TileLayer {
     zoom: f64,
     work_queue: Arc<TileWorkQueue>,
     render_plan: crate::PrecisionRenderPlan,
+    creation_diagnostics: LayerCreationDiagnostics,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct LayerCreationDiagnostics {
+    tile_creation: Duration,
+    grid_insertion: Duration,
+    queue_enqueuing: Duration,
+    coverage: Duration,
+    tiles_created: usize,
+    tiles_enqueued: usize,
+}
+
+impl LayerCreationDiagnostics {
+    fn format(self) -> String {
+        format!(
+            "tiles={} enfileirados={} tile_ms={:.3} grade_ms={:.3} fila_ms={:.3} cobertura_ms={:.3}",
+            self.tiles_created,
+            self.tiles_enqueued,
+            self.tile_creation.as_secs_f64() * 1_000.0,
+            self.grid_insertion.as_secs_f64() * 1_000.0,
+            self.queue_enqueuing.as_secs_f64() * 1_000.0,
+            self.coverage.as_secs_f64() * 1_000.0,
+        )
+    }
 }
 
 impl Drop for TileLayer {
@@ -740,8 +785,14 @@ pub struct TiledInfiniteCanvas {
     camera_scale: f64,
     navigation_history: Vec<CanvasNavigationEvent>,
     layer_creation_log: Vec<String>,
-    layer_creation_log_enabled: bool,
+    layer_creation_diagnostics_enabled: bool,
+    pending_layer_creation: Option<PendingLayerCreation>,
     render_plan: crate::PrecisionRenderPlan,
+}
+
+struct PendingLayerCreation {
+    direction: Option<&'static str>,
+    layer_index: usize,
 }
 
 /// A navigation command applied to a canvas, retained for diagnostic replay.
@@ -805,7 +856,8 @@ impl TiledInfiniteCanvas {
             camera_scale: max_apparent_pixel_size / delta,
             navigation_history: Vec::new(),
             layer_creation_log: Vec::new(),
-            layer_creation_log_enabled: true,
+            layer_creation_diagnostics_enabled: true,
+            pending_layer_creation: None,
             render_plan: crate::PrecisionRenderPlan::default(),
         }
     }
@@ -824,7 +876,10 @@ impl TiledInfiniteCanvas {
             layer.set_render_plan(self.render_plan);
             self.layers.push_back(layer);
             self.synchronize_layer_positions();
-            self.record_layer_creation(None, self.layers.back().unwrap().delta());
+            self.pending_layer_creation = Some(PendingLayerCreation {
+                direction: None,
+                layer_index: self.layers.len() - 1,
+            });
             return true;
         }
 
@@ -835,7 +890,10 @@ impl TiledInfiniteCanvas {
             layer.set_render_plan(self.render_plan);
             self.layers.push_front(layer);
             self.synchronize_layer_positions();
-            self.record_layer_creation(Some("maior"), self.layers.front().unwrap().delta());
+            self.pending_layer_creation = Some(PendingLayerCreation {
+                direction: Some("maior"),
+                layer_index: 0,
+            });
             return true;
         }
         let back_zoom = self.layers.back().unwrap().zoom();
@@ -845,7 +903,10 @@ impl TiledInfiniteCanvas {
             layer.set_render_plan(self.render_plan);
             self.layers.push_back(layer);
             self.synchronize_layer_positions();
-            self.record_layer_creation(Some("menor"), self.layers.back().unwrap().delta());
+            self.pending_layer_creation = Some(PendingLayerCreation {
+                direction: Some("menor"),
+                layer_index: self.layers.len() - 1,
+            });
             return true;
         }
         false
@@ -910,11 +971,7 @@ impl TiledInfiniteCanvas {
 
     pub fn invalidate_tiles(&self) {
         for layer in &self.layers {
-            for row in &layer.tiles {
-                for tile in row {
-                    tile.invalidate();
-                }
-            }
+            layer.invalidate_tiles();
         }
     }
 
@@ -928,8 +985,8 @@ impl TiledInfiniteCanvas {
         &self.layer_creation_log
     }
 
-    pub fn set_layer_creation_log_enabled(&mut self, enabled: bool) {
-        self.layer_creation_log_enabled = enabled;
+    pub fn set_layer_creation_diagnostics_enabled(&mut self, enabled: bool) {
+        self.layer_creation_diagnostics_enabled = enabled;
     }
 
     /// Parameters supplied at canvas creation, before any navigation command.
@@ -945,14 +1002,25 @@ impl TiledInfiniteCanvas {
         }
     }
 
-    fn record_layer_creation(&mut self, direction: Option<&str>, delta: f64) {
-        if !self.layer_creation_log_enabled {
+    fn record_layer_creation(
+        &mut self,
+        direction: Option<&str>,
+        delta: f64,
+        diagnostics: LayerCreationDiagnostics,
+    ) {
+        if !self.layer_creation_diagnostics_enabled {
             return;
         }
         let delta_exponent = -delta.log2();
         let line = match direction {
-            Some(direction) => format!("Camada {direction} criada, delta: {delta_exponent:.3}"),
-            None => format!("Camada criada com delta: {delta_exponent:.3}"),
+            Some(direction) => format!(
+                "Camada {direction} criada, delta: {delta_exponent:.3}, {}",
+                diagnostics.format()
+            ),
+            None => format!(
+                "Camada criada, delta: {delta_exponent:.3}, {}",
+                diagnostics.format()
+            ),
         };
         println!("{line}");
         self.layer_creation_log.push(line);
@@ -1003,6 +1071,11 @@ impl TiledInfiniteCanvas {
         }
         for layer in &mut self.layers {
             layer.ensure_screen_coverage(bounds);
+        }
+        if let Some(pending) = self.pending_layer_creation.take() {
+            let diagnostics = self.layers[pending.layer_index].take_creation_diagnostics();
+            let delta = self.layers[pending.layer_index].delta();
+            self.record_layer_creation(pending.direction, delta, diagnostics);
         }
     }
 
@@ -1121,12 +1194,20 @@ impl TileLayer {
         screen_position: crate::geometry::ScreenPoint,
         zoom: f64,
     ) -> Self {
+        let tile_creation_started = Instant::now();
         let tile = Arc::new(Tile::new(position.clone(), tile_width, tile_height, delta));
+        let tile_creation = tile_creation_started.elapsed();
+        let grid_insertion_started = Instant::now();
         let mut row = VecDeque::new();
         row.push_back(tile);
         let mut tiles = VecDeque::new();
         tiles.push_back(row);
-        Self::from_grid(tile_width, tile_height, delta, tiles, screen_position, zoom)
+        let mut layer =
+            Self::from_grid(tile_width, tile_height, delta, tiles, screen_position, zoom);
+        layer.creation_diagnostics.tile_creation += tile_creation;
+        layer.creation_diagnostics.grid_insertion += grid_insertion_started.elapsed();
+        layer.creation_diagnostics.tiles_created += 1;
+        layer
     }
 
     fn from_grid(
@@ -1157,7 +1238,7 @@ impl TileLayer {
                 .all(|tile| tile.width() == tile_width && tile.height() == tile_height),
             "layer tile sizes must match"
         );
-        Self {
+        let mut layer = Self {
             tile_width,
             tile_height,
             delta,
@@ -1168,7 +1249,20 @@ impl TileLayer {
             zoom,
             work_queue: Arc::new(TileWorkQueue::new()),
             render_plan: crate::PrecisionRenderPlan::default(),
+            creation_diagnostics: LayerCreationDiagnostics::default(),
+        };
+        let enqueue_started = Instant::now();
+        for (row_index, row) in layer.tiles.iter().enumerate() {
+            for (column_index, tile) in row.iter().enumerate() {
+                layer
+                    .work_queue
+                    .enqueue(Arc::clone(tile), row_index, column_index);
+            }
         }
+        layer.creation_diagnostics.queue_enqueuing += enqueue_started.elapsed();
+        layer.creation_diagnostics.tiles_enqueued +=
+            layer.tiles.iter().map(VecDeque::len).sum::<usize>();
+        layer
     }
 
     pub fn position(&self) -> &crate::geometry::ComplexPoint<f64> {
@@ -1237,6 +1331,28 @@ impl TileLayer {
     pub fn pending_work_positions(&self) -> Vec<(usize, usize)> {
         self.work_queue.pending_positions()
     }
+
+    fn enqueue_created_tile(&mut self, tile: Arc<Tile>, row: usize, column: usize) {
+        let enqueue_started = Instant::now();
+        self.work_queue.enqueue(tile, row, column);
+        self.creation_diagnostics.queue_enqueuing += enqueue_started.elapsed();
+        self.creation_diagnostics.tiles_enqueued += 1;
+    }
+
+    fn take_creation_diagnostics(&mut self) -> LayerCreationDiagnostics {
+        std::mem::take(&mut self.creation_diagnostics)
+    }
+
+    fn invalidate_tiles(&self) {
+        for (row_index, row) in self.tiles.iter().enumerate() {
+            for (column_index, tile) in row.iter().enumerate() {
+                self.work_queue.remove_tile(tile);
+                tile.invalidate();
+                self.work_queue
+                    .enqueue(Arc::clone(tile), row_index, column_index);
+            }
+        }
+    }
     pub fn screen_size(&self) -> (u32, u32) {
         (
             ((self.tile_width as f64 * self.zoom).round() as u32).max(1)
@@ -1273,6 +1389,7 @@ impl TileLayer {
     }
 
     pub fn ensure_screen_coverage(&mut self, bounds: (i32, i32, i32, i32)) {
+        let coverage_started = Instant::now();
         let (left, top, right, bottom) = bounds;
         let (tile_width, tile_height) = self.tile_screen_size();
         let complex_width = self.tile_width as f64 * self.delta;
@@ -1287,7 +1404,10 @@ impl TileLayer {
                     origin.x - complex_width,
                     origin.y - row_index as f64 * complex_height,
                 ));
-                self.tiles[row_index].push_front(tile);
+                let grid_started = Instant::now();
+                self.tiles[row_index].push_front(Arc::clone(&tile));
+                self.creation_diagnostics.grid_insertion += grid_started.elapsed();
+                self.enqueue_created_tile(tile, row_index, 0);
             }
         }
         while self.screen_position.y > top {
@@ -1296,10 +1416,14 @@ impl TileLayer {
             self.screen_origin_y -= tile_height as f64;
             let mut row = VecDeque::new();
             for column_index in 0..self.column_count() {
-                row.push_back(self.make_tile_at(crate::geometry::ComplexPoint::new(
+                let tile = self.make_tile_at(crate::geometry::ComplexPoint::new(
                     origin.x + column_index as f64 * complex_width,
                     origin.y + complex_height,
-                )));
+                ));
+                let grid_started = Instant::now();
+                row.push_back(Arc::clone(&tile));
+                self.creation_diagnostics.grid_insertion += grid_started.elapsed();
+                self.enqueue_created_tile(tile, 0, column_index);
             }
             self.tiles.push_front(row);
         }
@@ -1311,7 +1435,10 @@ impl TileLayer {
                     origin.x + column_index as f64 * complex_width,
                     origin.y - row_index as f64 * complex_height,
                 ));
-                self.tiles[row_index].push_back(tile);
+                let grid_started = Instant::now();
+                self.tiles[row_index].push_back(Arc::clone(&tile));
+                self.creation_diagnostics.grid_insertion += grid_started.elapsed();
+                self.enqueue_created_tile(tile, row_index, column_index);
             }
         }
         while self.screen_position.y + self.screen_size().1 as i32 - 1 < bottom {
@@ -1319,13 +1446,18 @@ impl TileLayer {
             let origin = self.position().clone();
             let mut row = VecDeque::new();
             for column_index in 0..self.column_count() {
-                row.push_back(self.make_tile_at(crate::geometry::ComplexPoint::new(
+                let tile = self.make_tile_at(crate::geometry::ComplexPoint::new(
                     origin.x + column_index as f64 * complex_width,
                     origin.y - row_index as f64 * complex_height,
-                )));
+                ));
+                let grid_started = Instant::now();
+                row.push_back(Arc::clone(&tile));
+                self.creation_diagnostics.grid_insertion += grid_started.elapsed();
+                self.enqueue_created_tile(tile, row_index, column_index);
             }
             self.tiles.push_back(row);
         }
+        self.creation_diagnostics.coverage += coverage_started.elapsed();
     }
 
     pub fn trim_outside_allocation(&mut self, bounds: (i32, i32, i32, i32)) {
@@ -1375,13 +1507,17 @@ impl TileLayer {
         }
     }
 
-    fn make_tile_at(&self, coordinate: crate::geometry::ComplexPoint<f64>) -> Arc<Tile> {
-        Arc::new(Tile::new(
+    fn make_tile_at(&mut self, coordinate: crate::geometry::ComplexPoint<f64>) -> Arc<Tile> {
+        let tile_creation_started = Instant::now();
+        let tile = Arc::new(Tile::new(
             coordinate,
             self.tile_width,
             self.tile_height,
             self.delta,
-        ))
+        ));
+        self.creation_diagnostics.tile_creation += tile_creation_started.elapsed();
+        self.creation_diagnostics.tiles_created += 1;
+        tile
     }
 }
 
@@ -1612,13 +1748,6 @@ impl Orchestrator {
 
     pub fn render_layer(&self, layer: &TileLayer) {
         self.register_queue(Arc::clone(&layer.work_queue), layer.zoom());
-        for (row_index, row) in layer.tiles.iter().enumerate() {
-            for (column_index, tile) in row.iter().enumerate() {
-                layer
-                    .work_queue
-                    .enqueue(Arc::clone(tile), row_index, column_index);
-            }
-        }
         self.available.notify_one();
     }
 

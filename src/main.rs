@@ -64,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.renderer.min_apparent_pixel_size,
     );
     canvas.set_initial_zoom(initial_layer_zoom);
-    canvas.set_layer_creation_log_enabled(config.renderer.debug.layer_creation_log);
+    canvas.set_layer_creation_diagnostics_enabled(config.renderer.debug.layer_creation_diagnostics);
     canvas.set_render_plan(render_plan);
     let orchestrator = Orchestrator::with_worker_count_and_plan(
         Mandelbrot::new(config.renderer.effective_max_iterations()),
