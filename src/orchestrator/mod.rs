@@ -537,6 +537,17 @@ mod tests {
     }
 
     #[test]
+    fn records_dump_boundaries_as_frame_events() {
+        let mut instrumentation = super::FrameInstrumentation::new(7);
+
+        instrumentation.record_dump_started();
+        instrumentation.record_dump_finished();
+
+        assert_eq!(instrumentation.events[1].description, "dump iniciado");
+        assert_eq!(instrumentation.events[2].description, "dump finalizado");
+    }
+
+    #[test]
     fn skips_layer_creation_log_when_disabled() {
         let mut canvas = TiledInfiniteCanvas::new(
             crate::geometry::ComplexPoint::new(-1.0, 1.0),
@@ -866,6 +877,8 @@ struct FrameEvent {
 
 const BUFFER_PRESENTATION_STARTED: &str = "apresentacao do buffer iniciada";
 const BUFFER_PRESENTATION_FINISHED: &str = "apresentacao do buffer concluida";
+const FRAME_DUMP_STARTED: &str = "dump iniciado";
+const FRAME_DUMP_FINISHED: &str = "dump finalizado";
 
 #[derive(Debug)]
 struct FrameInstrumentation {
@@ -906,6 +919,14 @@ impl FrameInstrumentation {
 
     fn record_presentation_finished(&mut self) {
         self.record(BUFFER_PRESENTATION_FINISHED);
+    }
+
+    fn record_dump_started(&mut self) {
+        self.record(FRAME_DUMP_STARTED);
+    }
+
+    fn record_dump_finished(&mut self) {
+        self.record(FRAME_DUMP_FINISHED);
     }
 
     fn record_trigger(&mut self, trigger: impl Into<String>, description: impl Into<String>) {
@@ -961,11 +982,23 @@ impl FrameInstrumentation {
     }
 
     fn dump(&self) {
-        let mut previous_timestamp = self.started_at;
-        for event in &self.events {
-            println!("{}", self.format_event(event, previous_timestamp));
-            previous_timestamp = event.timestamp;
+        for event_index in 0..self.events.len() {
+            self.dump_event(event_index);
         }
+    }
+
+    fn dump_last_event(&self) {
+        if !self.events.is_empty() {
+            self.dump_event(self.events.len() - 1);
+        }
+    }
+
+    fn dump_event(&self, event_index: usize) {
+        let event = &self.events[event_index];
+        let previous_timestamp = event_index
+            .checked_sub(1)
+            .map_or(self.started_at, |index| self.events[index].timestamp);
+        println!("{}", self.format_event(event, previous_timestamp));
     }
 
     fn format_event(&self, event: &FrameEvent, previous_timestamp: Instant) -> String {
@@ -1244,11 +1277,12 @@ impl TiledInfiniteCanvas {
     pub fn begin_frame(&mut self) {
         let previous_frame = self.frame_instrumentation.take();
         let completed_layer_creation = self.completed_layer_creation.take();
-        if let Some(frame) = previous_frame.as_ref() {
+        if let Some(mut frame) = previous_frame {
+            let frame_duration = frame.duration();
             let triggering_events =
                 frame.matching_triggers(&self.frame_dump_events, self.slow_frame_threshold);
             if !triggering_events.is_empty() {
-                let dump_started_at = Instant::now();
+                frame.record_dump_started();
                 println!(
                     "Frame #{} dump disparado por: {}",
                     frame.frame_number,
@@ -1256,7 +1290,7 @@ impl TiledInfiniteCanvas {
                 );
                 let _ = std::io::stdout().flush();
                 if let Some(mut creation) = completed_layer_creation {
-                    creation.diagnostics.frame_interval = frame.duration();
+                    creation.diagnostics.frame_interval = frame_duration;
                     self.record_layer_creation(
                         creation.direction,
                         creation.delta,
@@ -1265,11 +1299,9 @@ impl TiledInfiniteCanvas {
                 }
                 frame.dump();
                 let _ = std::io::stdout().flush();
-                println!(
-                    "Frame #{} dump finalizado, dump_ms={:.3}",
-                    frame.frame_number,
-                    dump_started_at.elapsed().as_secs_f64() * 1_000.0,
-                );
+                frame.record_dump_finished();
+                frame.dump_last_event();
+                let _ = std::io::stdout().flush();
             }
         }
         self.frame_number = self.frame_number.saturating_add(1);
