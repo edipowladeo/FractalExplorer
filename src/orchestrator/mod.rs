@@ -519,6 +519,23 @@ mod tests {
     }
 
     #[test]
+    fn records_buffer_presentation_boundaries_as_frame_events() {
+        let mut instrumentation = super::FrameInstrumentation::new(6);
+
+        instrumentation.record_presentation_started();
+        instrumentation.record_presentation_finished();
+
+        assert_eq!(
+            instrumentation.events[1].description,
+            "apresentacao do buffer iniciada"
+        );
+        assert_eq!(
+            instrumentation.events[2].description,
+            "apresentacao do buffer concluida"
+        );
+    }
+
+    #[test]
     fn skips_layer_creation_log_when_disabled() {
         let mut canvas = TiledInfiniteCanvas::new(
             crate::geometry::ComplexPoint::new(-1.0, 1.0),
@@ -770,6 +787,7 @@ mod tests {
 }
 
 use std::collections::VecDeque;
+use std::io::Write;
 use std::sync::{
     atomic::{AtomicBool, AtomicU8, Ordering},
     Arc, Condvar, Mutex, RwLock,
@@ -845,6 +863,9 @@ struct FrameEvent {
     timestamp: Instant,
 }
 
+const BUFFER_PRESENTATION_STARTED: &str = "apresentacao do buffer iniciada";
+const BUFFER_PRESENTATION_FINISHED: &str = "apresentacao do buffer concluida";
+
 #[derive(Debug)]
 struct FrameInstrumentation {
     frame_number: u64,
@@ -876,6 +897,14 @@ impl FrameInstrumentation {
             description: description.into(),
             timestamp,
         });
+    }
+
+    fn record_presentation_started(&mut self) {
+        self.record(BUFFER_PRESENTATION_STARTED);
+    }
+
+    fn record_presentation_finished(&mut self) {
+        self.record(BUFFER_PRESENTATION_FINISHED);
     }
 
     fn record_trigger(&mut self, trigger: impl Into<String>, description: impl Into<String>) {
@@ -1218,11 +1247,13 @@ impl TiledInfiniteCanvas {
             let triggering_events =
                 frame.matching_triggers(&self.frame_dump_events, self.slow_frame_threshold);
             if !triggering_events.is_empty() {
+                let dump_started_at = Instant::now();
                 println!(
                     "Frame #{} dump disparado por: {}",
                     frame.frame_number,
                     triggering_events.join(", ")
                 );
+                let _ = std::io::stdout().flush();
                 if let Some(mut creation) = completed_layer_creation {
                     creation.diagnostics.frame_interval = frame.duration();
                     self.record_layer_creation(
@@ -1232,6 +1263,12 @@ impl TiledInfiniteCanvas {
                     );
                 }
                 frame.dump();
+                let _ = std::io::stdout().flush();
+                println!(
+                    "Frame #{} dump finalizado, dump_ms={:.3}",
+                    frame.frame_number,
+                    dump_started_at.elapsed().as_secs_f64() * 1_000.0,
+                );
             }
         }
         self.frame_number = self.frame_number.saturating_add(1);
@@ -1241,6 +1278,18 @@ impl TiledInfiniteCanvas {
     pub fn record_frame_event(&mut self, description: impl Into<String>) {
         if let Some(frame) = self.frame_instrumentation.as_mut() {
             frame.record(description);
+        }
+    }
+
+    pub fn record_frame_presentation_started(&mut self) {
+        if let Some(frame) = self.frame_instrumentation.as_mut() {
+            frame.record_presentation_started();
+        }
+    }
+
+    pub fn record_frame_presentation_finished(&mut self) {
+        if let Some(frame) = self.frame_instrumentation.as_mut() {
+            frame.record_presentation_finished();
         }
     }
 
