@@ -65,6 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     canvas.set_initial_zoom(initial_layer_zoom);
     canvas.set_frame_dump_events(config.renderer.debug.frame_dump_events.clone());
+    canvas.set_slow_frame_threshold_ms(config.renderer.debug.slow_frame_threshold_ms);
     canvas.set_render_plan(render_plan);
     let orchestrator = Orchestrator::with_worker_count_and_plan(
         Mandelbrot::new(config.renderer.effective_max_iterations()),

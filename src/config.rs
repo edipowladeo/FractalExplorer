@@ -59,6 +59,7 @@ pub struct RendererDebugConfig {
     pub text_overlay_queue: bool,
     pub middle_click_coordinate_report: bool,
     pub frame_dump_events: Vec<String>,
+    pub slow_frame_threshold_ms: u64,
 }
 
 impl Default for AppConfig {
@@ -124,6 +125,7 @@ impl Default for RendererDebugConfig {
             text_overlay_queue: true,
             middle_click_coordinate_report: false,
             frame_dump_events: vec!["layer_created".to_string(), "slow_frame".to_string()],
+            slow_frame_threshold_ms: 1_000,
         }
     }
 }
@@ -290,6 +292,10 @@ mod tests {
             AppConfig::default().renderer.debug.frame_dump_events,
             vec!["layer_created", "slow_frame"]
         );
+        assert_eq!(
+            AppConfig::default().renderer.debug.slow_frame_threshold_ms,
+            1_000
+        );
     }
 
     #[test]
@@ -298,6 +304,7 @@ mod tests {
             r#"
             [renderer.debug]
             frame_dump_events = ["layer_created", "slow_frame"]
+            slow_frame_threshold_ms = 750
             "#,
         )
         .unwrap();
@@ -306,6 +313,7 @@ mod tests {
             config.renderer.debug.frame_dump_events,
             vec!["layer_created", "slow_frame"]
         );
+        assert_eq!(config.renderer.debug.slow_frame_threshold_ms, 750);
     }
 
     #[test]
