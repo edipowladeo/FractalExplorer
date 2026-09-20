@@ -147,6 +147,7 @@ impl ConfigUi {
 pub fn run_window(
     config: &mut AppConfig,
     renderer_updates: std::sync::mpsc::Sender<crate::config::RendererConfig>,
+    renderer_closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> eframe::Result<()> {
     use std::sync::{Arc, Mutex};
 
@@ -154,6 +155,7 @@ pub fn run_window(
         config: config.clone(),
         fields: ConfigUi::from_config(config),
         renderer_updates,
+        renderer_closed,
     }));
     let app_state = Arc::clone(&state);
     let options = eframe::NativeOptions {
@@ -186,11 +188,23 @@ struct ConfigWindowState {
     config: AppConfig,
     fields: ConfigUi,
     renderer_updates: std::sync::mpsc::Sender<crate::config::RendererConfig>,
+    renderer_closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(feature = "native-ui")]
 impl eframe::App for ConfigWindow {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
+        if renderer_close_requests_config_shutdown(
+            &self
+                .state
+                .lock()
+                .expect("config UI mutex poisoned")
+                .renderer_closed,
+        ) {
+            ui.ctx()
+                .send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+            return;
+        }
         let mut state = self.state.lock().expect("config UI mutex poisoned");
         if state.fields.show(ui) {
             let mut updated_config = state.config.clone();
@@ -202,6 +216,12 @@ impl eframe::App for ConfigWindow {
             let _ = state.renderer_updates.send(state.config.renderer.clone());
         }
     }
+}
+
+fn renderer_close_requests_config_shutdown(
+    renderer_closed: &std::sync::atomic::AtomicBool,
+) -> bool {
+    renderer_closed.load(std::sync::atomic::Ordering::Acquire)
 }
 
 fn collect_fields(value: &toml::Value, prefix: String, fields: &mut Vec<ConfigField>) {
@@ -261,8 +281,19 @@ fn set_document_value(document: &mut toml::Value, path: &str, value: toml::Value
 
 #[cfg(test)]
 mod tests {
-    use super::{precision_step, ConfigUi, ControlKind};
+    use super::{precision_step, renderer_close_requests_config_shutdown, ConfigUi, ControlKind};
     use crate::config::AppConfig;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn config_window_shutdown_signal_is_observed_after_renderer_closes() {
+        let renderer_closed = AtomicBool::new(false);
+
+        assert!(!renderer_close_requests_config_shutdown(&renderer_closed));
+        renderer_closed.store(true, Ordering::Release);
+
+        assert!(renderer_close_requests_config_shutdown(&renderer_closed));
+    }
 
     #[test]
     fn discovers_nested_properties_and_assigns_control_kinds() {

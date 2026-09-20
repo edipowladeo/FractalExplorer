@@ -30,7 +30,7 @@ text_overlay_queue = false
 middle_click_coordinate_report = false
 #frame_dump_events = ["layer_created", "slow_frame"]
 frame_dump_events = ["slow_frame"]
-slow_frame_threshold_ms = 1000
+slow_frame_threshold_ms = 100
 
 [orchestrator]
 workers = 8
