@@ -414,8 +414,8 @@ mod tests {
         );
 
         for _ in 0..3 {
-            canvas.set_frame_interval_since_last_render(Duration::from_millis(123));
             canvas.ensure_screen_coverage((0, 0, 29, 19));
+            canvas.finish_frame(Duration::from_millis(123));
         }
 
         let log = canvas.layer_creation_log();
@@ -791,7 +791,6 @@ pub struct TiledInfiniteCanvas {
     layer_creation_log: Vec<String>,
     layer_creation_diagnostics_enabled: bool,
     pending_layer_creation: Option<PendingLayerCreation>,
-    last_frame_interval: Duration,
     render_plan: crate::PrecisionRenderPlan,
 }
 
@@ -863,7 +862,6 @@ impl TiledInfiniteCanvas {
             layer_creation_log: Vec::new(),
             layer_creation_diagnostics_enabled: true,
             pending_layer_creation: None,
-            last_frame_interval: Duration::ZERO,
             render_plan: crate::PrecisionRenderPlan::default(),
         }
     }
@@ -995,8 +993,17 @@ impl TiledInfiniteCanvas {
         self.layer_creation_diagnostics_enabled = enabled;
     }
 
-    pub fn set_frame_interval_since_last_render(&mut self, interval: Duration) {
-        self.last_frame_interval = interval;
+    /// Completes the frame and records any layer created during it.
+    ///
+    /// The interval is measured between two presented frames, so it must be
+    /// supplied after the current frame has been sent to the window.
+    pub fn finish_frame(&mut self, interval: Duration) {
+        if let Some(pending) = self.pending_layer_creation.take() {
+            let mut diagnostics = self.layers[pending.layer_index].take_creation_diagnostics();
+            diagnostics.frame_interval = interval;
+            let delta = self.layers[pending.layer_index].delta();
+            self.record_layer_creation(pending.direction, delta, diagnostics);
+        }
     }
 
     /// Parameters supplied at canvas creation, before any navigation command.
@@ -1081,12 +1088,6 @@ impl TiledInfiniteCanvas {
         }
         for layer in &mut self.layers {
             layer.ensure_screen_coverage(bounds);
-        }
-        if let Some(pending) = self.pending_layer_creation.take() {
-            let mut diagnostics = self.layers[pending.layer_index].take_creation_diagnostics();
-            diagnostics.frame_interval = self.last_frame_interval;
-            let delta = self.layers[pending.layer_index].delta();
-            self.record_layer_creation(pending.direction, delta, diagnostics);
         }
     }
 
