@@ -948,6 +948,7 @@ pub struct TiledInfiniteCanvas {
     pending_layer_creation: Option<PendingLayerCreation>,
     completed_layer_creation: Option<CompletedLayerCreation>,
     frame_instrumentation: Option<FrameInstrumentation>,
+    last_finished_frame_timing: Option<(u64, Duration)>,
     render_plan: crate::PrecisionRenderPlan,
 }
 
@@ -1029,6 +1030,7 @@ impl TiledInfiniteCanvas {
             pending_layer_creation: None,
             completed_layer_creation: None,
             frame_instrumentation: None,
+            last_finished_frame_timing: None,
             render_plan: crate::PrecisionRenderPlan::default(),
         }
     }
@@ -1199,12 +1201,20 @@ impl TiledInfiniteCanvas {
 
     pub fn finish_frame(&mut self) {
         let finished_at = Instant::now();
-        if let Some(frame) = self.frame_instrumentation.as_mut() {
+        let timing = if let Some(frame) = self.frame_instrumentation.as_mut() {
             if frame.is_slow_at(finished_at, self.slow_frame_threshold) {
                 frame.record_trigger_at("slow_frame", "frame maior que 1000 ms", finished_at);
             }
             frame.record_at("finalizacao de frame", finished_at);
-        }
+            Some((frame.frame_number, frame.duration()))
+        } else {
+            None
+        };
+        self.last_finished_frame_timing = timing;
+    }
+
+    pub fn last_finished_frame_timing(&self) -> Option<(u64, Duration)> {
+        self.last_finished_frame_timing
     }
 
     /// Parameters supplied at canvas creation, before any navigation command.
