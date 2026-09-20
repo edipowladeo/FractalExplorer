@@ -62,6 +62,9 @@ impl ConfigUi {
     }
 
     fn set_value(&mut self, path: &str, value: toml::Value) -> bool {
+        if !is_valid_value(path, &value) {
+            return false;
+        }
         if !set_document_value(&mut self.document, path, value.clone()) {
             return false;
         }
@@ -90,7 +93,11 @@ impl ConfigUi {
                         let mut number = value.as_integer().expect("spinner must be integer");
                         ui.horizontal(|ui| {
                             ui.label(&path);
-                            if ui.add(eframe::egui::DragValue::new(&mut number)).changed() {
+                            let mut spinner = eframe::egui::DragValue::new(&mut number);
+                            if path == "renderer.precision" {
+                                spinner = spinner.range(1..=i64::MAX);
+                            }
+                            if ui.add(spinner).changed() {
                                 changes.push((path.clone(), toml::Value::Integer(number)));
                             }
                         });
@@ -265,6 +272,23 @@ mod tests {
         assert_eq!(
             ui.fields()
                 .iter()
+                .find(|field| field.path == "renderer.precision")
+                .unwrap()
+                .kind,
+            ControlKind::IntegerSpinner
+        );
+        assert_eq!(
+            ui.fields()
+                .iter()
+                .find(|field| field.path == "renderer.precision")
+                .unwrap()
+                .value
+                .as_integer(),
+            Some(1)
+        );
+        assert_eq!(
+            ui.fields()
+                .iter()
                 .find(|field| field.path == "renderer.allocation_ratio")
                 .unwrap()
                 .kind,
@@ -316,4 +340,24 @@ mod tests {
         assert!(!ui.step("renderer.palette", 1));
         assert!(!ui.step("renderer.missing", 1));
     }
+
+    #[test]
+    fn rejects_non_positive_renderer_precision() {
+        let mut ui = ConfigUi::from_config(&AppConfig::default());
+
+        assert!(!ui.step("renderer.precision", -1));
+        assert_eq!(
+            ui.fields()
+                .iter()
+                .find(|field| field.path == "renderer.precision")
+                .unwrap()
+                .value
+                .as_integer(),
+            Some(1)
+        );
+    }
+}
+
+fn is_valid_value(path: &str, value: &toml::Value) -> bool {
+    path != "renderer.precision" || value.as_integer().is_some_and(|value| value > 0)
 }
