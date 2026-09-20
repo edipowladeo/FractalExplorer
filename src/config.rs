@@ -58,7 +58,7 @@ pub struct RendererDebugConfig {
     pub text_overlay_layers: bool,
     pub text_overlay_queue: bool,
     pub middle_click_coordinate_report: bool,
-    pub layer_creation_diagnostics: bool,
+    pub frame_dump_events: Vec<String>,
 }
 
 impl Default for AppConfig {
@@ -123,7 +123,7 @@ impl Default for RendererDebugConfig {
             text_overlay_layers: true,
             text_overlay_queue: true,
             middle_click_coordinate_report: false,
-            layer_creation_diagnostics: true,
+            frame_dump_events: vec!["layer_created".to_string()],
         }
     }
 }
@@ -285,12 +285,26 @@ mod tests {
     }
 
     #[test]
-    fn layer_creation_diagnostics_are_enabled_by_default() {
-        assert!(
-            AppConfig::default()
-                .renderer
-                .debug
-                .layer_creation_diagnostics
+    fn layer_creation_dump_is_triggered_by_new_layer_by_default() {
+        assert_eq!(
+            AppConfig::default().renderer.debug.frame_dump_events,
+            vec!["layer_created"]
+        );
+    }
+
+    #[test]
+    fn accepts_configured_frame_dump_events() {
+        let config: AppConfig = toml::from_str(
+            r#"
+            [renderer.debug]
+            frame_dump_events = ["layer_created", "slow_frame"]
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.renderer.debug.frame_dump_events,
+            vec!["layer_created", "slow_frame"]
         );
     }
 

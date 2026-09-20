@@ -133,7 +133,7 @@ pub fn run_with_updates(
         },
     )?;
     let mut input = InputState::new();
-    canvas.set_layer_creation_diagnostics_enabled(config.debug.layer_creation_diagnostics);
+    canvas.set_frame_dump_events(config.debug.frame_dump_events.clone());
     let mut render_plan = PrecisionDecisionManager::from_config(initial_config).map_err(|_| {
         minifb::Error::WindowCreate("invalid renderer precision configuration".to_string())
     })?;
@@ -150,9 +150,7 @@ pub fn run_with_updates(
                     }
                 }
                 config = next_config;
-                canvas.set_layer_creation_diagnostics_enabled(
-                    config.debug.layer_creation_diagnostics,
-                );
+                canvas.set_frame_dump_events(config.debug.frame_dump_events.clone());
             }
         }
         canvas.record_frame_event("configuracao processada");

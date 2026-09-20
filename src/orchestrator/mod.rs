@@ -4,7 +4,10 @@ mod tests {
 
     use super::{Orchestrator, Tile, TileLayer, TileSprite, TileStatus, TiledInfiniteCanvas};
     use crate::Mandelbrot;
-    use std::{thread, time::{Duration, Instant}};
+    use std::{
+        thread,
+        time::{Duration, Instant},
+    };
 
     fn wait_for_completion(tile: &Tile) {
         for _ in 0..1000 {
@@ -443,7 +446,7 @@ mod tests {
         let instrumentation = super::FrameInstrumentation {
             started_at,
             events: Vec::new(),
-            has_layer_creation: false,
+            triggered_events: Vec::new(),
         };
         let event = super::FrameEvent {
             description: "trabalho das camadas agendado".to_string(),
@@ -468,9 +471,12 @@ mod tests {
             8.0,
             0.8,
         );
-        canvas.set_layer_creation_diagnostics_enabled(false);
+        canvas.set_frame_dump_events(Vec::new());
 
-        assert!(canvas.expand_one_layer_per_frame());
+        canvas.begin_frame();
+        canvas.ensure_screen_coverage((0, 0, 799, 599));
+        canvas.finish_frame();
+        canvas.begin_frame();
         assert!(canvas.layer_creation_log().is_empty());
     }
 
@@ -785,7 +791,7 @@ struct FrameEvent {
 struct FrameInstrumentation {
     started_at: Instant,
     events: Vec<FrameEvent>,
-    has_layer_creation: bool,
+    triggered_events: Vec<String>,
 }
 
 impl FrameInstrumentation {
@@ -797,7 +803,7 @@ impl FrameInstrumentation {
                 description: "novo frame".to_string(),
                 timestamp: started_at,
             }],
-            has_layer_creation: false,
+            triggered_events: Vec::new(),
         }
     }
 
@@ -808,9 +814,17 @@ impl FrameInstrumentation {
         });
     }
 
-    fn record_layer_creation(&mut self, description: impl Into<String>) {
-        self.has_layer_creation = true;
+    fn record_trigger(&mut self, trigger: impl Into<String>, description: impl Into<String>) {
+        self.triggered_events.push(trigger.into());
         self.record(description);
+    }
+
+    fn matching_triggers(&self, configured_events: &[String]) -> Vec<String> {
+        configured_events
+            .iter()
+            .filter(|configured| self.triggered_events.contains(configured))
+            .cloned()
+            .collect()
     }
 
     fn duration(&self) -> Duration {
@@ -876,7 +890,7 @@ pub struct TiledInfiniteCanvas {
     camera_scale: f64,
     navigation_history: Vec<CanvasNavigationEvent>,
     layer_creation_log: Vec<String>,
-    layer_creation_diagnostics_enabled: bool,
+    frame_dump_events: Vec<String>,
     pending_layer_creation: Option<PendingLayerCreation>,
     completed_layer_creation: Option<CompletedLayerCreation>,
     frame_instrumentation: Option<FrameInstrumentation>,
@@ -955,7 +969,7 @@ impl TiledInfiniteCanvas {
             camera_scale: max_apparent_pixel_size / delta,
             navigation_history: Vec::new(),
             layer_creation_log: Vec::new(),
-            layer_creation_diagnostics_enabled: true,
+            frame_dump_events: vec!["layer_created".to_string()],
             pending_layer_creation: None,
             completed_layer_creation: None,
             frame_instrumentation: None,
@@ -1086,32 +1100,29 @@ impl TiledInfiniteCanvas {
         &self.layer_creation_log
     }
 
-    pub fn set_layer_creation_diagnostics_enabled(&mut self, enabled: bool) {
-        self.layer_creation_diagnostics_enabled = enabled;
+    pub fn set_frame_dump_events(&mut self, events: Vec<String>) {
+        self.frame_dump_events = events;
     }
 
     pub fn begin_frame(&mut self) {
         let previous_frame = self.frame_instrumentation.take();
-        if self.layer_creation_diagnostics_enabled {
-            if let Some(frame) = previous_frame.as_ref() {
-                if frame.has_layer_creation {
-                    if let Some(mut creation) = self.completed_layer_creation.take() {
-                        creation.diagnostics.frame_interval = frame.duration();
-                        self.record_layer_creation(
-                            creation.direction,
-                            creation.delta,
-                            creation.diagnostics,
-                        );
-                        frame.dump();
-                    }
+        let completed_layer_creation = self.completed_layer_creation.take();
+        if let Some(frame) = previous_frame.as_ref() {
+            let triggering_events = frame.matching_triggers(&self.frame_dump_events);
+            if !triggering_events.is_empty() {
+                println!("Frame dump disparado por: {}", triggering_events.join(", "));
+                if let Some(mut creation) = completed_layer_creation {
+                    creation.diagnostics.frame_interval = frame.duration();
+                    self.record_layer_creation(
+                        creation.direction,
+                        creation.delta,
+                        creation.diagnostics,
+                    );
                 }
+                frame.dump();
             }
-        } else {
-            self.completed_layer_creation = None;
         }
-        self.frame_instrumentation = self
-            .layer_creation_diagnostics_enabled
-            .then(FrameInstrumentation::new);
+        self.frame_instrumentation = Some(FrameInstrumentation::new());
     }
 
     pub fn record_frame_event(&mut self, description: impl Into<String>) {
@@ -1143,9 +1154,6 @@ impl TiledInfiniteCanvas {
         delta: f64,
         diagnostics: LayerCreationDiagnostics,
     ) {
-        if !self.layer_creation_diagnostics_enabled {
-            return;
-        }
         let delta_exponent = -delta.log2();
         let line = match direction {
             Some(direction) => format!(
@@ -1199,6 +1207,9 @@ impl TiledInfiniteCanvas {
     }
 
     pub fn ensure_screen_coverage(&mut self, bounds: (i32, i32, i32, i32)) {
+        if self.frame_instrumentation.is_none() {
+            self.frame_instrumentation = Some(FrameInstrumentation::new());
+        }
         if self.retract_one_layer_per_frame() && self.layers.is_empty() {
             self.expand_one_layer_per_frame();
         } else {
@@ -1208,16 +1219,16 @@ impl TiledInfiniteCanvas {
             layer.ensure_screen_coverage(bounds);
         }
         if let Some(pending) = self.pending_layer_creation.take() {
-            let mut diagnostics = self.layers[pending.layer_index].take_creation_diagnostics();
+            let diagnostics = self.layers[pending.layer_index].take_creation_diagnostics();
             let delta = self.layers[pending.layer_index].delta();
             let description = match pending.direction {
                 Some(direction) => format!("camada {direction} criada"),
                 None => "camada criada".to_string(),
             };
-            if let Some(frame) = self.frame_instrumentation.as_mut() {
-                frame.record_layer_creation(description);
-            }
-            diagnostics.frame_interval = Duration::ZERO;
+            self.frame_instrumentation
+                .as_mut()
+                .expect("frame instrumentation must be started before coverage")
+                .record_trigger("layer_created", description);
             self.completed_layer_creation = Some(CompletedLayerCreation {
                 direction: pending.direction,
                 delta,
