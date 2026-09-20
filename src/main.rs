@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     canvas.set_initial_zoom(starting_zoom);
     let orchestrator = Orchestrator::with_worker_count(
-        Mandelbrot::new(config.renderer.max_iterations),
+        Mandelbrot::new(config.renderer.effective_max_iterations()),
         config.orchestrator.workers,
     );
     #[cfg(feature = "native-ui")]

@@ -97,7 +97,22 @@ impl ConfigUi {
                             if path == "renderer.precision" {
                                 spinner = spinner.range(1..=i64::MAX);
                             }
-                            if ui.add(spinner).changed() {
+                            let mut changed = ui.add(spinner).changed();
+                            if path == "renderer.precision" {
+                                if ui.small_button("−").clicked() {
+                                    if let Some(next) = precision_step(number, -1) {
+                                        number = next;
+                                        changed = true;
+                                    }
+                                }
+                                if ui.small_button("+").clicked() {
+                                    if let Some(next) = precision_step(number, 1) {
+                                        number = next;
+                                        changed = true;
+                                    }
+                                }
+                            }
+                            if changed {
                                 changes.push((path.clone(), toml::Value::Integer(number)));
                             }
                         });
@@ -246,7 +261,7 @@ fn set_document_value(document: &mut toml::Value, path: &str, value: toml::Value
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigUi, ControlKind};
+    use super::{precision_step, ConfigUi, ControlKind};
     use crate::config::AppConfig;
 
     #[test]
@@ -356,8 +371,20 @@ mod tests {
             Some(1)
         );
     }
+
+    #[test]
+    fn precision_buttons_step_up_and_down_without_reaching_zero() {
+        assert_eq!(precision_step(1, -1), None);
+        assert_eq!(precision_step(1, 1), Some(2));
+        assert_eq!(precision_step(i64::MAX, 1), None);
+    }
 }
 
 fn is_valid_value(path: &str, value: &toml::Value) -> bool {
     path != "renderer.precision" || value.as_integer().is_some_and(|value| value > 0)
+}
+
+fn precision_step(value: i64, direction: i8) -> Option<i64> {
+    let next = value.saturating_add(direction as i64);
+    (next > 0 && next != value).then_some(next)
 }

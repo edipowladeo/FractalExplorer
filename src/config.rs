@@ -123,6 +123,10 @@ impl Default for RendererDebugConfig {
 }
 
 impl RendererConfig {
+    pub fn effective_max_iterations(&self) -> u32 {
+        self.max_iterations.saturating_mul(self.precision)
+    }
+
     pub fn max_apparent_pixel_size(&self) -> f64 {
         2.0_f64.powi(self.max_apparent_pixel_size_exponent)
     }
@@ -287,6 +291,15 @@ mod tests {
         let config: super::RendererConfig = toml::from_str("precision = 2147483647").unwrap();
 
         assert_eq!(config.precision, 2_147_483_647);
+    }
+
+    #[test]
+    fn precision_scales_the_effective_iteration_limit() {
+        let mut config = super::RendererConfig::default();
+        config.max_iterations = 100;
+        config.precision = 3;
+
+        assert_eq!(config.effective_max_iterations(), 300);
     }
 
     #[test]
