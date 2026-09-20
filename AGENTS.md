@@ -20,18 +20,21 @@ Este é o único checkbox de HIL do repositório e é controlado exclusivamente 
    - **RED**: escrever ou ajustar um teste que falha e confirmar a falha pela razão esperada.
    - **GREEN**: implementar o mínimo necessário para fazer o teste passar.
    - **REFACTOR**: melhorar o design, a legibilidade e a manutenção sem alterar o comportamento; confirmar que os testes continuam passando.
+   - **Exceção:** alterações exclusivamente de configuração ou de documentação de configuração não exigem o fluxo TDD.
 2. Se a estratégia de testes não for óbvia, discutir a estratégia com o usuário antes de implementar.
 3. Uma tarefa só pode ser considerada concluída depois de: testes em estado **GREEN**, refactor realizado, commit criado e push enviado ao remoto.
 4. Mover a tarefa para `DONE` imediatamente após todas as condições do item anterior serem atendidas.
 
 ## Ordem e seleção de tarefas
 
-1. Nunca selecionar uma tarefa diretamente de `BACKLOG`.
-2. Sempre atuar na primeira tarefa listada em `TODO`.
-3. Antes de iniciar a primeira tarefa, analisar as demais tarefas em `TODO` e confirmar com o usuário se alguma deve ser agrupada com ela. Não iniciar a implementação até essa confirmação quando houver um agrupamento plausível.
-4. Se `TODO` estiver vazio, não puxar tarefas de `BACKLOG` automaticamente; pedir ao usuário para promover explicitamente uma tarefa para `TODO`.
-5. Manter a ordem das tarefas e registrar dependências ou decisões relevantes na própria tarefa.
-6. Toda nova tarefa solicitada pelo usuário deve ser tratada como se tivesse sido adicionada ao início de `TODO`, tornando-se a primeira tarefa ativa: analisar seu agrupamento com as demais tarefas, executar seguindo o fluxo TDD e registrá-la em `DONE` assim que os critérios de conclusão forem atendidos.
+1. Instruções dadas diretamente pelo usuário devem ser implementadas fora do fluxo de `TASKS.md`.
+2. Só criar ou promover uma tarefa em `TASKS.md` quando o usuário pedir explicitamente.
+3. Para tarefas explicitamente criadas ou promovidas, nunca selecionar diretamente de `BACKLOG`.
+4. Para tarefas explicitamente criadas ou promovidas, sempre atuar na primeira tarefa listada em `TODO`.
+5. Antes de iniciar uma tarefa explicitamente criada ou promovida, analisar as demais tarefas em `TODO` e confirmar com o usuário se alguma deve ser agrupada com ela. Não iniciar a implementação até essa confirmação quando houver um agrupamento plausível.
+6. Se `TODO` estiver vazio, não puxar tarefas de `BACKLOG` automaticamente; pedir ao usuário para promover explicitamente uma tarefa para `TODO`.
+7. Manter a ordem das tarefas e registrar dependências ou decisões relevantes na própria tarefa.
+8. Toda tarefa explicitamente criada ou promovida pelo usuário deve ser tratada como se tivesse sido adicionada ao início de `TODO`, tornando-se a primeira tarefa ativa: analisar seu agrupamento com as demais, executar seguindo o fluxo TDD e registrá-la em `DONE` assim que os critérios de conclusão forem atendidos.
 
 ## Testes e validação manual
 

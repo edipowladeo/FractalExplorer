@@ -20,6 +20,8 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 ### T026 — Investigar e melhorar a precisão para zoom profundo
 
 - **Critério de aceitação:** a câmera, camadas e tiles preservam coordenadas e passo suficientes para zoom profundo; copiar uma localização e restaurá-la na mesma versão mantém a mesma visão. Ver [diretriz de precisão](task-descriptions/T026-deep-zoom-precision.md).
+- **Atualização:** o zoom inicial da câmera foi separado da escala visual da camada semente. A camada permanece em escala configurada (`8` por padrão), enquanto o `delta` é ajustado para representar o zoom inicial profundo; isso evita converter `2^48` em tamanho de tile e elimina o overflow em `ensure_screen_coverage`.
+- **RED/GREEN/REFACTOR:** `deep_starting_zoom_keeps_seed_layer_screen_size_bounded` falhou antes da função de parâmetros existir e passou após a separação; `cargo fmt -- --check`, `git diff --check` e `cargo test --bin sprite-demo` passaram com 2 testes.
 
 ### T025 — Unificar coordenada copiada, zoom e visão inicial
 
@@ -46,6 +48,19 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - **Overlays de texto:** adicionadas em `[renderer.debug]` as flags booleanas `text_overlay_global`, `text_overlay_workers`, `text_overlay_layers` e `text_overlay_queue`, todas com padrão `true` e registradas em `config.toml`. RED/GREEN: `cargo test config::tests::` passou com 4 testes e `cargo test renderer::tests::` passou com 15 testes.
 
 ## BACKLOG
+
+### T027 — Representar `delta` como expoente inteiro positivo
+
+- Fazer com que `delta` seja representado exclusivamente por um expoente inteiro positivo na camada, no tile e em todos os demais pontos em que essa informação for necessária.
+- Definir as conversões para o passo numérico real apenas nas fronteiras de cálculo e renderização.
+- Revisar serialização, logs, invariantes e testes para garantir que o expoente permaneça positivo e consistente.
+
+### T028 — Implementar precisão arbitrária baseada em lista de inteiros
+
+- Implementar uma representação de precisão arbitrária usando uma lista de inteiros.
+- Usar essa representação para coordenadas, passos e demais valores que precisem preservar precisão em zoom profundo.
+- Depois, criar funções otimizadas que aproveitem a representação inteira de `delta`, evitando conversões e operações desnecessárias.
+- Cobrir conversões, operações aritméticas, invariantes e desempenho com testes específicos.
 
 ### Nota — Remover artefatos que remetem ao estado local
 

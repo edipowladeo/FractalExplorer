@@ -837,6 +837,16 @@ impl TiledInfiniteCanvas {
         &mut self.layers
     }
 
+    pub fn invalidate_tiles(&self) {
+        for layer in &self.layers {
+            for row in &layer.tiles {
+                for tile in row {
+                    tile.invalidate();
+                }
+            }
+        }
+    }
+
     /// Commands applied since the canvas was created, in replay order.
     pub fn navigation_history(&self) -> &[CanvasNavigationEvent] {
         &self.navigation_history
@@ -1394,6 +1404,15 @@ impl Tile {
             *stored = Some(sprite);
         }
     }
+
+    fn invalidate(&self) {
+        self.status
+            .store(TileStatus::NotStarted as u8, Ordering::Release);
+        self.sprite
+            .lock()
+            .expect("tile sprite mutex poisoned")
+            .take();
+    }
 }
 
 /// Dispatches tiles to the calculator.
@@ -1402,6 +1421,7 @@ pub struct Orchestrator {
     available: Arc<Condvar>,
     stop_worker: Arc<AtomicBool>,
     worker_statuses: Arc<Mutex<Vec<WorkerStatus>>>,
+    calculator: Arc<crate::Mandelbrot>,
     workers: Vec<JoinHandle<()>>,
 }
 
@@ -1467,6 +1487,7 @@ impl Orchestrator {
             available,
             stop_worker,
             worker_statuses,
+            calculator,
             workers,
         }
     }
@@ -1495,6 +1516,10 @@ impl Orchestrator {
             .lock()
             .expect("worker status mutex poisoned")
             .clone()
+    }
+
+    pub fn set_max_iterations(&self, max_iterations: u32) {
+        self.calculator.set_max_iterations(max_iterations);
     }
 
     fn register_queue(&self, queue: Arc<TileWorkQueue>, zoom: f64) {

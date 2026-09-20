@@ -136,7 +136,12 @@ pub fn run_with_updates(
     while window.is_open() && !window.is_key_down(Key::Escape) {
         while let Ok(next_config) = receiver.try_recv() {
             if next_config.width == config.width && next_config.height == config.height {
+                let precision_changed = next_config.precision != config.precision;
                 config = next_config;
+                if precision_changed {
+                    orchestrator.set_max_iterations(config.effective_max_iterations());
+                    canvas.invalidate_tiles();
+                }
             }
         }
         // `get_size` changes while the resize gesture is in progress, not only when it ends.
@@ -217,7 +222,7 @@ pub fn run_with_updates(
                     let sprite = tile.sprite().unwrap_or_else(|| {
                         let sprite = std::sync::Arc::new(sprite_from_tile(
                             tile,
-                            config.max_iterations as u64,
+                            config.effective_max_iterations() as u64,
                             config.palette,
                             config.palette_period,
                         ));

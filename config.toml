@@ -5,6 +5,7 @@ debug_global = true
 width = 1400
 height = 800
 max_iterations = 2000
+precision = 1
 allocation_ratio = 1
 deallocation_ratio = 1
 max_apparent_pixel_size_exponent = 3
