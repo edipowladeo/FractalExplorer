@@ -20,6 +20,8 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 ### T026 — Investigar e melhorar a precisão para zoom profundo
 
 - **Critério de aceitação:** a câmera, camadas e tiles preservam coordenadas e passo suficientes para zoom profundo; copiar uma localização e restaurá-la na mesma versão mantém a mesma visão. Ver [diretriz de precisão](task-descriptions/T026-deep-zoom-precision.md).
+- **Atualização:** o zoom inicial da câmera foi separado da escala visual da camada semente. A camada permanece em escala configurada (`8` por padrão), enquanto o `delta` é ajustado para representar o zoom inicial profundo; isso evita converter `2^48` em tamanho de tile e elimina o overflow em `ensure_screen_coverage`.
+- **RED/GREEN/REFACTOR:** `deep_starting_zoom_keeps_seed_layer_screen_size_bounded` falhou antes da função de parâmetros existir e passou após a separação; `cargo fmt -- --check`, `git diff --check` e `cargo test --bin sprite-demo` passaram com 2 testes.
 
 ### T025 — Unificar coordenada copiada, zoom e visão inicial
 
