@@ -32,6 +32,8 @@ pub struct RendererConfig {
     pub width: usize,
     pub height: usize,
     pub max_iterations: u32,
+    #[serde(deserialize_with = "deserialize_positive_u32")]
+    pub precision: u32,
     pub allocation_ratio: f64,
     pub deallocation_ratio: f64,
     pub max_apparent_pixel_size_exponent: i32,
@@ -90,6 +92,7 @@ impl Default for RendererConfig {
             width: 640,
             height: 480,
             max_iterations: 256,
+            precision: 1,
             allocation_ratio: 1.2,
             deallocation_ratio: 0.8,
             max_apparent_pixel_size_exponent: 3,
@@ -163,6 +166,19 @@ impl RendererConfig {
     }
 }
 
+fn deserialize_positive_u32<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = u32::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom(
+            "precision deve ser um inteiro positivo",
+        ));
+    }
+    Ok(value)
+}
+
 impl AppConfig {
     pub fn load(path: impl AsRef<Path>) -> Result<Self, Box<dyn Error>> {
         let contents = fs::read_to_string(path)?;
@@ -213,6 +229,7 @@ mod tests {
         assert_eq!(config.renderer.width, 800);
         assert_eq!(config.renderer.height, 600);
         assert_eq!(config.renderer.max_iterations, 256);
+        assert_eq!(config.renderer.precision, 1);
         assert!(config.renderer.debug.reduced_viewport);
         assert_eq!(config.renderer.debug.reduced_viewport_allocation_ratio, 0.5);
         assert!(config.renderer.debug.show_allocation_envelope);
@@ -254,6 +271,22 @@ mod tests {
         assert_eq!(config.max_apparent_pixel_size_exponent, 3);
         assert_eq!(config.max_apparent_pixel_size(), 8.0);
         assert_eq!(config.min_apparent_pixel_size, 0.8);
+    }
+
+    #[test]
+    fn rejects_non_positive_renderer_precision() {
+        for value in ["0", "-1"] {
+            let result: Result<super::RendererConfig, _> =
+                toml::from_str(&format!("precision = {value}"));
+            assert!(result.is_err(), "precision {value} should be rejected");
+        }
+    }
+
+    #[test]
+    fn accepts_any_positive_renderer_precision() {
+        let config: super::RendererConfig = toml::from_str("precision = 2147483647").unwrap();
+
+        assert_eq!(config.precision, 2_147_483_647);
     }
 
     #[test]
