@@ -114,6 +114,44 @@ mod tests {
     }
 
     #[test]
+    fn worker_routes_fixed_precision_plan_to_fixed_calculator() {
+        let tile = Arc::new(Tile::new(
+            crate::geometry::ComplexPoint::new(-1.0, 1.0),
+            3,
+            3,
+            1.0,
+        ));
+        let plan = crate::PrecisionRenderPlan::direct(crate::PrecisionSpec::fixed(2));
+        let orchestrator = Orchestrator::with_worker_count_and_plan(Mandelbrot::new(32), 1, plan);
+
+        orchestrator.render_tile(&tile);
+        wait_for_completion(&tile);
+
+        assert_eq!(tile.status(), TileStatus::Completed);
+        assert_eq!(tile.iterations().lock().unwrap()[4], 32u64);
+    }
+
+    #[test]
+    fn workers_use_a_precision_plan_updated_after_startup() {
+        let tile = Arc::new(Tile::new(
+            crate::geometry::ComplexPoint::new(-1.0, 1.0),
+            3,
+            3,
+            1.0,
+        ));
+        let orchestrator = Orchestrator::new(Mandelbrot::new(32));
+        orchestrator.set_render_plan(crate::PrecisionRenderPlan::direct(
+            crate::PrecisionSpec::fixed(2),
+        ));
+
+        orchestrator.render_tile(&tile);
+        wait_for_completion(&tile);
+
+        assert_eq!(tile.status(), TileStatus::Completed);
+        assert_eq!(tile.iterations().lock().unwrap()[4], 32u64);
+    }
+
+    #[test]
     fn orchestrator_exposes_the_worker_pool() {
         let orchestrator = Orchestrator::new(Mandelbrot::new(32));
 
@@ -609,7 +647,7 @@ mod tests {
 use std::collections::VecDeque;
 use std::sync::{
     atomic::{AtomicBool, AtomicU8, Ordering},
-    Arc, Condvar, Mutex,
+    Arc, Condvar, Mutex, RwLock,
 };
 use std::thread::{self, JoinHandle};
 
@@ -660,6 +698,7 @@ pub struct TileLayer {
     screen_origin_y: f64,
     zoom: f64,
     work_queue: Arc<TileWorkQueue>,
+    render_plan: crate::PrecisionRenderPlan,
 }
 
 impl Drop for TileLayer {
@@ -684,6 +723,7 @@ pub struct TiledInfiniteCanvas {
     camera_scale: f64,
     navigation_history: Vec<CanvasNavigationEvent>,
     layer_creation_log: Vec<String>,
+    render_plan: crate::PrecisionRenderPlan,
 }
 
 /// A navigation command applied to a canvas, retained for diagnostic replay.
@@ -747,20 +787,23 @@ impl TiledInfiniteCanvas {
             camera_scale: max_apparent_pixel_size / delta,
             navigation_history: Vec::new(),
             layer_creation_log: Vec::new(),
+            render_plan: crate::PrecisionRenderPlan::default(),
         }
     }
 
     /// Adds at most one layer per frame, keeping the deque ordered max-to-min zoom.
     pub fn expand_one_layer_per_frame(&mut self) -> bool {
         if self.layers.is_empty() {
-            self.layers.push_back(TileLayer::new(
+            let mut layer = TileLayer::new(
                 self.position.clone(),
                 self.tile_width,
                 self.tile_height,
                 self.delta,
                 self.screen_position,
                 self.initial_apparent_pixel_size,
-            ));
+            );
+            layer.set_render_plan(self.render_plan);
+            self.layers.push_back(layer);
             self.synchronize_layer_positions();
             self.record_layer_creation(None, self.layers.back().unwrap().delta());
             return true;
@@ -769,7 +812,8 @@ impl TiledInfiniteCanvas {
         let front_zoom = self.layers.front().unwrap().zoom();
         let larger_zoom = front_zoom * 2.0;
         if larger_zoom <= self.max_apparent_pixel_size && !self.has_zoom(larger_zoom) {
-            let layer = Self::adjacent_layer(self.layers.front().unwrap(), 2.0);
+            let mut layer = Self::adjacent_layer(self.layers.front().unwrap(), 2.0);
+            layer.set_render_plan(self.render_plan);
             self.layers.push_front(layer);
             self.synchronize_layer_positions();
             self.record_layer_creation(Some("maior"), self.layers.front().unwrap().delta());
@@ -778,7 +822,8 @@ impl TiledInfiniteCanvas {
         let back_zoom = self.layers.back().unwrap().zoom();
         let smaller_zoom = back_zoom / 2.0;
         if smaller_zoom >= self.min_apparent_pixel_size && !self.has_zoom(smaller_zoom) {
-            let layer = Self::adjacent_layer(self.layers.back().unwrap(), 0.5);
+            let mut layer = Self::adjacent_layer(self.layers.back().unwrap(), 0.5);
+            layer.set_render_plan(self.render_plan);
             self.layers.push_back(layer);
             self.synchronize_layer_positions();
             self.record_layer_creation(Some("menor"), self.layers.back().unwrap().delta());
@@ -819,6 +864,13 @@ impl TiledInfiniteCanvas {
     /// Current apparent size of one complex-plane sample in screen pixels.
     pub fn apparent_pixel_size(&self) -> f64 {
         self.camera_scale * self.delta
+    }
+
+    pub fn set_render_plan(&mut self, plan: crate::PrecisionRenderPlan) {
+        self.render_plan = plan;
+        for layer in &mut self.layers {
+            layer.set_render_plan(plan);
+        }
     }
 
     pub fn layer(&self, index: usize) -> Option<&TileLayer> {
@@ -1091,6 +1143,7 @@ impl TileLayer {
             screen_origin_y: screen_position.y as f64,
             zoom,
             work_queue: Arc::new(TileWorkQueue::new()),
+            render_plan: crate::PrecisionRenderPlan::default(),
         }
     }
 
@@ -1128,6 +1181,14 @@ impl TileLayer {
     }
     pub fn zoom(&self) -> f64 {
         self.zoom
+    }
+
+    pub fn render_plan(&self) -> crate::PrecisionRenderPlan {
+        self.render_plan
+    }
+
+    pub fn set_render_plan(&mut self, plan: crate::PrecisionRenderPlan) {
+        self.render_plan = plan;
     }
     pub fn screen_to_complex(
         &self,
@@ -1391,18 +1452,6 @@ impl Tile {
         Arc::clone(&self.iterations)
     }
 
-    pub fn replace_iterations(&self, values: Vec<u64>) {
-        assert_eq!(
-            values.len(),
-            self.width as usize * self.height as usize,
-            "fixed render result has the wrong size"
-        );
-        *self
-            .iterations
-            .lock()
-            .expect("tile iterations mutex poisoned") = values;
-    }
-
     pub fn sprite(&self) -> Option<Arc<crate::Sprite>> {
         self.sprite
             .lock()
@@ -1433,8 +1482,8 @@ pub struct Orchestrator {
     available: Arc<Condvar>,
     stop_worker: Arc<AtomicBool>,
     worker_statuses: Arc<Mutex<Vec<WorkerStatus>>>,
-    calculator: Arc<crate::Mandelbrot>,
     workers: Vec<JoinHandle<()>>,
+    render_plan: Arc<RwLock<crate::PrecisionRenderPlan>>,
 }
 
 struct RegisteredQueue {
@@ -1462,9 +1511,22 @@ impl Orchestrator {
     }
 
     pub fn with_worker_count(calculator: crate::Mandelbrot, worker_count: usize) -> Self {
+        Self::with_worker_count_and_plan(
+            calculator,
+            worker_count,
+            crate::PrecisionRenderPlan::default(),
+        )
+    }
+
+    pub fn with_worker_count_and_plan(
+        calculator: crate::Mandelbrot,
+        worker_count: usize,
+        render_plan: crate::PrecisionRenderPlan,
+    ) -> Self {
         assert!(worker_count > 0, "worker count must be positive");
         let layer_queues = Arc::new(Mutex::new(VecDeque::new()));
         let calculator = Arc::new(calculator);
+        let render_plan = Arc::new(RwLock::new(render_plan));
         let available = Arc::new(Condvar::new());
         let stop_worker = Arc::new(AtomicBool::new(false));
         let worker_statuses = Arc::new(Mutex::new(
@@ -1479,6 +1541,7 @@ impl Orchestrator {
             let worker_stop = Arc::clone(&stop_worker);
             let worker_states = Arc::clone(&worker_statuses);
             let worker_calculator = Arc::clone(&calculator);
+            let worker_render_plan = Arc::clone(&render_plan);
             workers.push(thread::spawn(move || {
                 while let Some(queued) = next_tile(&worker_queues, &worker_available, &worker_stop)
                 {
@@ -1487,7 +1550,10 @@ impl Orchestrator {
                             coordinate: queued.tile.coordinate().clone(),
                             delta: queued.tile.delta(),
                         });
-                    calculate_tile(&worker_calculator, &queued.tile);
+                    let plan = *worker_render_plan
+                        .read()
+                        .expect("render plan lock poisoned");
+                    calculate_tile_with_plan(&worker_calculator, &queued.tile, plan);
                     worker_states.lock().expect("worker status mutex poisoned")[worker_id].tile =
                         None;
                 }
@@ -1499,8 +1565,8 @@ impl Orchestrator {
             available,
             stop_worker,
             worker_statuses,
-            calculator,
             workers,
+            render_plan,
         }
     }
 
@@ -1530,8 +1596,9 @@ impl Orchestrator {
             .clone()
     }
 
-    pub fn set_max_iterations(&self, max_iterations: u32) {
-        self.calculator.set_max_iterations(max_iterations);
+    pub fn set_render_plan(&self, plan: crate::PrecisionRenderPlan) {
+        *self.render_plan.write().expect("render plan lock poisoned") = plan;
+        self.available.notify_all();
     }
 
     fn register_queue(&self, queue: Arc<TileWorkQueue>, zoom: f64) {
@@ -1667,6 +1734,45 @@ fn next_tile(
             .wait(queues_guard)
             .expect("layer queue mutex poisoned");
     }
+}
+
+fn calculate_tile_with_plan(
+    calculator: &crate::Mandelbrot,
+    tile: &Tile,
+    plan: crate::PrecisionRenderPlan,
+) {
+    let precision = match plan.method() {
+        crate::RenderMethod::Direct { precision }
+        | crate::RenderMethod::Perturbation { seed: precision } => precision,
+    };
+    match precision.technique {
+        crate::PrecisionTechnique::Float => calculate_tile(calculator, tile),
+        crate::PrecisionTechnique::Fixed => match precision.level {
+            1 => calculate_fixed_tile::<1>(calculator.max_iterations(), tile),
+            _ => calculate_fixed_tile::<2>(calculator.max_iterations(), tile),
+        },
+    }
+}
+
+fn calculate_fixed_tile<const N: usize>(max_iterations: u32, tile: &Tile) {
+    let fractal = crate::MandelbrotFixed::<N>::new(max_iterations);
+    let center_real = crate::Fixed::from_f64(tile.coordinate.x);
+    let center_imaginary = crate::Fixed::from_f64(tile.coordinate.y);
+    let delta = crate::Fixed::from_f64(tile.delta);
+    let mut iterations = tile
+        .iterations
+        .lock()
+        .expect("tile iterations mutex poisoned");
+    for y in 0..tile.height {
+        for x in 0..tile.width {
+            let real = center_real.add(delta.mul(crate::Fixed::from_i64(x as i64)));
+            let imaginary = center_imaginary.sub(delta.mul(crate::Fixed::from_i64(y as i64)));
+            iterations[y as usize * tile.width as usize + x as usize] =
+                fractal.escape_iterations(real, imaginary) as u64;
+        }
+    }
+    tile.status
+        .store(TileStatus::Completed as u8, Ordering::Release);
 }
 
 fn calculate_tile(calculator: &crate::Mandelbrot, tile: &Tile) {
