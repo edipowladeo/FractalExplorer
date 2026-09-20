@@ -49,6 +49,12 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## BACKLOG
 
+### T027 — Representar `delta` como expoente inteiro positivo
+
+- Fazer com que `delta` seja representado exclusivamente por um expoente inteiro positivo na camada, no tile e em todos os demais pontos em que essa informação for necessária.
+- Definir as conversões para o passo numérico real apenas nas fronteiras de cálculo e renderização.
+- Revisar serialização, logs, invariantes e testes para garantir que o expoente permaneça positivo e consistente.
+
 ### Nota — Remover artefatos que remetem ao estado local
 
 - Avaliar a remoção ou realocação de `fractal_projects_review.md` e `legacy-worktrees.json`, pois ambos registram caminhos, worktrees e inventário específicos da máquina local. Preservar antes qualquer informação que deva virar documentação portátil do projeto.
