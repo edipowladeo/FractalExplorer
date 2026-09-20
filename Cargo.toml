@@ -5,7 +5,12 @@ edition = "2021"
 description = "Rust fractal renderer prototype"
 license = "MIT"
 
+[features]
+default = ["native-ui"]
+native-ui = ["dep:eframe"]
+
 [dependencies]
+eframe = { version = "0.36.2", optional = true }
 minifb = "0.27"
 arboard = "3"
 serde = { version = "1", features = ["derive"] }

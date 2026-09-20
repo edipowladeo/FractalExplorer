@@ -49,6 +49,24 @@ cargo clean
 
 O protótipo é acompanhado pela `T001` em [TASKS.md](TASKS.md) e permanece em `TODO` até que testes, refactor e verificação visual sejam concluídos.
 
+## Dynamic configuration UI
+
+The optional `native-ui` feature opens an `egui/eframe` configuration window alongside the `minifb` renderer window:
+
+```powershell
+cargo run --features native-ui --bin sprite-demo
+```
+
+The configuration window discovers TOML properties recursively. Boolean values use checkboxes, integer and floating-point values use spinners, and unsupported scalar values are displayed as read-only. Changes are sent to the renderer through a channel; compatible changes update the current frame, while width and height changes recreate the renderer window.
+
+The default build remains framebuffer-only:
+
+```powershell
+cargo run --bin sprite-demo
+```
+
+Use a complete Windows native toolchain to run the optional UI feature. The project keeps `eframe` behind the feature so the configuration model and core tests can run without native GUI linker dependencies.
+
 ## Legacy implementations
 
 All existing fractal implementations are legacy references for the Rust rewrite. The complete former C++/SFML implementation of this repository, including its history, is preserved on `legacy` at `79fe6f36479ff12dee0dfe15a122cea02ffb592c`. `OpenCL` points to the same commit and does not need a duplicate worktree.
