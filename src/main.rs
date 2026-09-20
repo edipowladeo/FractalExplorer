@@ -30,7 +30,7 @@ fn initial_view_parameters(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = std::sync::Arc::new(fractal_explorer::output::OutputService::start());
     let _output_scope = output.attach_to_current_thread();
-    let config = AppConfig::load("config.toml").unwrap_or_default();
+    let mut config = AppConfig::load("config.toml").unwrap_or_default();
     let render_plan = PrecisionDecisionManager::from_config(&config.renderer)?;
     fractal_explorer::print_local!("Paleta em uso: {:?}", config.renderer.palette);
     let (center, starting_zoom) = config.renderer.starting_view().unwrap_or_else(|error| {
@@ -77,20 +77,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     #[cfg(feature = "native-ui")]
     {
+        let renderer_closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (renderer_updates, renderer_commands) = std::sync::mpsc::channel();
         let renderer_config = config.renderer.clone();
         let renderer_output = std::sync::Arc::clone(&output);
+        let renderer_closed_for_thread = std::sync::Arc::clone(&renderer_closed);
         let renderer_thread = std::thread::spawn(move || {
-            fractal_explorer::renderer::run_with_updates(
+            fractal_explorer::renderer::run_with_updates_and_shutdown(
                 &mut canvas,
                 &orchestrator,
                 &renderer_config,
                 renderer_commands,
                 &renderer_output,
+                renderer_closed_for_thread,
             )
         });
-        let mut config = config;
-        fractal_explorer::config_ui::run_window(&mut config, renderer_updates)?;
+        fractal_explorer::config_ui::run_window(&mut config, renderer_updates, renderer_closed)?;
         renderer_thread
             .join()
             .map_err(|_| "renderer thread panicked")??;

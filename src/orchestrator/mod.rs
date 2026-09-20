@@ -448,9 +448,9 @@ mod tests {
             frame_number: 7,
             started_at,
             events: Vec::new(),
-            triggered_events: Vec::new(),
         };
         let event = super::FrameEvent {
+            kind: super::FrameEventKind::LayerWorkScheduled,
             description: "trabalho das camadas agendado".to_string(),
             timestamp: started_at + Duration::from_micros(113_183),
         };
@@ -469,10 +469,10 @@ mod tests {
             frame_number: 42,
             started_at,
             events: vec![super::FrameEvent {
+                kind: super::FrameEventKind::Finalized,
                 description: "finalizacao de frame".to_string(),
                 timestamp: Instant::now(),
             }],
-            triggered_events: Vec::new(),
         };
 
         let threshold = Duration::from_millis(1_000);
@@ -492,10 +492,10 @@ mod tests {
             frame_number: 5,
             started_at,
             events: vec![super::FrameEvent {
+                kind: super::FrameEventKind::BufferReadyForPresentation,
                 description: "buffer pronto para apresentacao".to_string(),
                 timestamp: started_at + Duration::from_millis(109),
             }],
-            triggered_events: Vec::new(),
         };
 
         instrumentation.record_finalization_at(finished_at);
@@ -508,8 +508,8 @@ mod tests {
             "finalizacao de frame"
         );
         assert_eq!(
-            instrumentation.events[2].description,
-            "frame maior que 1000 ms"
+            instrumentation.events[2].kind,
+            super::FrameEventKind::SlowFrame
         );
         assert_eq!(
             total_duration,
@@ -517,7 +517,7 @@ mod tests {
         );
         assert!(instrumentation.events[1].timestamp > instrumentation.events[0].timestamp);
         assert_eq!(instrumentation.events[2].timestamp, next_frame_started_at);
-        assert_eq!(instrumentation.triggered_events, vec!["slow_frame"]);
+        assert!(instrumentation.has_kind(super::FrameEventKind::SlowFrame));
     }
 
     #[test]
@@ -904,8 +904,31 @@ struct LayerCreationDiagnostics {
     tiles_enqueued: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FrameEventKind {
+    NewFrame,
+    ConfigurationProcessed,
+    SurfacePrepared,
+    OutsideAllocationTrimmed,
+    ScreenCoverageCompleted,
+    LayerWorkScheduled,
+    InputProcessed,
+    TileCompositionStarted,
+    TilesRasterized,
+    OverlaysDrawn,
+    BufferReadyForPresentation,
+    Finalized,
+    PresentationStarted,
+    PresentationFinished,
+    DumpStarted,
+    DumpFinished,
+    SlowFrame,
+    LayerCreated,
+}
+
 #[derive(Debug)]
 struct FrameEvent {
+    kind: FrameEventKind,
     description: String,
     timestamp: Instant,
 }
@@ -920,7 +943,6 @@ struct FrameInstrumentation {
     frame_number: u64,
     started_at: Instant,
     events: Vec<FrameEvent>,
-    triggered_events: Vec<String>,
 }
 
 impl FrameInstrumentation {
@@ -933,52 +955,65 @@ impl FrameInstrumentation {
             frame_number,
             started_at,
             events: vec![FrameEvent {
+                kind: FrameEventKind::NewFrame,
                 description: "novo frame".to_string(),
                 timestamp: started_at,
             }],
-            triggered_events: Vec::new(),
         }
     }
 
-    fn record(&mut self, description: impl Into<String>) {
-        self.record_at(description, Instant::now());
+    fn record(&mut self, kind: FrameEventKind, description: impl Into<String>) {
+        self.record_at(kind, description, Instant::now());
     }
 
-    fn record_at(&mut self, description: impl Into<String>, timestamp: Instant) {
+    fn record_at(
+        &mut self,
+        kind: FrameEventKind,
+        description: impl Into<String>,
+        timestamp: Instant,
+    ) {
         self.events.push(FrameEvent {
+            kind,
             description: description.into(),
             timestamp,
         });
     }
 
     fn record_presentation_started(&mut self) {
-        self.record(BUFFER_PRESENTATION_STARTED);
+        self.record(FrameEventKind::PresentationStarted, BUFFER_PRESENTATION_STARTED);
     }
 
     fn record_presentation_finished(&mut self) {
-        self.record(BUFFER_PRESENTATION_FINISHED);
+        self.record(FrameEventKind::PresentationFinished, BUFFER_PRESENTATION_FINISHED);
     }
 
     fn record_dump_started(&mut self) {
-        self.record(FRAME_DUMP_STARTED);
+        self.record(FrameEventKind::DumpStarted, FRAME_DUMP_STARTED);
     }
 
     fn record_dump_finished(&mut self) {
-        self.record(FRAME_DUMP_FINISHED);
+        self.record(FrameEventKind::DumpFinished, FRAME_DUMP_FINISHED);
     }
 
-    fn record_trigger(&mut self, trigger: impl Into<String>, description: impl Into<String>) {
-        self.record_trigger_at(trigger, description, Instant::now());
+    fn record_trigger(&mut self, kind: FrameEventKind, description: impl Into<String>) {
+        self.record_trigger_at(kind, description, Instant::now());
     }
 
     fn record_trigger_at(
         &mut self,
-        trigger: impl Into<String>,
+        kind: FrameEventKind,
         description: impl Into<String>,
         timestamp: Instant,
     ) {
-        self.triggered_events.push(trigger.into());
-        self.record_at(description, timestamp);
+        self.events.push(FrameEvent {
+            kind,
+            description: description.into(),
+            timestamp,
+        });
+    }
+
+    fn has_kind(&self, kind: FrameEventKind) -> bool {
+        self.events.iter().any(|event| event.kind == kind)
     }
 
     fn matching_triggers(
@@ -989,8 +1024,14 @@ impl FrameInstrumentation {
         configured_events
             .iter()
             .filter(|configured| {
-                self.triggered_events.contains(configured)
-                    || (configured.as_str() == "slow_frame" && self.is_slow(slow_frame_threshold))
+                match configured.as_str() {
+                    "slow_frame" => {
+                        self.has_kind(FrameEventKind::SlowFrame)
+                            || self.is_slow(slow_frame_threshold)
+                    }
+                    "layer_created" => self.has_kind(FrameEventKind::LayerCreated),
+                    _ => false,
+                }
             })
             .cloned()
             .collect()
@@ -1005,17 +1046,18 @@ impl FrameInstrumentation {
     }
 
     fn record_finalization_at(&mut self, finished_at: Instant) {
-        self.record_at("finalizacao de frame", finished_at);
+        self.record_at(
+            FrameEventKind::Finalized,
+            "finalizacao de frame",
+            finished_at,
+        );
     }
 
     fn record_slow_if_needed_at(&mut self, timestamp: Instant, threshold: Duration) {
         if self.is_slow_at(timestamp, threshold)
-            && !self
-                .triggered_events
-                .iter()
-                .any(|event| event == "slow_frame")
+            && !self.has_kind(FrameEventKind::SlowFrame)
         {
-            self.record_trigger_at("slow_frame", "frame maior que 1000 ms", timestamp);
+            self.record_trigger_at(FrameEventKind::SlowFrame, "frame lento", timestamp);
         }
     }
 
@@ -1365,9 +1407,13 @@ impl TiledInfiniteCanvas {
         ));
     }
 
-    pub fn record_frame_event(&mut self, description: impl Into<String>) {
+    pub(crate) fn record_frame_event(
+        &mut self,
+        kind: FrameEventKind,
+        description: impl Into<String>,
+    ) {
         if let Some(frame) = self.frame_instrumentation.as_mut() {
-            frame.record(description);
+            frame.record(kind, description);
         }
     }
 
@@ -1491,7 +1537,7 @@ impl TiledInfiniteCanvas {
             self.frame_instrumentation
                 .as_mut()
                 .expect("frame instrumentation must be started before coverage")
-                .record_trigger("layer_created", description);
+                .record_trigger(FrameEventKind::LayerCreated, description);
             self.completed_layer_creation = Some(CompletedLayerCreation {
                 direction: pending.direction,
                 delta,

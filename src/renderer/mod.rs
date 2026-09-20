@@ -9,7 +9,7 @@ use crate::{
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::mpsc::Receiver;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const FRAME_HISTORY_CAPACITY: usize = 30;
 
@@ -170,6 +170,24 @@ pub fn run_with_updates(
     receiver: Receiver<RendererConfig>,
     output: &OutputService,
 ) -> Result<(), minifb::Error> {
+    run_with_updates_and_shutdown(
+        canvas,
+        orchestrator,
+        initial_config,
+        receiver,
+        output,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )
+}
+
+pub fn run_with_updates_and_shutdown(
+    canvas: &mut TiledInfiniteCanvas,
+    orchestrator: &Orchestrator,
+    initial_config: &RendererConfig,
+    receiver: Receiver<RendererConfig>,
+    output: &OutputService,
+    renderer_closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), minifb::Error> {
     let mut config = initial_config.clone();
     let mut surface = RenderSurface::new(
         config.width,
@@ -215,30 +233,45 @@ pub fn run_with_updates(
                 canvas.set_slow_frame_threshold_ms(config.debug.slow_frame_threshold_ms);
             }
         }
-        canvas.record_frame_event("configuracao processada");
+        canvas.record_frame_event(
+            crate::orchestrator::FrameEventKind::ConfigurationProcessed,
+            "configuracao processada",
+        );
         // `get_size` changes while the resize gesture is in progress, not only when it ends.
         let window_size = window.get_size();
         surface.update_window_size(window_size);
         surface.clear();
-        canvas.record_frame_event("superficie preparada");
+        canvas.record_frame_event(
+            crate::orchestrator::FrameEventKind::SurfacePrepared,
+            "superficie preparada",
+        );
         canvas.trim_outside_allocation((
             surface.deallocation.left,
             surface.deallocation.top,
             surface.deallocation.right,
             surface.deallocation.bottom,
         ));
-        canvas.record_frame_event("tiles fora da alocacao removidos");
+        canvas.record_frame_event(
+            crate::orchestrator::FrameEventKind::OutsideAllocationTrimmed,
+            "tiles fora da alocacao removidos",
+        );
         canvas.ensure_screen_coverage((
             surface.allocation.left,
             surface.allocation.top,
             surface.allocation.right,
             surface.allocation.bottom,
         ));
-        canvas.record_frame_event("cobertura da tela concluida");
+        canvas.record_frame_event(
+            crate::orchestrator::FrameEventKind::ScreenCoverageCompleted,
+            "cobertura da tela concluida",
+        );
         for layer in canvas.layers() {
             orchestrator.render_layer(layer);
         }
-        canvas.record_frame_event("trabalho das camadas agendado");
+        canvas.record_frame_event(
+            crate::orchestrator::FrameEventKind::LayerWorkScheduled,
+            "trabalho das camadas agendado",
+        );
         let mouse_position = if has_live_window_size(window_size) {
             window
                 .get_mouse_pos(MouseMode::Clamp)
@@ -282,7 +315,10 @@ pub fn run_with_updates(
                 }
             }
         }
-        canvas.record_frame_event("entrada processada");
+        canvas.record_frame_event(
+            crate::orchestrator::FrameEventKind::InputProcessed,
+            "entrada processada",
+        );
         if config.debug.text_overlay_global {
             if let Some(cursor) = mouse_position {
                 let complex = canvas.screen_to_complex(cursor);
@@ -293,6 +329,14 @@ pub fn run_with_updates(
                 );
             }
         }
+        canvas.record_frame_event(
+            crate::orchestrator::FrameEventKind::TileCompositionStarted,
+            "composicao de tiles iniciada",
+        );
+        let mut generated_sprites = 0;
+        let mut sprite_generation_duration = Duration::ZERO;
+        let mut rasterization_duration = Duration::ZERO;
+        let mut drawn_tiles = 0;
         for layer in canvas.layers() {
             let (tile_width, tile_height) = layer.tile_screen_size();
             for row in 0..layer.row_count() {
@@ -302,16 +346,20 @@ pub fn run_with_updates(
                         continue;
                     }
                     let sprite = tile.sprite().unwrap_or_else(|| {
+                        let started = Instant::now();
                         let sprite = std::sync::Arc::new(sprite_from_tile(
                             tile,
                             config.effective_max_iterations() as u64,
                             config.palette,
                             config.palette_period,
                         ));
-                        tile.set_sprite(std::sync::Arc::clone(&sprite));
+                        tile.set_sprite(sprite);
+                        generated_sprites += 1;
+                        sprite_generation_duration += started.elapsed();
                         tile.sprite().expect("tile sprite should exist")
                     });
                     let tile_position = canvas.complex_to_screen(tile.coordinate().clone());
+                    let started = Instant::now();
                     sprite.draw_into_scaled(
                         &mut surface.framebuffer,
                         surface.screen_size.width,
@@ -320,10 +368,19 @@ pub fn run_with_updates(
                         tile_width as usize,
                         tile_height as usize,
                     );
+                    rasterization_duration += started.elapsed();
+                    drawn_tiles += 1;
                 }
             }
         }
-        canvas.record_frame_event("tiles desenhados");
+        canvas.record_frame_event(
+            crate::orchestrator::FrameEventKind::TilesRasterized,
+            format!(
+            "tiles rasterizados neste frame: {drawn_tiles}, sprites novos neste frame: \
+             {generated_sprites}, geracao de sprites: {:?}, rasterizacao: {:?}",
+            sprite_generation_duration, rasterization_duration,
+            ),
+        );
         if let Some(cursor) = mouse_position {
             draw_mouse_marker(
                 &mut surface.framebuffer,
@@ -439,8 +496,14 @@ pub fn run_with_updates(
                 );
             }
         }
-        canvas.record_frame_event("overlays desenhados");
-        canvas.record_frame_event("buffer pronto para apresentacao");
+        canvas.record_frame_event(
+            crate::orchestrator::FrameEventKind::OverlaysDrawn,
+            "overlays desenhados",
+        );
+        canvas.record_frame_event(
+            crate::orchestrator::FrameEventKind::BufferReadyForPresentation,
+            "buffer pronto para apresentacao",
+        );
         canvas.record_frame_presentation_started();
         window.update_with_buffer(
             &surface.framebuffer,
@@ -455,6 +518,7 @@ pub fn run_with_updates(
     // Closing the native window leaves the loop and releases the renderer
     // before the application returns from `main`.
     drop(window);
+    renderer_closed.store(true, std::sync::atomic::Ordering::Release);
     Ok(())
 }
 
