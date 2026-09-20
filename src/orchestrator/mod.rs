@@ -474,9 +474,10 @@ mod tests {
             triggered_events: Vec::new(),
         };
 
-        assert!(instrumentation.is_slow());
+        let threshold = Duration::from_millis(1_000);
+        assert!(instrumentation.is_slow(threshold));
         assert_eq!(
-            instrumentation.matching_triggers(&["slow_frame".to_string()]),
+            instrumentation.matching_triggers(&["slow_frame".to_string()], threshold),
             vec!["slow_frame"]
         );
     }
@@ -855,23 +856,27 @@ impl FrameInstrumentation {
         self.record_at(description, timestamp);
     }
 
-    fn matching_triggers(&self, configured_events: &[String]) -> Vec<String> {
+    fn matching_triggers(
+        &self,
+        configured_events: &[String],
+        slow_frame_threshold: Duration,
+    ) -> Vec<String> {
         configured_events
             .iter()
             .filter(|configured| {
                 self.triggered_events.contains(configured)
-                    || (configured.as_str() == "slow_frame" && self.is_slow())
+                    || (configured.as_str() == "slow_frame" && self.is_slow(slow_frame_threshold))
             })
             .cloned()
             .collect()
     }
 
-    fn is_slow(&self) -> bool {
-        self.duration() > Duration::from_millis(1_000)
+    fn is_slow(&self, threshold: Duration) -> bool {
+        self.duration() > threshold
     }
 
-    fn is_slow_at(&self, timestamp: Instant) -> bool {
-        timestamp.duration_since(self.started_at) > Duration::from_millis(1_000)
+    fn is_slow_at(&self, timestamp: Instant, threshold: Duration) -> bool {
+        timestamp.duration_since(self.started_at) > threshold
     }
 
     fn duration(&self) -> Duration {
@@ -938,6 +943,7 @@ pub struct TiledInfiniteCanvas {
     navigation_history: Vec<CanvasNavigationEvent>,
     layer_creation_log: Vec<String>,
     frame_dump_events: Vec<String>,
+    slow_frame_threshold: Duration,
     frame_number: u64,
     pending_layer_creation: Option<PendingLayerCreation>,
     completed_layer_creation: Option<CompletedLayerCreation>,
@@ -1018,6 +1024,7 @@ impl TiledInfiniteCanvas {
             navigation_history: Vec::new(),
             layer_creation_log: Vec::new(),
             frame_dump_events: vec!["layer_created".to_string(), "slow_frame".to_string()],
+            slow_frame_threshold: Duration::from_millis(1_000),
             frame_number: 0,
             pending_layer_creation: None,
             completed_layer_creation: None,
@@ -1153,11 +1160,16 @@ impl TiledInfiniteCanvas {
         self.frame_dump_events = events;
     }
 
+    pub fn set_slow_frame_threshold_ms(&mut self, threshold_ms: u64) {
+        self.slow_frame_threshold = Duration::from_millis(threshold_ms);
+    }
+
     pub fn begin_frame(&mut self) {
         let previous_frame = self.frame_instrumentation.take();
         let completed_layer_creation = self.completed_layer_creation.take();
         if let Some(frame) = previous_frame.as_ref() {
-            let triggering_events = frame.matching_triggers(&self.frame_dump_events);
+            let triggering_events =
+                frame.matching_triggers(&self.frame_dump_events, self.slow_frame_threshold);
             if !triggering_events.is_empty() {
                 println!(
                     "Frame #{} dump disparado por: {}",
@@ -1188,7 +1200,7 @@ impl TiledInfiniteCanvas {
     pub fn finish_frame(&mut self) {
         let finished_at = Instant::now();
         if let Some(frame) = self.frame_instrumentation.as_mut() {
-            if frame.is_slow_at(finished_at) {
+            if frame.is_slow_at(finished_at, self.slow_frame_threshold) {
                 frame.record_trigger_at("slow_frame", "frame maior que 1000 ms", finished_at);
             }
             frame.record_at("finalizacao de frame", finished_at);
