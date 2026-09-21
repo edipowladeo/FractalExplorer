@@ -765,8 +765,10 @@ fn to_rgba8(pixels: &[u32]) -> Vec<u8> {
     pixels
         .iter()
         .flat_map(|p| {
-            let [r, g, b, a] = p.to_le_bytes();
-            [r, g, b, if a == 0 { 255 } else { a }]
+            let red = (p >> 16) as u8;
+            let green = (p >> 8) as u8;
+            let blue = *p as u8;
+            [red, green, blue, 255]
         })
         .collect()
 }
@@ -786,7 +788,7 @@ mod tests {
         let upload = cache.prepare(&tile_sprite, Arc::clone(&sprite)).unwrap();
         assert_eq!(
             upload.rgba8,
-            vec![0x33, 0x22, 0x11, 255, 0x66, 0x55, 0x44, 255]
+            vec![0x11, 0x22, 0x33, 255, 0x44, 0x55, 0x66, 255]
         );
         assert!(cache.prepare(&tile_sprite, sprite).is_none());
     }
