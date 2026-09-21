@@ -1,6 +1,7 @@
 use crate::gpu::{
-    create_tile_pipeline, texture_keys_for_commands, tile_vertices_for_commands, GpuContext,
-    GpuTextureStore, PreparedTileBatch, TextureCache,
+    create_tile_pipeline, debug_overlay_upload, texture_keys_for_commands,
+    tile_vertices_for_commands, upload_tile_texture, GpuContext, GpuTextureStore, GpuTileTexture,
+    PreparedTileBatch, TextureCache, TileDrawCommand,
 };
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -9,6 +10,10 @@ use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
+
+fn needs_batch_rebuild(previous: (u32, u32), next: (u32, u32)) -> bool {
+    previous != next
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct GpuBatchStats {
@@ -160,6 +165,9 @@ pub struct GpuWindowApp {
     pipeline: Option<wgpu::RenderPipeline>,
     tile_bind_group_layout: Option<wgpu::BindGroupLayout>,
     tile_vertex_buffer: Option<wgpu::Buffer>,
+    overlay_vertex_buffer: Option<wgpu::Buffer>,
+    overlay_texture: Option<GpuTileTexture>,
+    overlay_command: Option<TileDrawCommand>,
     texture_store: Option<GpuTextureStore>,
     tile_commands: Vec<crate::gpu::TileDrawCommand>,
 }
@@ -179,6 +187,9 @@ impl GpuWindowApp {
             pipeline: None,
             tile_bind_group_layout: None,
             tile_vertex_buffer: None,
+            overlay_vertex_buffer: None,
+            overlay_texture: None,
+            overlay_command: None,
             texture_store: None,
             tile_commands: Vec::new(),
         }
@@ -195,9 +206,14 @@ impl GpuWindowApp {
         let Some(config) = self.surface_config.as_mut() else {
             return;
         };
+        let previous = (config.width, config.height);
         config.width = width.max(1);
         config.height = height.max(1);
         surface.configure(&context.device, config);
+        if needs_batch_rebuild(previous, (config.width, config.height)) {
+            self.tile_vertex_buffer = None;
+            self.overlay_vertex_buffer = None;
+        }
     }
 }
 
@@ -220,15 +236,62 @@ impl GpuWindowApp {
                 surface_config.width,
                 surface_config.height,
             );
-            self.tile_vertex_buffer = Some(context.device.create_buffer_init(
-                &wgpu::util::BufferInitDescriptor {
-                    label: Some("tile-batch-vertices"),
-                    contents: bytemuck::cast_slice(&vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                },
-            ));
+            self.tile_vertex_buffer = (!vertices.is_empty()).then(|| {
+                context
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("tile-batch-vertices"),
+                        contents: bytemuck::cast_slice(&vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    })
+            });
         }
         self.tile_commands = batch.commands;
+
+        self.overlay_texture = None;
+        self.overlay_command = None;
+        if self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.config.debug.text_overlay_frames)
+        {
+            let text = format!(
+                "#{} tiles:{}",
+                self.tile_commands.len(),
+                self.tile_commands.len()
+            );
+            let upload = debug_overlay_upload(&text, 180, 16);
+            let key = upload.key;
+            if let (Some(context), Some(layout), Some(surface_config)) = (
+                &self.context,
+                &self.tile_bind_group_layout,
+                &self.surface_config,
+            ) {
+                self.overlay_texture = Some(upload_tile_texture(context, layout, &upload));
+                let position = crate::geometry::ScreenPoint::new(
+                    8,
+                    surface_config.height.saturating_sub(upload.height + 8) as i32,
+                );
+                let command = TileDrawCommand {
+                    texture: key,
+                    position,
+                    size: (upload.width, upload.height),
+                };
+                let vertices = tile_vertices_for_commands(
+                    &[command],
+                    surface_config.width,
+                    surface_config.height,
+                );
+                self.overlay_vertex_buffer = Some(context.device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("gpu-debug-overlay-vertices"),
+                        contents: bytemuck::cast_slice(&vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    },
+                ));
+                self.overlay_command = Some(command);
+            }
+        }
     }
 }
 
@@ -325,9 +388,26 @@ impl ApplicationHandler for GpuWindowApp {
                 if let (Some(context), Some(surface), Some(pipeline)) =
                     (&self.context, &self.surface, &self.pipeline)
                 {
-                    if let wgpu::CurrentSurfaceTexture::Success(frame)
-                    | wgpu::CurrentSurfaceTexture::Suboptimal(frame) =
-                        surface.get_current_texture()
+                    let frame = match surface.get_current_texture() {
+                        wgpu::CurrentSurfaceTexture::Success(frame)
+                        | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+                        wgpu::CurrentSurfaceTexture::Timeout
+                        | wgpu::CurrentSurfaceTexture::Occluded => {
+                            return;
+                        }
+                        wgpu::CurrentSurfaceTexture::Outdated
+                        | wgpu::CurrentSurfaceTexture::Lost => {
+                            if let Some(config) = &self.surface_config {
+                                surface.configure(&context.device, config);
+                            }
+                            self.tile_vertex_buffer = None;
+                            return;
+                        }
+                        wgpu::CurrentSurfaceTexture::Validation => {
+                            crate::print_local!("Falha de validação ao obter frame GPU");
+                            return;
+                        }
+                    };
                     {
                         let view = frame
                             .texture
@@ -356,16 +436,26 @@ impl ApplicationHandler for GpuWindowApp {
                             });
                             let mut pass = _pass;
                             pass.set_pipeline(pipeline);
-                            if let (Some(store), Some(vertex_buffer)) =
-                                (&self.texture_store, &self.tile_vertex_buffer)
-                            {
-                                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                                for (index, command) in self.tile_commands.iter().enumerate() {
-                                    if let Some(tile_texture) = store.get(&command.texture) {
-                                        pass.set_bind_group(0, &tile_texture.bind_group, &[]);
-                                        let start = (index * 6) as u32;
-                                        pass.draw(start..start + 6, 0..1);
+                            if let Some(store) = &self.texture_store {
+                                if let Some(vertex_buffer) = &self.tile_vertex_buffer {
+                                    pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                                    for (index, command) in self.tile_commands.iter().enumerate() {
+                                        if let Some(tile_texture) = store.get(&command.texture) {
+                                            pass.set_bind_group(0, &tile_texture.bind_group, &[]);
+                                            let start = (index * 6) as u32;
+                                            pass.draw(start..start + 6, 0..1);
+                                        }
                                     }
+                                }
+                                if let (Some(overlay), Some(overlay_vertices), Some(command)) = (
+                                    &self.overlay_texture,
+                                    &self.overlay_vertex_buffer,
+                                    self.overlay_command,
+                                ) {
+                                    pass.set_bind_group(0, &overlay.bind_group, &[]);
+                                    pass.set_vertex_buffer(0, overlay_vertices.slice(..));
+                                    pass.draw(0..6, 0..1);
+                                    let _ = command;
                                 }
                             }
                         }
@@ -410,7 +500,7 @@ impl ApplicationHandler for GpuWindowApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{GpuBatchStats, PreparedTileBatch};
+    use super::{needs_batch_rebuild, GpuBatchStats, PreparedTileBatch};
     use crate::geometry::ScreenPoint;
     use crate::gpu::{TextureKey, TextureUpload, TileDrawCommand};
 
@@ -440,6 +530,12 @@ mod tests {
             GpuBatchStats::from_batch(&batch).description(),
             "tiles rasterizados neste frame: 1, texturas novas neste frame: 1"
         );
+    }
+
+    #[test]
+    fn resize_invalidates_vertices_only_when_surface_dimensions_change() {
+        assert!(!needs_batch_rebuild((800, 600), (800, 600)));
+        assert!(needs_batch_rebuild((800, 600), (1024, 768)));
     }
 }
 

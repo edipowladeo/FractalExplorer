@@ -118,6 +118,44 @@ pub fn tile_vertices_for_commands(
         .collect()
 }
 
+pub fn debug_overlay_upload(text: &str, width: u32, height: u32) -> TextureUpload {
+    let mut rgba8 = vec![0; width as usize * height as usize * 4];
+    for (character_index, character) in text.chars().enumerate() {
+        let Some(glyph) = crate::renderer::glyph(character) else {
+            continue;
+        };
+        let origin_x = character_index * 6 + 2;
+        for (row, bits) in glyph.iter().enumerate() {
+            for column in 0..5 {
+                if bits & (1 << (4 - column)) == 0 {
+                    continue;
+                }
+                let x = origin_x + column;
+                let y = row + 2;
+                if x >= width as usize || y >= height as usize {
+                    continue;
+                }
+                let offset = (y * width as usize + x) * 4;
+                rgba8[offset..offset + 4].copy_from_slice(&[255, 255, 255, 255]);
+            }
+        }
+    }
+    TextureUpload {
+        key: TextureKey {
+            tile: usize::MAX,
+            content_hash: hash_pixels(
+                &rgba8
+                    .chunks_exact(4)
+                    .map(|pixel| u32::from_le_bytes([pixel[0], pixel[1], pixel[2], pixel[3]]))
+                    .collect::<Vec<_>>(),
+            ),
+        },
+        width,
+        height,
+        rgba8,
+    }
+}
+
 /// Owns the device and queue used by the future window-backed renderer.
 /// Surface creation stays outside this context because it borrows a window.
 pub struct GpuContext {
@@ -361,7 +399,7 @@ pub fn create_tile_pipeline(
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: Some(wgpu::BlendState::REPLACE),
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -636,6 +674,15 @@ mod tests {
             tile_vertices_for_commands(&[command, command], 100, 100).len(),
             12
         );
+    }
+
+    #[test]
+    fn debug_overlay_upload_contains_transparent_background_and_text_pixels() {
+        let upload = debug_overlay_upload("C1", 64, 16);
+        assert_eq!((upload.width, upload.height), (64, 16));
+        assert_eq!(upload.rgba8.len(), 64 * 16 * 4);
+        assert!(upload.rgba8.chunks_exact(4).any(|pixel| pixel[3] == 0));
+        assert!(upload.rgba8.chunks_exact(4).any(|pixel| pixel[3] == 255));
     }
 
     #[test]
