@@ -19,6 +19,8 @@ pub struct TileVertex {
     pub uv: [f32; 2],
 }
 
+pub const TILE_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
 pub const TILE_VERTEX_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
     array_stride: std::mem::size_of::<TileVertex>() as wgpu::BufferAddress,
     step_mode: wgpu::VertexStepMode::Vertex,
@@ -330,7 +332,7 @@ impl GraphicsDevice for WgpuGraphicsDevice<'_> {
         descriptor: TextureDescriptor,
     ) -> Result<TextureHandle, DeviceError> {
         let format = match descriptor.format {
-            TextureFormat::Rgba8 => wgpu::TextureFormat::Rgba8Unorm,
+            TextureFormat::Rgba8 => TILE_TEXTURE_FORMAT,
         };
         if descriptor.width == 0 || descriptor.height == 0 {
             return Err(DeviceError::InvalidResource);
@@ -702,7 +704,7 @@ pub fn upload_tile_texture(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
+        format: TILE_TEXTURE_FORMAT,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
@@ -791,6 +793,11 @@ mod tests {
             vec![0x11, 0x22, 0x33, 255, 0x44, 0x55, 0x66, 255]
         );
         assert!(cache.prepare(&tile_sprite, sprite).is_none());
+    }
+
+    #[test]
+    fn tile_textures_use_the_same_srgb_color_space_as_palette_pixels() {
+        assert_eq!(TILE_TEXTURE_FORMAT, wgpu::TextureFormat::Rgba8UnormSrgb);
     }
 
     #[test]
