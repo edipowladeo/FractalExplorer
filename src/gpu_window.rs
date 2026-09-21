@@ -4,6 +4,7 @@ use crate::gpu::{
     PreparedTileBatch, TextureCache, TileDrawCommand,
 };
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -16,16 +17,20 @@ fn needs_batch_rebuild(previous: (u32, u32), next: (u32, u32)) -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct GpuBatchStats {
+pub struct GpuFrameMetrics {
     visible_tiles: usize,
     uploaded_textures: usize,
+    draw_calls: usize,
+    prepare_duration: Duration,
 }
 
-impl GpuBatchStats {
-    fn from_batch(batch: &PreparedTileBatch) -> Self {
+impl GpuFrameMetrics {
+    pub(crate) fn from_batch(batch: &PreparedTileBatch, prepare_duration: Duration) -> Self {
         Self {
             visible_tiles: batch.commands.len(),
             uploaded_textures: batch.uploads.len(),
+            draw_calls: batch.commands.len(),
+            prepare_duration,
         }
     }
 
@@ -35,6 +40,26 @@ impl GpuBatchStats {
             self.visible_tiles, self.uploaded_textures
         )
     }
+
+    pub fn visible_tiles(self) -> usize {
+        self.visible_tiles
+    }
+
+    pub fn uploaded_textures(self) -> usize {
+        self.uploaded_textures
+    }
+
+    pub fn draw_calls(self) -> usize {
+        self.draw_calls
+    }
+
+    pub fn prepare_duration(self) -> Duration {
+        self.prepare_duration
+    }
+
+    pub fn matches_cpu_visible_tiles(self, cpu_visible_tiles: usize) -> bool {
+        self.visible_tiles == cpu_visible_tiles
+    }
 }
 
 pub struct GpuAppState {
@@ -43,6 +68,7 @@ pub struct GpuAppState {
     pub config: crate::config::RendererConfig,
     pub prepared_batch: Option<PreparedTileBatch>,
     pub texture_cache: TextureCache,
+    pub last_frame_metrics: Option<GpuFrameMetrics>,
     cursor: crate::geometry::ScreenPoint,
     left_button_down: bool,
 }
@@ -59,6 +85,7 @@ impl GpuAppState {
             config,
             prepared_batch: None,
             texture_cache: TextureCache::default(),
+            last_frame_metrics: None,
             cursor: crate::geometry::ScreenPoint::new(0, 0),
             left_button_down: false,
         }
@@ -106,6 +133,7 @@ impl GpuAppState {
     }
 
     pub fn prepare_visible_batch(&mut self) {
+        let preparation_started = Instant::now();
         self.canvas.begin_frame();
         self.canvas.record_frame_event(
             crate::orchestrator::FrameEventKind::ConfigurationProcessed,
@@ -150,8 +178,12 @@ impl GpuAppState {
         let batch = crate::gpu::prepare_tile_batch(&mut self.texture_cache, &references);
         self.canvas.record_frame_event(
             crate::orchestrator::FrameEventKind::TilesRasterized,
-            GpuBatchStats::from_batch(&batch).description(),
+            GpuFrameMetrics::from_batch(&batch, preparation_started.elapsed()).description(),
         );
+        self.last_frame_metrics = Some(GpuFrameMetrics::from_batch(
+            &batch,
+            preparation_started.elapsed(),
+        ));
         self.prepared_batch = Some(batch);
     }
 }
@@ -500,9 +532,10 @@ impl ApplicationHandler for GpuWindowApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{needs_batch_rebuild, GpuBatchStats, PreparedTileBatch};
+    use super::{needs_batch_rebuild, GpuFrameMetrics, PreparedTileBatch};
     use crate::geometry::ScreenPoint;
     use crate::gpu::{TextureKey, TextureUpload, TileDrawCommand};
+    use std::time::Duration;
 
     #[test]
     fn frame_stats_describe_visible_tiles_and_new_uploads() {
@@ -527,8 +560,12 @@ mod tests {
         };
 
         assert_eq!(
-            GpuBatchStats::from_batch(&batch).description(),
+            GpuFrameMetrics::from_batch(&batch, Duration::from_millis(3)).description(),
             "tiles rasterizados neste frame: 1, texturas novas neste frame: 1"
+        );
+        assert_eq!(
+            GpuFrameMetrics::from_batch(&batch, Duration::ZERO).draw_calls(),
+            1
         );
     }
 
