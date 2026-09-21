@@ -1,3 +1,4 @@
+use crate::app::{AppEffect, AppEvent, ApplicationController, DefaultApplicationController};
 use crate::gpu::{
     create_tile_pipeline, debug_overlay_upload, debug_overlay_upload_with_rectangles,
     texture_keys_for_commands, tile_vertices_for_commands, upload_tile_texture, GpuContext,
@@ -326,6 +327,7 @@ impl GpuAppState {
 
 pub struct GpuWindowApp {
     pub state: Option<GpuAppState>,
+    app_controller: DefaultApplicationController,
     context: Option<GpuContext>,
     window: Option<Arc<Window>>,
     surface: Option<wgpu::Surface<'static>>,
@@ -350,8 +352,13 @@ impl GpuWindowApp {
     }
 
     pub fn with_state(state: Option<GpuAppState>) -> Self {
+        let viewport = state
+            .as_ref()
+            .map(|state| Viewport::new(state.config.width as u32, state.config.height as u32))
+            .unwrap_or(Viewport::new(800, 600));
         Self {
             state,
+            app_controller: DefaultApplicationController::new(viewport),
             context: None,
             window: None,
             surface: None,
@@ -372,6 +379,10 @@ impl GpuWindowApp {
     }
 
     pub fn set_state(&mut self, state: GpuAppState) {
+        self.app_controller = DefaultApplicationController::new(Viewport::new(
+            state.config.width as u32,
+            state.config.height as u32,
+        ));
         self.state = Some(state);
     }
 
@@ -655,6 +666,21 @@ impl ApplicationHandler for GpuWindowApp {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        let app_event = match &event {
+            WindowEvent::CloseRequested => Some(AppEvent::CloseRequested),
+            WindowEvent::Resized(size) => {
+                Some(AppEvent::Resized(Viewport::new(size.width, size.height)))
+            }
+            WindowEvent::RedrawRequested => Some(AppEvent::RedrawRequested),
+            _ => None,
+        };
+        if let Some(app_event) = app_event {
+            let effects = self.app_controller.handle_event(app_event);
+            if effects.contains(&AppEffect::Exit) {
+                event_loop.exit();
+                return;
+            }
+        }
         if let Some(state) = &mut self.state {
             state.handle_window_event(&event);
         }
