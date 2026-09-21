@@ -307,6 +307,48 @@ pub trait RenderTargetFactory: Send + Sync {
     fn create(&self, viewport: Viewport) -> Result<Box<dyn RenderTarget>, RenderError>;
 }
 
+/// Coordinates the lifecycle shared by every render target.
+///
+/// Platform adapters should feed frames through this type instead of deciding
+/// independently when to resize, upload images, or render. The target remains
+/// responsible only for backend-specific work.
+pub struct RenderTargetSession<T> {
+    target: T,
+    viewport: Viewport,
+}
+
+impl<T: RenderTarget> RenderTargetSession<T> {
+    pub fn new(target: T, viewport: Viewport) -> Self {
+        Self { target, viewport }
+    }
+
+    pub fn target(&self) -> &T {
+        &self.target
+    }
+
+    pub fn target_mut(&mut self) -> &mut T {
+        &mut self.target
+    }
+
+    pub fn submit(
+        &mut self,
+        viewport: Viewport,
+        updates: &[ImageUpdate],
+        frame: &RenderFrame,
+    ) -> Result<FrameOutcome, RenderError> {
+        if self.viewport != viewport {
+            self.target.resize(viewport)?;
+            self.viewport = viewport;
+        }
+        self.target.update_images(updates)?;
+        self.target.render(frame)
+    }
+
+    pub fn recover(&mut self, reason: SurfaceFailure) -> Result<(), RenderError> {
+        self.target.recover(reason)
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CpuRenderTargetFactory;
 
@@ -347,8 +389,8 @@ impl FrameBuilder {
 mod tests {
     use super::{
         FrameBuilder, FrameOutcome, ImageId, ImageRevision, ImageUpdate, RenderCapabilities,
-        RenderError, RenderFrame, RenderTarget, RenderTargetFactory, SurfaceFailure, TileDraw,
-        Viewport,
+        RenderError, RenderFrame, RenderTarget, RenderTargetFactory, RenderTargetSession,
+        SurfaceFailure, TileDraw, Viewport,
     };
 
     #[derive(Default)]
@@ -441,6 +483,23 @@ mod tests {
         assert_eq!(target.rendered_frames, vec![11]);
         assert_eq!(target.evicted_images, 1);
         assert_eq!(target.recovered, vec![SurfaceFailure::Lost]);
+    }
+
+    #[test]
+    fn render_target_session_resizes_only_when_viewport_changes() {
+        let target = RecordingTarget::default();
+        let mut session = RenderTargetSession::new(target, Viewport::new(320, 200));
+        let frame = RenderFrame::new(3, Viewport::new(640, 400));
+
+        session
+            .submit(Viewport::new(320, 200), &[], &frame)
+            .expect("first frame should render");
+        session
+            .submit(Viewport::new(640, 400), &[], &frame)
+            .expect("resized frame should render");
+
+        assert_eq!(session.target().resized, vec![Viewport::new(640, 400)]);
+        assert_eq!(session.target().rendered_frames, vec![3, 3]);
     }
 
     #[test]
