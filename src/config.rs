@@ -30,6 +30,7 @@ pub struct TileConfig {
 #[serde(default)]
 pub struct RendererConfig {
     pub backend: String,
+    pub gpu_backend: String,
     pub width: usize,
     pub height: usize,
     pub max_iterations: u32,
@@ -52,6 +53,22 @@ pub struct RendererConfig {
 pub enum RendererBackend {
     Cpu,
     Gpu,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuBackend {
+    Auto,
+    Gl,
+}
+
+impl GpuBackend {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "gl" => Ok(Self::Gl),
+            other => Err(format!("backend GPU desconhecido: {other}")),
+        }
+    }
 }
 
 impl RendererBackend {
@@ -112,6 +129,7 @@ impl Default for RendererConfig {
     fn default() -> Self {
         Self {
             backend: "cpu".to_string(),
+            gpu_backend: "auto".to_string(),
             width: 640,
             height: 480,
             max_iterations: 256,
@@ -153,6 +171,10 @@ impl Default for RendererDebugConfig {
 impl RendererConfig {
     pub fn backend_kind(&self) -> Result<RendererBackend, String> {
         RendererBackend::parse(&self.backend)
+    }
+
+    pub fn gpu_backend_kind(&self) -> Result<GpuBackend, String> {
+        GpuBackend::parse(&self.gpu_backend)
     }
 
     pub fn effective_max_iterations(&self) -> u32 {
@@ -308,6 +330,20 @@ mod tests {
     fn parses_the_gpu_backend_and_rejects_unknown_backends() {
         assert_eq!(RendererBackend::parse("gpu"), Ok(RendererBackend::Gpu));
         assert!(RendererBackend::parse("vulkan").is_err());
+    }
+
+    #[test]
+    fn defaults_to_automatic_gpu_backend_selection() {
+        let config = RendererConfig::default();
+
+        assert_eq!(config.gpu_backend, "auto");
+        assert_eq!(config.gpu_backend_kind(), Ok(GpuBackend::Auto));
+    }
+
+    #[test]
+    fn parses_the_opengl_gpu_backend_and_rejects_unknown_values() {
+        assert_eq!(GpuBackend::parse("gl"), Ok(GpuBackend::Gl));
+        assert!(GpuBackend::parse("dx12").is_err());
     }
 
     #[test]
