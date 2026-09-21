@@ -415,7 +415,20 @@ impl ApplicationHandler for GpuWindowApp {
                 return;
             }
         };
-        let context = match pollster::block_on(GpuContext::initialize()) {
+        let gpu_backend = match self
+            .state
+            .as_ref()
+            .map(|state| state.config.gpu_backend_kind())
+        {
+            Some(Ok(backend)) => backend,
+            Some(Err(error)) => {
+                crate::print_local!("Configuração de backend GPU inválida: {error}");
+                event_loop.exit();
+                return;
+            }
+            None => crate::config::GpuBackend::Auto,
+        };
+        let context = match pollster::block_on(GpuContext::initialize(gpu_backend)) {
             Ok(context) => context,
             Err(error) => {
                 crate::print_local!("Falha ao inicializar GPU: {error}");
@@ -578,11 +591,33 @@ impl ApplicationHandler for GpuWindowApp {
                                 }
                             }
                         }
-                        context.queue.submit(Some(encoder.finish()));
+                        let command_buffer = encoder.finish();
+                        if let Some(state) = &mut self.state {
+                            state.canvas.record_frame_event(
+                                crate::orchestrator::FrameEventKind::GpuCommandEncodingFinished,
+                                "encoder GPU finalizado",
+                            );
+                        }
+                        context.queue.submit(Some(command_buffer));
                         if let Some(state) = &mut self.state {
                             state.canvas.record_frame_event(
                                 crate::orchestrator::FrameEventKind::GpuCommandsSubmitted,
                                 "comandos GPU submetidos",
+                            );
+                            state.canvas.record_frame_event(
+                                crate::orchestrator::FrameEventKind::GpuDevicePollStarted,
+                                "poll do device GPU iniciado",
+                            );
+                        }
+                        let poll_result = context.device.poll(wgpu::PollType::Poll);
+                        if let Some(state) = &mut self.state {
+                            let description = match poll_result {
+                                Ok(status) => format!("poll do device GPU concluido: {status:?}"),
+                                Err(error) => format!("poll do device GPU falhou: {error}"),
+                            };
+                            state.canvas.record_frame_event(
+                                crate::orchestrator::FrameEventKind::GpuDevicePollFinished,
+                                &description,
                             );
                             state.canvas.record_frame_event(
                                 crate::orchestrator::FrameEventKind::GpuPresentationStarted,
