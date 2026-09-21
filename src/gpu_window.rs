@@ -385,7 +385,6 @@ impl GpuWindowApp {
         self.overlay_texture = None;
         self.overlay_command = None;
         self.envelope_vertex_buffer = None;
-        self.envelope_command = None;
         let show_frame_overlay = self
             .state
             .as_ref()
@@ -499,6 +498,7 @@ impl GpuWindowApp {
             }
         } else {
             self.envelope_texture = None;
+            self.envelope_command = None;
             self.envelope_cache_key = None;
         }
     }
