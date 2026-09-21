@@ -492,6 +492,7 @@ impl ApplicationHandler for GpuWindowApp {
                             }
                         }
                         context.queue.submit(Some(encoder.finish()));
+                        context.queue.present(frame);
                         if let Some(state) = &mut self.state {
                             state.canvas.record_frame_presentation_started();
                             state.canvas.record_frame_event(
