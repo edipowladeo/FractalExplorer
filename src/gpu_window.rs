@@ -46,6 +46,14 @@ fn centered_bounds(width: usize, height: usize, ratio: f64) -> (i32, i32, i32, i
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EnvelopeCacheKey {
+    width: u32,
+    height: u32,
+    allocation: (i32, i32, i32, i32),
+    deallocation: (i32, i32, i32, i32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpuFrameMetrics {
     visible_tiles: usize,
     uploaded_textures: usize,
@@ -282,6 +290,10 @@ pub struct GpuWindowApp {
     overlay_vertex_buffer: Option<wgpu::Buffer>,
     overlay_texture: Option<GpuTileTexture>,
     overlay_command: Option<TileDrawCommand>,
+    envelope_vertex_buffer: Option<wgpu::Buffer>,
+    envelope_texture: Option<GpuTileTexture>,
+    envelope_command: Option<TileDrawCommand>,
+    envelope_cache_key: Option<EnvelopeCacheKey>,
     texture_store: Option<GpuTextureStore>,
     tile_commands: Vec<crate::gpu::TileDrawCommand>,
 }
@@ -304,6 +316,10 @@ impl GpuWindowApp {
             overlay_vertex_buffer: None,
             overlay_texture: None,
             overlay_command: None,
+            envelope_vertex_buffer: None,
+            envelope_texture: None,
+            envelope_command: None,
+            envelope_cache_key: None,
             texture_store: None,
             tile_commands: Vec::new(),
         }
@@ -327,6 +343,10 @@ impl GpuWindowApp {
         if needs_batch_rebuild(previous, (config.width, config.height)) {
             self.tile_vertex_buffer = None;
             self.overlay_vertex_buffer = None;
+            self.envelope_vertex_buffer = None;
+            self.envelope_texture = None;
+            self.envelope_command = None;
+            self.envelope_cache_key = None;
         }
     }
 }
@@ -364,6 +384,8 @@ impl GpuWindowApp {
 
         self.overlay_texture = None;
         self.overlay_command = None;
+        self.envelope_vertex_buffer = None;
+        self.envelope_command = None;
         let show_frame_overlay = self
             .state
             .as_ref()
@@ -372,7 +394,7 @@ impl GpuWindowApp {
             .state
             .as_ref()
             .is_some_and(|state| state.config.debug.show_allocation_envelope);
-        if show_frame_overlay || show_envelope {
+        if show_frame_overlay {
             let history = self
                 .state
                 .as_ref()
@@ -395,34 +417,7 @@ impl GpuWindowApp {
                 )
             };
             let line_count = text.lines().count().max(1);
-            let (overlay_width, overlay_height) = if show_envelope {
-                self.surface_config
-                    .as_ref()
-                    .map(|config| (config.width, config.height))
-                    .unwrap_or((1, 1))
-            } else {
-                (240, line_count as u32 * 16)
-            };
-            let upload = if show_envelope {
-                let rectangles = self
-                    .state
-                    .as_ref()
-                    .map(|state| {
-                        vec![
-                            (state.allocation_bounds, [255, 0, 0, 255]),
-                            (state.deallocation_bounds, [255, 255, 0, 255]),
-                        ]
-                    })
-                    .unwrap_or_default();
-                debug_overlay_upload_with_rectangles(
-                    &text,
-                    overlay_width,
-                    overlay_height,
-                    &rectangles,
-                )
-            } else {
-                debug_overlay_upload(&text, overlay_width, overlay_height)
-            };
+            let upload = debug_overlay_upload(&text, 240, line_count as u32 * 16);
             let key = upload.key;
             if let (Some(context), Some(layout), Some(surface_config)) = (
                 &self.context,
@@ -430,14 +425,10 @@ impl GpuWindowApp {
                 &self.surface_config,
             ) {
                 self.overlay_texture = Some(upload_tile_texture(context, layout, &upload));
-                let position = if show_envelope {
-                    crate::geometry::ScreenPoint::new(0, 0)
-                } else {
-                    crate::geometry::ScreenPoint::new(
-                        8,
-                        surface_config.height.saturating_sub(upload.height + 8) as i32,
-                    )
-                };
+                let position = crate::geometry::ScreenPoint::new(
+                    8,
+                    surface_config.height.saturating_sub(upload.height + 8) as i32,
+                );
                 let command = TileDrawCommand {
                     texture: key,
                     position,
@@ -457,6 +448,58 @@ impl GpuWindowApp {
                 ));
                 self.overlay_command = Some(command);
             }
+        }
+        if show_envelope {
+            if let (Some(context), Some(layout), Some(surface_config), Some(state)) = (
+                &self.context,
+                &self.tile_bind_group_layout,
+                &self.surface_config,
+                &self.state,
+            ) {
+                let cache_key = EnvelopeCacheKey {
+                    width: surface_config.width,
+                    height: surface_config.height,
+                    allocation: state.allocation_bounds,
+                    deallocation: state.deallocation_bounds,
+                };
+                if self.envelope_cache_key != Some(cache_key) {
+                    let rectangles = [
+                        (state.allocation_bounds, [255, 0, 0, 255]),
+                        (state.deallocation_bounds, [255, 255, 0, 255]),
+                    ];
+                    let upload = debug_overlay_upload_with_rectangles(
+                        "",
+                        surface_config.width,
+                        surface_config.height,
+                        &rectangles,
+                    );
+                    let key = upload.key;
+                    self.envelope_texture = Some(upload_tile_texture(context, layout, &upload));
+                    self.envelope_cache_key = Some(cache_key);
+                    self.envelope_command = Some(TileDrawCommand {
+                        texture: key,
+                        position: crate::geometry::ScreenPoint::new(0, 0),
+                        size: (upload.width, upload.height),
+                    });
+                }
+                if let Some(command) = self.envelope_command {
+                    let vertices = tile_vertices_for_commands(
+                        &[command],
+                        surface_config.width,
+                        surface_config.height,
+                    );
+                    self.envelope_vertex_buffer = Some(context.device.create_buffer_init(
+                        &wgpu::util::BufferInitDescriptor {
+                            label: Some("gpu-allocation-envelope-vertices"),
+                            contents: bytemuck::cast_slice(&vertices),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        },
+                    ));
+                }
+            }
+        } else {
+            self.envelope_texture = None;
+            self.envelope_cache_key = None;
         }
     }
 }
@@ -573,6 +616,12 @@ impl ApplicationHandler for GpuWindowApp {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => self.configure_surface(size.width, size.height),
             WindowEvent::RedrawRequested => {
+                if let Some(state) = &mut self.state {
+                    state.canvas.record_frame_event(
+                        crate::orchestrator::FrameEventKind::GpuRedrawReceived,
+                        "evento RedrawRequested recebido",
+                    );
+                }
                 if let (Some(context), Some(surface), Some(pipeline)) =
                     (&self.context, &self.surface, &self.pipeline)
                 {
@@ -646,6 +695,16 @@ impl ApplicationHandler for GpuWindowApp {
                                             pass.draw(start..start + 6, 0..1);
                                         }
                                     }
+                                }
+                                if let (Some(envelope), Some(envelope_vertices), Some(command)) = (
+                                    &self.envelope_texture,
+                                    &self.envelope_vertex_buffer,
+                                    self.envelope_command,
+                                ) {
+                                    pass.set_bind_group(0, &envelope.bind_group, &[]);
+                                    pass.set_vertex_buffer(0, envelope_vertices.slice(..));
+                                    pass.draw(0..6, 0..1);
+                                    let _ = command;
                                 }
                                 if let (Some(overlay), Some(overlay_vertices), Some(command)) = (
                                     &self.overlay_texture,
@@ -727,9 +786,31 @@ impl ApplicationHandler for GpuWindowApp {
             })
             .flatten();
         if let Some(batch) = batch {
+            if let Some(state) = &mut self.state {
+                state.canvas.record_frame_event(
+                    crate::orchestrator::FrameEventKind::GpuBatchPreparationFinished,
+                    "preparacao do batch GPU concluida",
+                );
+                state.canvas.record_frame_event(
+                    crate::orchestrator::FrameEventKind::GpuBatchUploadStarted,
+                    "upload do batch GPU iniciado",
+                );
+            }
             self.upload_batch(batch);
+            if let Some(state) = &mut self.state {
+                state.canvas.record_frame_event(
+                    crate::orchestrator::FrameEventKind::GpuBatchUploadFinished,
+                    "upload do batch GPU concluido",
+                );
+            }
         }
         if let Some(window) = &self.window {
+            if let Some(state) = &mut self.state {
+                state.canvas.record_frame_event(
+                    crate::orchestrator::FrameEventKind::GpuRedrawRequested,
+                    "request_redraw GPU disparado",
+                );
+            }
             window.request_redraw();
         }
     }
@@ -738,8 +819,8 @@ impl ApplicationHandler for GpuWindowApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_gpu_frame_history, needs_batch_rebuild, select_present_mode, GpuFrameMetrics,
-        PreparedTileBatch,
+        centered_bounds, format_gpu_frame_history, needs_batch_rebuild, select_present_mode,
+        GpuFrameMetrics, PreparedTileBatch,
     };
     use crate::geometry::ScreenPoint;
     use crate::gpu::{TextureKey, TextureUpload, TileDrawCommand};
