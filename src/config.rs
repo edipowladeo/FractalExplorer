@@ -31,6 +31,7 @@ pub struct TileConfig {
 pub struct RendererConfig {
     pub backend: String,
     pub gpu_backend: String,
+    pub gpu_vertex_buffer_ring_size: usize,
     pub width: usize,
     pub height: usize,
     pub max_iterations: u32,
@@ -130,6 +131,7 @@ impl Default for RendererConfig {
         Self {
             backend: "cpu".to_string(),
             gpu_backend: "auto".to_string(),
+            gpu_vertex_buffer_ring_size: 3,
             width: 640,
             height: 480,
             max_iterations: 256,
@@ -282,6 +284,7 @@ mod tests {
             palette_period = 5.0
             starting_point = "x=-0.743643887037151, y=0.131825904205330"
             perturbation_fallback = true
+            gpu_vertex_buffer_ring_size = 2
 
             [renderer.debug]
             reduced_viewport = true
@@ -298,6 +301,7 @@ mod tests {
         assert!(config.renderer.debug.reduced_viewport);
         assert_eq!(config.renderer.debug.reduced_viewport_allocation_ratio, 0.5);
         assert!(config.renderer.debug.show_allocation_envelope);
+        assert_eq!(config.renderer.gpu_vertex_buffer_ring_size, 2);
         assert_eq!(config.renderer.effective_allocation_ratio(), 0.5);
         assert_eq!(config.renderer.palette, crate::renderer::Palette::Rainbow);
         assert_eq!(config.renderer.palette_period, 5.0);
