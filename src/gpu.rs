@@ -120,18 +120,25 @@ pub fn tile_vertices_for_commands(
 
 pub fn debug_overlay_upload(text: &str, width: u32, height: u32) -> TextureUpload {
     let mut rgba8 = vec![0; width as usize * height as usize * 4];
-    for (character_index, character) in text.chars().enumerate() {
+    let mut origin_x = 2;
+    let mut origin_y = 2;
+    for character in text.chars() {
+        if character == '\n' {
+            origin_x = 2;
+            origin_y += 16;
+            continue;
+        }
         let Some(glyph) = crate::renderer::glyph(character) else {
+            origin_x += 6;
             continue;
         };
-        let origin_x = character_index * 6 + 2;
         for (row, bits) in glyph.iter().enumerate() {
             for column in 0..5 {
                 if bits & (1 << (4 - column)) == 0 {
                     continue;
                 }
                 let x = origin_x + column;
-                let y = row + 2;
+                let y = origin_y + row;
                 if x >= width as usize || y >= height as usize {
                     continue;
                 }
@@ -139,6 +146,7 @@ pub fn debug_overlay_upload(text: &str, width: u32, height: u32) -> TextureUploa
                 rgba8[offset..offset + 4].copy_from_slice(&[255, 255, 255, 255]);
             }
         }
+        origin_x += 6;
     }
     TextureUpload {
         key: TextureKey {
