@@ -23,6 +23,20 @@ fn needs_batch_rebuild(previous: (u32, u32), next: (u32, u32)) -> bool {
     previous != next
 }
 
+fn vertex_buffer_capacity(current: usize, required: usize) -> usize {
+    if required <= current {
+        return current;
+    }
+    let mut capacity = current.max(1);
+    while capacity < required {
+        capacity = capacity.saturating_mul(2);
+        if capacity == usize::MAX {
+            return required;
+        }
+    }
+    capacity
+}
+
 const GPU_FRAME_HISTORY_CAPACITY: usize = 8;
 
 fn format_gpu_frame_history(history: &VecDeque<(u64, Duration)>) -> String {
@@ -365,6 +379,7 @@ pub struct GpuWindowApp {
     pipeline: Option<wgpu::RenderPipeline>,
     tile_bind_group_layout: Option<wgpu::BindGroupLayout>,
     tile_vertex_buffer: Option<wgpu::Buffer>,
+    tile_vertex_capacity: usize,
     overlay_vertex_buffer: Option<wgpu::Buffer>,
     overlay_texture: Option<GpuTileTexture>,
     overlay_command: Option<TileDrawCommand>,
@@ -396,6 +411,7 @@ impl GpuWindowApp {
             pipeline: None,
             tile_bind_group_layout: None,
             tile_vertex_buffer: None,
+            tile_vertex_capacity: 0,
             overlay_vertex_buffer: None,
             overlay_texture: None,
             overlay_command: None,
@@ -468,15 +484,24 @@ impl GpuWindowApp {
                 surface_config.width,
                 surface_config.height,
             );
-            self.tile_vertex_buffer = (!vertices.is_empty()).then(|| {
-                context
-                    .device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("tile-batch-vertices"),
-                        contents: bytemuck::cast_slice(&vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    })
-            });
+            if !vertices.is_empty() {
+                let capacity = vertex_buffer_capacity(self.tile_vertex_capacity, vertices.len());
+                if self.tile_vertex_buffer.is_none() || capacity != self.tile_vertex_capacity {
+                    self.tile_vertex_buffer =
+                        Some(context.device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("tile-batch-vertices"),
+                            size: (capacity * std::mem::size_of::<crate::gpu::TileVertex>()) as u64,
+                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false,
+                        }));
+                    self.tile_vertex_capacity = capacity;
+                }
+                if let Some(buffer) = &self.tile_vertex_buffer {
+                    context
+                        .queue
+                        .write_buffer(buffer, 0, bytemuck::cast_slice(&vertices));
+                }
+            }
         }
         self.tile_commands = frame_commands;
 
@@ -774,6 +799,7 @@ impl ApplicationHandler for GpuWindowApp {
                                 surface.configure(&context.device, config);
                             }
                             self.tile_vertex_buffer = None;
+                            self.tile_vertex_capacity = 0;
                             return;
                         }
                         wgpu::CurrentSurfaceTexture::Validation => {
@@ -946,7 +972,7 @@ impl ApplicationHandler for GpuWindowApp {
 mod tests {
     use super::{
         centered_bounds, format_gpu_frame_history, needs_batch_rebuild, select_present_mode,
-        GpuFrameMetrics, PreparedTileBatch,
+        vertex_buffer_capacity, GpuFrameMetrics, PreparedTileBatch,
     };
     use crate::geometry::ScreenPoint;
     use crate::gpu::{TextureKey, TextureUpload, TileDrawCommand};
@@ -989,6 +1015,13 @@ mod tests {
     fn resize_invalidates_vertices_only_when_surface_dimensions_change() {
         assert!(!needs_batch_rebuild((800, 600), (800, 600)));
         assert!(needs_batch_rebuild((800, 600), (1024, 768)));
+    }
+
+    #[test]
+    fn vertex_buffer_capacity_grows_only_when_required_vertices_do_not_fit() {
+        assert_eq!(vertex_buffer_capacity(96, 48), 96);
+        assert_eq!(vertex_buffer_capacity(96, 97), 192);
+        assert_eq!(vertex_buffer_capacity(0, 1), 1);
     }
 
     #[test]
