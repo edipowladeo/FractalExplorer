@@ -300,11 +300,38 @@ pub trait RenderTarget: Send {
     fn recover(&mut self, reason: SurfaceFailure) -> Result<(), RenderError>;
 }
 
+#[derive(Debug, Default)]
+pub struct FrameBuilder {
+    next_frame_id: u64,
+}
+
+impl FrameBuilder {
+    pub const fn new() -> Self {
+        Self { next_frame_id: 0 }
+    }
+
+    pub fn build(
+        &mut self,
+        viewport: Viewport,
+        tiles: Vec<TileDraw>,
+        overlays: Vec<OverlayPrimitive>,
+    ) -> RenderFrame {
+        let frame = RenderFrame {
+            frame_id: self.next_frame_id,
+            viewport,
+            tiles,
+            overlays,
+        };
+        self.next_frame_id = self.next_frame_id.wrapping_add(1);
+        frame
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        FrameOutcome, ImageId, ImageRevision, ImageUpdate, RenderCapabilities, RenderError,
-        RenderFrame, RenderTarget, SurfaceFailure, TileDraw, Viewport,
+        FrameBuilder, FrameOutcome, ImageId, ImageRevision, ImageUpdate, RenderCapabilities,
+        RenderError, RenderFrame, RenderTarget, SurfaceFailure, TileDraw, Viewport,
     };
 
     #[derive(Default)]
@@ -397,5 +424,22 @@ mod tests {
         assert_eq!(target.rendered_frames, vec![11]);
         assert_eq!(target.evicted_images, 1);
         assert_eq!(target.recovered, vec![SurfaceFailure::Lost]);
+    }
+
+    #[test]
+    fn frame_builder_assigns_monotonic_ids_to_immutable_snapshots() {
+        let mut builder = FrameBuilder::new();
+        let first = builder.build(Viewport::new(320, 200), Vec::new(), Vec::new());
+        let second = builder.build(
+            Viewport::new(640, 400),
+            vec![TileDraw::new(ImageId::new(1), ImageRevision::new(2), 0)],
+            Vec::new(),
+        );
+
+        assert_eq!(first.frame_id(), 0);
+        assert_eq!(second.frame_id(), 1);
+        assert_eq!(first.viewport(), Viewport::new(320, 200));
+        assert!(first.tiles().is_empty());
+        assert_eq!(second.tiles().len(), 1);
     }
 }
