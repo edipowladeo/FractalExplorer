@@ -431,7 +431,7 @@ impl GpuWindowApp {
 }
 
 impl GpuWindowApp {
-    pub fn upload_batch(&mut self, batch: PreparedTileBatch) {
+    pub fn upload_batch(&mut self, batch: PreparedTileBatch, frame_commands: Vec<TileDrawCommand>) {
         let (Some(context), Some(layout), Some(store)) = (
             &self.context,
             &self.tile_bind_group_layout,
@@ -442,10 +442,10 @@ impl GpuWindowApp {
         for upload in batch.uploads {
             store.upload(context, layout, upload);
         }
-        store.retain_only(texture_keys_for_commands(&batch.commands));
+        store.retain_only(texture_keys_for_commands(&frame_commands));
         if let Some(surface_config) = &self.surface_config {
             let vertices = tile_vertices_for_commands(
-                &batch.commands,
+                &frame_commands,
                 surface_config.width,
                 surface_config.height,
             );
@@ -459,7 +459,7 @@ impl GpuWindowApp {
                     })
             });
         }
-        self.tile_commands = batch.commands;
+        self.tile_commands = frame_commands;
 
         self.overlay_texture = None;
         self.overlay_command = None;
@@ -898,8 +898,7 @@ impl ApplicationHandler for GpuWindowApp {
                     "upload do batch GPU iniciado",
                 );
             }
-            self.upload_batch(batch);
-            self.tile_commands = tile_commands_for_frame(&frame);
+            self.upload_batch(batch, tile_commands_for_frame(&frame));
             if let Some(state) = &mut self.state {
                 state.canvas.record_frame_event(
                     crate::orchestrator::FrameEventKind::GpuBatchUploadFinished,
