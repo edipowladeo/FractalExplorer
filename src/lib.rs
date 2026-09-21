@@ -6,6 +6,7 @@ pub mod config_ui;
 pub mod fixed;
 pub mod geometry;
 pub mod gpu;
+pub mod gpu_window;
 pub mod input;
 pub mod orchestrator;
 pub mod output;
