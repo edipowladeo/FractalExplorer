@@ -64,12 +64,12 @@ fn format_frame_history_line(entry: Option<FrameHistoryEntry>) -> String {
 pub enum Palette {
     Shade,
     Rainbow,
-    #[serde(rename = "inverted_rainbow")]
+    #[serde(rename = "rainbow_inverted")]
     InvertedRainbow,
-    #[serde(rename = "_pastel_rainbow")]
+    #[serde(rename = "rainbow_pastel")]
     PastelRainbow,
-    #[serde(rename = "_pastel_shade")]
-    PastelShade,
+    #[serde(rename = "rainbow_inverted_pastel")]
+    InvertedRainbowPastel,
 }
 
 impl Default for Palette {
@@ -87,9 +87,9 @@ impl<'de> Deserialize<'de> for Palette {
         match value.to_ascii_lowercase().as_str() {
             "shade" => Ok(Self::Shade),
             "rainbow" => Ok(Self::Rainbow),
-            "inverted_rainbow" => Ok(Self::InvertedRainbow),
-            "_pastel_rainbow" => Ok(Self::PastelRainbow),
-            "_pastel_shade" => Ok(Self::PastelShade),
+            "rainbow_inverted" => Ok(Self::InvertedRainbow),
+            "rainbow_pastel" => Ok(Self::PastelRainbow),
+            "rainbow_inverted_pastel" => Ok(Self::InvertedRainbowPastel),
             invalid => {
                 crate::print_local!(
                     "Aviso: paleta inválida '{invalid}'; usando fallback 'rainbow'"
@@ -910,7 +910,9 @@ fn color(iterations: u64, max_iterations: u64, palette: Palette, palette_period:
         Palette::Rainbow => rainbow_color(iterations, palette_period),
         Palette::InvertedRainbow => inverted_rainbow_color(iterations, palette_period),
         Palette::PastelRainbow => pastelize_color(rainbow_color(iterations, palette_period)),
-        Palette::PastelShade => pastelize_color(shade_color(iterations, max_iterations)),
+        Palette::InvertedRainbowPastel => {
+            pastelize_color(inverted_rainbow_color(iterations, palette_period))
+        }
     }
 }
 
@@ -1054,7 +1056,7 @@ mod tests {
         let config: crate::config::AppConfig = toml::from_str(
             r#"
             [renderer]
-            palette = "inverted_rainbow"
+            palette = "rainbow_inverted"
             "#,
         )
         .unwrap();
@@ -1065,8 +1067,8 @@ mod tests {
     #[test]
     fn parses_the_two_pastel_palette_names() {
         for (name, expected) in [
-            ("_pastel_rainbow", Palette::PastelRainbow),
-            ("_pastel_shade", Palette::PastelShade),
+            ("rainbow_pastel", Palette::PastelRainbow),
+            ("rainbow_inverted_pastel", Palette::InvertedRainbowPastel),
         ] {
             let config: crate::config::AppConfig =
                 toml::from_str(&format!("[renderer]\npalette = \"{name}\""))
