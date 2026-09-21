@@ -38,5 +38,5 @@ slow_frame_threshold_ms = 100
 workers = 8
 
 [orchestrator.tile]
-width = 40
-height = 40
+width = 25
+height = 25
