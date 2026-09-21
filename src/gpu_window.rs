@@ -27,6 +27,13 @@ fn format_gpu_frame_history(history: &VecDeque<(u64, Duration)>) -> String {
         .join("\n")
 }
 
+fn select_present_mode(modes: &[wgpu::PresentMode]) -> Option<wgpu::PresentMode> {
+    [wgpu::PresentMode::AutoNoVsync, wgpu::PresentMode::Immediate]
+        .into_iter()
+        .find(|preferred| modes.contains(preferred))
+        .or_else(|| modes.first().copied())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpuFrameMetrics {
     visible_tiles: usize,
@@ -425,16 +432,25 @@ impl ApplicationHandler for GpuWindowApp {
             }
         };
         let capabilities = surface.get_capabilities(&context.adapter);
+        let adapter_info = context.adapter.get_info();
+        crate::print_local!(
+            "GPU adapter: {:?} / {} ({:?}); modos de apresentacao: {:?}",
+            adapter_info.backend,
+            adapter_info.name,
+            adapter_info.device_type,
+            capabilities.present_modes
+        );
         let Some(format) = capabilities.formats.first().copied() else {
             crate::print_local!("GPU não oferece formato de superfície compatível");
             event_loop.exit();
             return;
         };
-        let Some(present_mode) = capabilities.present_modes.first().copied() else {
+        let Some(present_mode) = select_present_mode(&capabilities.present_modes) else {
             crate::print_local!("GPU não oferece modo de apresentação compatível");
             event_loop.exit();
             return;
         };
+        crate::print_local!("Modo de apresentacao GPU selecionado: {:?}", present_mode);
         let Some(alpha_mode) = capabilities.alpha_modes.first().copied() else {
             crate::print_local!("GPU não oferece modo alpha compatível");
             event_loop.exit();
@@ -619,7 +635,8 @@ impl ApplicationHandler for GpuWindowApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_gpu_frame_history, needs_batch_rebuild, GpuFrameMetrics, PreparedTileBatch,
+        format_gpu_frame_history, needs_batch_rebuild, select_present_mode, GpuFrameMetrics,
+        PreparedTileBatch,
     };
     use crate::geometry::ScreenPoint;
     use crate::gpu::{TextureKey, TextureUpload, TileDrawCommand};
@@ -699,6 +716,22 @@ mod tests {
             (8, Duration::from_micros(2_500)),
         ]);
         assert_eq!(format_gpu_frame_history(&history), "#7:1.250ms\n#8:2.500ms");
+    }
+
+    #[test]
+    fn selects_a_non_vsync_present_mode_when_the_adapter_supports_one() {
+        assert_eq!(
+            select_present_mode(&[wgpu::PresentMode::Fifo, wgpu::PresentMode::AutoNoVsync,]),
+            Some(wgpu::PresentMode::AutoNoVsync)
+        );
+        assert_eq!(
+            select_present_mode(&[wgpu::PresentMode::Fifo, wgpu::PresentMode::Immediate]),
+            Some(wgpu::PresentMode::Immediate)
+        );
+        assert_eq!(
+            select_present_mode(&[wgpu::PresentMode::Fifo]),
+            Some(wgpu::PresentMode::Fifo)
+        );
     }
 }
 
