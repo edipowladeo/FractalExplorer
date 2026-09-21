@@ -686,6 +686,26 @@ mod tests {
     }
 
     #[test]
+    fn compares_gpu_visible_tiles_with_cpu_reference_count() {
+        let metrics = crate::gpu_window::GpuFrameMetrics::from_batch(
+            &PreparedTileBatch {
+                uploads: Vec::new(),
+                commands: vec![TileDrawCommand {
+                    texture: TextureKey {
+                        tile: 1,
+                        content_hash: 2,
+                    },
+                    position: ScreenPoint::new(0, 0),
+                    size: (1, 1),
+                }],
+            },
+            std::time::Duration::ZERO,
+        );
+        assert!(metrics.matches_cpu_visible_tiles(1));
+        assert!(!metrics.matches_cpu_visible_tiles(2));
+    }
+
+    #[test]
     fn tile_batch_uploads_new_content_once_and_keeps_draw_order() {
         let first_tile = Arc::new(Tile::new(ComplexPoint::new(0.0, 0.0), 2, 2, 1.0));
         let second_tile = Arc::new(Tile::new(ComplexPoint::new(1.0, 0.0), 2, 2, 1.0));
