@@ -165,6 +165,44 @@ pub fn debug_overlay_upload(text: &str, width: u32, height: u32) -> TextureUploa
     }
 }
 
+pub fn debug_overlay_upload_with_rectangles(
+    text: &str,
+    width: u32,
+    height: u32,
+    rectangles: &[((i32, i32, i32, i32), [u8; 4])],
+) -> TextureUpload {
+    let mut upload = debug_overlay_upload(text, width, height);
+    for &((left, top, right, bottom), color) in rectangles {
+        let left = left.max(0).min(width.saturating_sub(1) as i32);
+        let right = right.max(0).min(width.saturating_sub(1) as i32);
+        let top = top.max(0).min(height.saturating_sub(1) as i32);
+        let bottom = bottom.max(0).min(height.saturating_sub(1) as i32);
+        if left > right || top > bottom {
+            continue;
+        }
+        for x in left..=right {
+            for y in [top, bottom] {
+                let offset = (y as usize * width as usize + x as usize) * 4;
+                upload.rgba8[offset..offset + 4].copy_from_slice(&color);
+            }
+        }
+        for y in top..=bottom {
+            for x in [left, right] {
+                let offset = (y as usize * width as usize + x as usize) * 4;
+                upload.rgba8[offset..offset + 4].copy_from_slice(&color);
+            }
+        }
+    }
+    upload.key.content_hash = hash_pixels(
+        &upload
+            .rgba8
+            .chunks_exact(4)
+            .map(|pixel| u32::from_le_bytes([pixel[0], pixel[1], pixel[2], pixel[3]]))
+            .collect::<Vec<_>>(),
+    );
+    upload
+}
+
 /// Owns the device and queue used by the future window-backed renderer.
 /// Surface creation stays outside this context because it borrows a window.
 pub struct GpuContext {
