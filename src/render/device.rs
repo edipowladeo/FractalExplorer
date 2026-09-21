@@ -64,6 +64,8 @@ pub enum Command {
     },
     WriteTexture {
         texture: TextureHandle,
+        width: u32,
+        height: u32,
         bytes: Vec<u8>,
     },
 }
@@ -82,8 +84,19 @@ impl CommandList {
         });
     }
 
-    pub fn write_texture(&mut self, texture: TextureHandle, bytes: Vec<u8>) {
-        self.commands.push(Command::WriteTexture { texture, bytes });
+    pub fn write_texture(
+        &mut self,
+        texture: TextureHandle,
+        width: u32,
+        height: u32,
+        bytes: Vec<u8>,
+    ) {
+        self.commands.push(Command::WriteTexture {
+            texture,
+            width,
+            height,
+            bytes,
+        });
     }
 
     pub fn commands(&self) -> &[Command] {
@@ -156,7 +169,7 @@ impl TextureResourceCache {
                     format: TextureFormat::Rgba8,
                 })?,
             };
-            commands.write_texture(handle, update.rgba8().to_vec());
+            commands.write_texture(handle, dimensions.0, dimensions.1, update.rgba8().to_vec());
             self.textures.insert(
                 update.image(),
                 CachedTexture {
@@ -241,7 +254,7 @@ mod tests {
 
         let mut commands = CommandList::default();
         commands.write_buffer(buffer, 4, vec![1, 2, 3]);
-        commands.write_texture(texture, vec![255; 16]);
+        commands.write_texture(texture, 2, 2, vec![255; 16]);
         device.submit(commands).unwrap();
 
         assert_eq!(buffer.value(), 1);
