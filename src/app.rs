@@ -5,12 +5,14 @@ use crate::render::{FrameBuilder, RenderError, RenderFrame, Viewport};
 pub enum AppEvent {
     Resized(Viewport),
     Input(InputEvent),
+    ConfigurationChanged,
     RedrawRequested,
     CloseRequested,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppEffect {
+    Reconfigure,
     RequestRedraw,
     Render,
     Exit,
@@ -62,6 +64,9 @@ impl ApplicationController for DefaultApplicationController {
                 self.pending_input.push(input);
                 vec![AppEffect::RequestRedraw]
             }
+            AppEvent::ConfigurationChanged => {
+                vec![AppEffect::Reconfigure, AppEffect::RequestRedraw]
+            }
             AppEvent::RedrawRequested => vec![AppEffect::Render],
             AppEvent::CloseRequested => {
                 self.closed = true;
@@ -110,6 +115,10 @@ mod tests {
         );
         assert_eq!(controller.take_input_events(), vec![input]);
         assert!(controller.take_input_events().is_empty());
+        assert_eq!(
+            controller.handle_event(AppEvent::ConfigurationChanged),
+            vec![AppEffect::Reconfigure, AppEffect::RequestRedraw]
+        );
         assert_eq!(
             controller.handle_event(AppEvent::RedrawRequested),
             vec![AppEffect::Render]
