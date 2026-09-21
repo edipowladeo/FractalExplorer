@@ -2,6 +2,10 @@
 
 use crate::config::GpuBackend;
 use crate::geometry::ScreenPoint;
+use crate::render::device::{
+    BufferDescriptor, BufferHandle, BufferUsage, Command, CommandList, DeviceError, GraphicsDevice,
+    TextureDescriptor, TextureFormat, TextureHandle,
+};
 use crate::{Sprite, TileSprite};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -274,6 +278,137 @@ pub struct GpuSurface<'window> {
     pub surface: wgpu::Surface<'window>,
     pub format: wgpu::TextureFormat,
     pub present_mode: wgpu::PresentMode,
+}
+
+pub struct WgpuGraphicsDevice<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    next_handle: u64,
+    buffers: HashMap<BufferHandle, wgpu::Buffer>,
+    textures: HashMap<TextureHandle, wgpu::Texture>,
+}
+
+impl<'a> WgpuGraphicsDevice<'a> {
+    pub fn new(device: &'a wgpu::Device, queue: &'a wgpu::Queue) -> Self {
+        Self {
+            device,
+            queue,
+            next_handle: 0,
+            buffers: HashMap::new(),
+            textures: HashMap::new(),
+        }
+    }
+
+    fn next_handle(&mut self) -> u64 {
+        let handle = self.next_handle;
+        self.next_handle = self.next_handle.wrapping_add(1);
+        handle
+    }
+}
+
+impl GraphicsDevice for WgpuGraphicsDevice<'_> {
+    fn create_buffer(&mut self, descriptor: BufferDescriptor) -> Result<BufferHandle, DeviceError> {
+        let usage = match descriptor.usage {
+            BufferUsage::Vertex => wgpu::BufferUsages::VERTEX,
+            BufferUsage::Index => wgpu::BufferUsages::INDEX,
+            BufferUsage::Uniform => wgpu::BufferUsages::UNIFORM,
+        } | wgpu::BufferUsages::COPY_DST;
+        let handle = BufferHandle::new(self.next_handle());
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("abstract-render-buffer"),
+            size: descriptor.size.max(1) as u64,
+            usage,
+            mapped_at_creation: false,
+        });
+        self.buffers.insert(handle, buffer);
+        Ok(handle)
+    }
+
+    fn create_texture(
+        &mut self,
+        descriptor: TextureDescriptor,
+    ) -> Result<TextureHandle, DeviceError> {
+        let format = match descriptor.format {
+            TextureFormat::Rgba8 => wgpu::TextureFormat::Rgba8Unorm,
+        };
+        if descriptor.width == 0 || descriptor.height == 0 {
+            return Err(DeviceError::InvalidResource);
+        }
+        let handle = TextureHandle::new(self.next_handle());
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("abstract-render-texture"),
+            size: wgpu::Extent3d {
+                width: descriptor.width,
+                height: descriptor.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.textures.insert(handle, texture);
+        Ok(handle)
+    }
+
+    fn submit(&mut self, commands: CommandList) -> Result<(), DeviceError> {
+        for command in commands.commands() {
+            match command {
+                Command::WriteBuffer {
+                    buffer,
+                    offset,
+                    bytes,
+                } => {
+                    let buffer = self
+                        .buffers
+                        .get(buffer)
+                        .ok_or(DeviceError::InvalidResource)?;
+                    self.queue.write_buffer(buffer, *offset as u64, bytes);
+                }
+                Command::WriteTexture {
+                    texture,
+                    width,
+                    height,
+                    bytes,
+                } => {
+                    let texture = self
+                        .textures
+                        .get(texture)
+                        .ok_or(DeviceError::InvalidResource)?;
+                    self.queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        bytes,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(4 * width),
+                            rows_per_image: Some(*height),
+                        },
+                        wgpu::Extent3d {
+                            width: *width,
+                            height: *height,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn destroy_buffer(&mut self, buffer: BufferHandle) {
+        self.buffers.remove(&buffer);
+    }
+
+    fn destroy_texture(&mut self, texture: TextureHandle) {
+        self.textures.remove(&texture);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
