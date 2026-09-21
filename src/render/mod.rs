@@ -257,9 +257,94 @@ impl RenderFrame {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RenderCapabilities {
+    pub partial_image_updates: bool,
+    pub persistent_resources: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceFailure {
+    Lost,
+    Outdated,
+    DeviceRemoved,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenderError {
+    InvalidFrame(&'static str),
+    BackendUnavailable(&'static str),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameOutcome {
+    submitted: bool,
+}
+
+impl FrameOutcome {
+    pub const fn submitted() -> Self {
+        Self { submitted: true }
+    }
+
+    pub const fn was_submitted(self) -> bool {
+        self.submitted
+    }
+}
+
+pub trait RenderTarget: Send {
+    fn capabilities(&self) -> RenderCapabilities;
+    fn resize(&mut self, viewport: Viewport) -> Result<(), RenderError>;
+    fn update_images(&mut self, updates: &[ImageUpdate]) -> Result<(), RenderError>;
+    fn render(&mut self, frame: &RenderFrame) -> Result<FrameOutcome, RenderError>;
+    fn evict_images(&mut self, images: &[ImageId]);
+    fn recover(&mut self, reason: SurfaceFailure) -> Result<(), RenderError>;
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ImageId, ImageRevision, ImageUpdate, RenderFrame, TileDraw, Viewport};
+    use super::{
+        FrameOutcome, ImageId, ImageRevision, ImageUpdate, RenderCapabilities, RenderError,
+        RenderFrame, RenderTarget, SurfaceFailure, TileDraw, Viewport,
+    };
+
+    #[derive(Default)]
+    struct RecordingTarget {
+        resized: Vec<Viewport>,
+        updated_images: usize,
+        rendered_frames: Vec<u64>,
+        evicted_images: usize,
+        recovered: Vec<SurfaceFailure>,
+    }
+
+    impl RenderTarget for RecordingTarget {
+        fn capabilities(&self) -> RenderCapabilities {
+            RenderCapabilities::default()
+        }
+
+        fn resize(&mut self, viewport: Viewport) -> Result<(), RenderError> {
+            self.resized.push(viewport);
+            Ok(())
+        }
+
+        fn update_images(&mut self, updates: &[ImageUpdate]) -> Result<(), RenderError> {
+            self.updated_images += updates.len();
+            Ok(())
+        }
+
+        fn render(&mut self, frame: &RenderFrame) -> Result<FrameOutcome, RenderError> {
+            self.rendered_frames.push(frame.frame_id());
+            Ok(FrameOutcome::submitted())
+        }
+
+        fn evict_images(&mut self, images: &[ImageId]) {
+            self.evicted_images += images.len();
+        }
+
+        fn recover(&mut self, reason: SurfaceFailure) -> Result<(), RenderError> {
+            self.recovered.push(reason);
+            Ok(())
+        }
+    }
 
     #[test]
     fn frame_references_stable_images_and_preserves_draw_order() {
@@ -294,5 +379,23 @@ mod tests {
         assert!(
             ImageUpdate::new(ImageId::new(4), ImageRevision::new(9), 2, 1, vec![0; 4]).is_err()
         );
+    }
+
+    #[test]
+    fn render_target_contract_keeps_lifecycle_independent_of_backend() {
+        let mut target = RecordingTarget::default();
+        target.resize(Viewport::new(640, 480)).unwrap();
+        target.update_images(&[]).unwrap();
+        target
+            .render(&RenderFrame::new(11, Viewport::new(640, 480)))
+            .unwrap();
+        target.evict_images(&[ImageId::new(3)]);
+        target.recover(SurfaceFailure::Lost).unwrap();
+
+        assert_eq!(target.resized, vec![Viewport::new(640, 480)]);
+        assert_eq!(target.updated_images, 0);
+        assert_eq!(target.rendered_frames, vec![11]);
+        assert_eq!(target.evicted_images, 1);
+        assert_eq!(target.recovered, vec![SurfaceFailure::Lost]);
     }
 }
