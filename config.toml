@@ -2,7 +2,8 @@
 debug_global = true
 
 [renderer]
-backend = "cpu"
+backend = "gpu"
+gpu_backend = "gl"
 width = 800
 height = 600
 max_iterations = 256
@@ -37,5 +38,5 @@ slow_frame_threshold_ms = 100
 workers = 8
 
 [orchestrator.tile]
-width = 30
-height = 20
+width = 40
+height = 40

@@ -1,5 +1,6 @@
 //! Backend-independent GPU composition contracts.
 
+use crate::config::GpuBackend;
 use crate::geometry::ScreenPoint;
 use crate::{Sprite, TileSprite};
 use std::collections::HashMap;
@@ -174,14 +175,27 @@ pub struct GpuContext {
 }
 
 impl GpuContext {
-    pub async fn initialize() -> Result<Self, String> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    pub async fn initialize(gpu_backend: GpuBackend) -> Result<Self, String> {
+        let backends = match gpu_backend {
+            GpuBackend::Auto => wgpu::Backends::all(),
+            GpuBackend::Gl => wgpu::Backends::GL,
+        };
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions::default())
             .await
             .map_err(|error| format!("GPU adapter unavailable: {error}"))?;
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
+            .request_device(&wgpu::DeviceDescriptor {
+                // The renderer uses vertex/fragment shaders only.  The default
+                // WebGPU limits require compute support that legacy GL adapters
+                // may correctly report as unavailable.
+                required_limits: adapter.limits(),
+                ..Default::default()
+            })
             .await
             .map_err(|error| format!("GPU device unavailable: {error}"))?;
         Ok(Self {
