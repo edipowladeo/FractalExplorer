@@ -64,6 +64,8 @@ fn format_frame_history_line(entry: Option<FrameHistoryEntry>) -> String {
 pub enum Palette {
     Shade,
     Rainbow,
+    #[serde(rename = "inverted_rainbow")]
+    InvertedRainbow,
 }
 
 impl Default for Palette {
@@ -81,6 +83,7 @@ impl<'de> Deserialize<'de> for Palette {
         match value.to_ascii_lowercase().as_str() {
             "shade" => Ok(Self::Shade),
             "rainbow" => Ok(Self::Rainbow),
+            "inverted_rainbow" => Ok(Self::InvertedRainbow),
             invalid => {
                 crate::print_local!(
                     "Aviso: paleta inválida '{invalid}'; usando fallback 'rainbow'"
@@ -899,6 +902,7 @@ fn color(iterations: u64, max_iterations: u64, palette: Palette, palette_period:
     match palette {
         Palette::Shade => shade_color(iterations, max_iterations),
         Palette::Rainbow => rainbow_color(iterations, palette_period),
+        Palette::InvertedRainbow => inverted_rainbow_color(iterations, palette_period),
     }
 }
 
@@ -926,6 +930,11 @@ fn rainbow_color(iterations: u64, palette_period: f64) -> u32 {
     ((red * 255.0) as u32) << 16 | ((green * 255.0) as u32) << 8 | (blue * 255.0) as u32
 }
 
+fn inverted_rainbow_color(iterations: u64, palette_period: f64) -> u32 {
+    let color = rainbow_color(iterations, palette_period);
+    ((color & 0x0000ff) << 16) | (color & 0x00ff00) | ((color & 0xff0000) >> 16)
+}
+
 fn has_live_window_size((width, height): (usize, usize)) -> bool {
     width > 0 && height > 0
 }
@@ -936,8 +945,8 @@ mod tests {
         allocation_screen_rect, draw_mouse_marker, draw_rectangle_outline, format_coordinates,
         format_copied_coordinates, format_frame_history_line, format_layer_overlay,
         format_worker_queue_line, format_worker_status_line, has_live_window_size,
-        middle_click_coordinate_report, sprite_from_tile, FrameTimingRing, Palette, RenderSurface,
-        ScreenRect,
+        inverted_rainbow_color, middle_click_coordinate_report, rainbow_color, sprite_from_tile,
+        FrameTimingRing, Palette, RenderSurface, ScreenRect,
     };
     use crate::geometry::{ComplexPoint, ScreenPoint, ScreenSize};
     use crate::{Mandelbrot, Orchestrator, Tile, TiledInfiniteCanvas};
@@ -1006,6 +1015,30 @@ mod tests {
             crate::config::RendererConfig::default().palette,
             Palette::Rainbow
         );
+    }
+
+    #[test]
+    fn inverted_rainbow_swaps_red_and_blue_channels() {
+        let rainbow = rainbow_color(3, 5.0);
+        let inverted = inverted_rainbow_color(3, 5.0);
+
+        assert_eq!(
+            inverted,
+            ((rainbow & 0x0000ff) << 16) | (rainbow & 0x00ff00) | ((rainbow & 0xff0000) >> 16)
+        );
+    }
+
+    #[test]
+    fn parses_inverted_rainbow_palette_name() {
+        let config: crate::config::AppConfig = toml::from_str(
+            r#"
+            [renderer]
+            palette = "inverted_rainbow"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.renderer.palette, Palette::InvertedRainbow);
     }
 
     #[test]
