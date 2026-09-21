@@ -6,6 +6,7 @@ use crate::render::device::{
     BufferDescriptor, BufferHandle, BufferUsage, Command, CommandList, DeviceError, GraphicsDevice,
     TextureDescriptor, TextureFormat, TextureHandle,
 };
+use crate::render::RenderFrame;
 use crate::{Sprite, TileSprite};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -484,6 +485,24 @@ pub fn build_draw_commands(tile_sprites: &[(&TileSprite, TextureKey)]) -> Vec<Ti
         .collect()
 }
 
+pub fn tile_commands_for_frame(frame: &RenderFrame) -> Vec<TileDrawCommand> {
+    frame
+        .tiles()
+        .iter()
+        .map(|tile| {
+            let destination = tile.destination();
+            TileDrawCommand {
+                texture: TextureKey {
+                    tile: tile.image().value() as usize,
+                    content_hash: tile.revision().value(),
+                },
+                position: ScreenPoint::new(destination.x, destination.y),
+                size: (destination.width, destination.height),
+            }
+        })
+        .collect()
+}
+
 pub fn texture_keys_for_commands(commands: &[TileDrawCommand]) -> Vec<TextureKey> {
     let mut keys = Vec::new();
     for command in commands {
@@ -773,6 +792,33 @@ mod tests {
         ]);
         assert_eq!(commands[0].size, (8, 6));
         assert_eq!(commands[1].size, (2, 2));
+    }
+
+    #[test]
+    fn common_render_frame_preserves_gpu_texture_identity_and_destination() {
+        let frame = RenderFrame::new(3, crate::render::Viewport::new(100, 80)).with_tile(
+            crate::render::TileDraw::new(
+                crate::render::ImageId::new(9),
+                crate::render::ImageRevision::new(17),
+                0,
+            )
+            .with_destination(crate::render::Rect::new(4, 6, 20, 10)),
+        );
+
+        let commands = tile_commands_for_frame(&frame);
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(
+            commands[0],
+            TileDrawCommand {
+                texture: TextureKey {
+                    tile: 9,
+                    content_hash: 17,
+                },
+                position: ScreenPoint::new(4, 6),
+                size: (20, 10),
+            }
+        );
     }
 
     #[test]
