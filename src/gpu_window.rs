@@ -140,7 +140,6 @@ impl GpuAppState {
             "configuracao processada",
         );
 
-        self.canvas.expand_one_layer_per_frame();
         self.canvas.record_frame_event(
             crate::orchestrator::FrameEventKind::SurfacePrepared,
             "superficie preparada",
