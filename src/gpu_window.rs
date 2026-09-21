@@ -1,7 +1,7 @@
 use crate::gpu::{
-    create_tile_pipeline, debug_overlay_upload, texture_keys_for_commands,
-    tile_vertices_for_commands, upload_tile_texture, GpuContext, GpuTextureStore, GpuTileTexture,
-    PreparedTileBatch, TextureCache, TileDrawCommand,
+    create_tile_pipeline, debug_overlay_upload, debug_overlay_upload_with_rectangles,
+    texture_keys_for_commands, tile_vertices_for_commands, upload_tile_texture, GpuContext,
+    GpuTextureStore, GpuTileTexture, PreparedTileBatch, TextureCache, TileDrawCommand,
 };
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -32,6 +32,17 @@ fn select_present_mode(modes: &[wgpu::PresentMode]) -> Option<wgpu::PresentMode>
         .into_iter()
         .find(|preferred| modes.contains(preferred))
         .or_else(|| modes.first().copied())
+}
+
+fn centered_bounds(width: usize, height: usize, ratio: f64) -> (i32, i32, i32, i32) {
+    assert!(ratio > 0.0, "viewport ratio must be positive");
+    let width = width.max(1) as f64;
+    let height = height.max(1) as f64;
+    let left = ((width * (1.0 - ratio)) / 2.0).round() as i32;
+    let top = ((height * (1.0 - ratio)) / 2.0).round() as i32;
+    let right = (width - 1.0 - left as f64).round() as i32;
+    let bottom = (height - 1.0 - top as f64).round() as i32;
+    (left, top, right, bottom)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +99,8 @@ pub struct GpuAppState {
     pub texture_cache: TextureCache,
     pub last_frame_metrics: Option<GpuFrameMetrics>,
     pub frame_timing_ring: VecDeque<(u64, Duration)>,
+    allocation_bounds: (i32, i32, i32, i32),
+    deallocation_bounds: (i32, i32, i32, i32),
     cursor: crate::geometry::ScreenPoint,
     left_button_down: bool,
 }
@@ -98,6 +111,16 @@ impl GpuAppState {
         orchestrator: crate::Orchestrator,
         config: crate::config::RendererConfig,
     ) -> Self {
+        let allocation_bounds = centered_bounds(
+            config.width,
+            config.height,
+            config.effective_allocation_ratio(),
+        );
+        let deallocation_bounds = centered_bounds(
+            config.width,
+            config.height,
+            config.effective_deallocation_ratio(),
+        );
         Self {
             canvas,
             orchestrator,
@@ -106,6 +129,8 @@ impl GpuAppState {
             texture_cache: TextureCache::default(),
             last_frame_metrics: None,
             frame_timing_ring: VecDeque::with_capacity(GPU_FRAME_HISTORY_CAPACITY),
+            allocation_bounds,
+            deallocation_bounds,
             cursor: crate::geometry::ScreenPoint::new(0, 0),
             left_button_down: false,
         }
@@ -170,13 +195,19 @@ impl GpuAppState {
             crate::orchestrator::FrameEventKind::SurfacePrepared,
             "superficie preparada",
         );
-        let bounds = (
-            0,
-            0,
-            self.config.width.saturating_sub(1) as i32,
-            self.config.height.saturating_sub(1) as i32,
+        self.allocation_bounds = centered_bounds(
+            self.config.width,
+            self.config.height,
+            self.config.effective_allocation_ratio(),
         );
-        self.canvas.ensure_screen_coverage(bounds);
+        self.deallocation_bounds = centered_bounds(
+            self.config.width,
+            self.config.height,
+            self.config.effective_deallocation_ratio(),
+        );
+        self.canvas
+            .trim_outside_allocation(self.deallocation_bounds);
+        self.canvas.ensure_screen_coverage(self.allocation_bounds);
         self.canvas.record_frame_event(
             crate::orchestrator::FrameEventKind::ScreenCoverageCompleted,
             "cobertura da tela concluida",
@@ -333,17 +364,23 @@ impl GpuWindowApp {
 
         self.overlay_texture = None;
         self.overlay_command = None;
-        if self
+        let show_frame_overlay = self
             .state
             .as_ref()
-            .is_some_and(|state| state.config.debug.text_overlay_frames)
-        {
+            .is_some_and(|state| state.config.debug.text_overlay_frames);
+        let show_envelope = self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.config.debug.show_allocation_envelope);
+        if show_frame_overlay || show_envelope {
             let history = self
                 .state
                 .as_ref()
                 .map(|state| format_gpu_frame_history(&state.frame_timing_ring))
                 .unwrap_or_default();
-            let text = if history.is_empty() {
+            let text = if !show_frame_overlay {
+                String::new()
+            } else if history.is_empty() {
                 format!(
                     "#{} tiles:{}",
                     self.tile_commands.len(),
@@ -358,7 +395,34 @@ impl GpuWindowApp {
                 )
             };
             let line_count = text.lines().count().max(1);
-            let upload = debug_overlay_upload(&text, 240, line_count as u32 * 16);
+            let (overlay_width, overlay_height) = if show_envelope {
+                self.surface_config
+                    .as_ref()
+                    .map(|config| (config.width, config.height))
+                    .unwrap_or((1, 1))
+            } else {
+                (240, line_count as u32 * 16)
+            };
+            let upload = if show_envelope {
+                let rectangles = self
+                    .state
+                    .as_ref()
+                    .map(|state| {
+                        vec![
+                            (state.allocation_bounds, [255, 0, 0, 255]),
+                            (state.deallocation_bounds, [255, 255, 0, 255]),
+                        ]
+                    })
+                    .unwrap_or_default();
+                debug_overlay_upload_with_rectangles(
+                    &text,
+                    overlay_width,
+                    overlay_height,
+                    &rectangles,
+                )
+            } else {
+                debug_overlay_upload(&text, overlay_width, overlay_height)
+            };
             let key = upload.key;
             if let (Some(context), Some(layout), Some(surface_config)) = (
                 &self.context,
@@ -366,10 +430,14 @@ impl GpuWindowApp {
                 &self.surface_config,
             ) {
                 self.overlay_texture = Some(upload_tile_texture(context, layout, &upload));
-                let position = crate::geometry::ScreenPoint::new(
-                    8,
-                    surface_config.height.saturating_sub(upload.height + 8) as i32,
-                );
+                let position = if show_envelope {
+                    crate::geometry::ScreenPoint::new(0, 0)
+                } else {
+                    crate::geometry::ScreenPoint::new(
+                        8,
+                        surface_config.height.saturating_sub(upload.height + 8) as i32,
+                    )
+                };
                 let command = TileDrawCommand {
                     texture: key,
                     position,
@@ -767,6 +835,12 @@ mod tests {
             select_present_mode(&[wgpu::PresentMode::Fifo]),
             Some(wgpu::PresentMode::Fifo)
         );
+    }
+
+    #[test]
+    fn reduced_viewport_is_centered_and_scales_both_axes() {
+        assert_eq!(centered_bounds(800, 600, 1.0), (0, 0, 799, 599));
+        assert_eq!(centered_bounds(800, 600, 0.7), (120, 90, 679, 509));
     }
 }
 
