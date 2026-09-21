@@ -102,11 +102,91 @@ pub trait GraphicsDevice: Send {
     fn destroy_texture(&mut self, texture: TextureHandle);
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CachedTexture {
+    handle: TextureHandle,
+    revision: ImageRevision,
+    dimensions: (u32, u32),
+}
+
+#[derive(Debug, Default)]
+pub struct TextureResourceCache {
+    textures: HashMap<ImageId, CachedTexture>,
+}
+
+impl TextureResourceCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn handle(&self, image: ImageId) -> Option<TextureHandle> {
+        self.textures.get(&image).map(|texture| texture.handle)
+    }
+
+    pub fn upload_updates<D: GraphicsDevice>(
+        &mut self,
+        device: &mut D,
+        updates: &[ImageUpdate],
+    ) -> Result<usize, DeviceError> {
+        let mut commands = CommandList::default();
+        let mut uploaded = 0;
+        for update in updates {
+            let dimensions = update.dimensions();
+            if self
+                .textures
+                .get(&update.image())
+                .is_some_and(|cached| cached.revision.value() >= update.revision().value())
+            {
+                continue;
+            }
+
+            let handle = match self.textures.get(&update.image()) {
+                Some(cached) if cached.dimensions == dimensions => cached.handle,
+                Some(cached) => {
+                    device.destroy_texture(cached.handle);
+                    device.create_texture(TextureDescriptor {
+                        width: dimensions.0,
+                        height: dimensions.1,
+                        format: TextureFormat::Rgba8,
+                    })?
+                }
+                None => device.create_texture(TextureDescriptor {
+                    width: dimensions.0,
+                    height: dimensions.1,
+                    format: TextureFormat::Rgba8,
+                })?,
+            };
+            commands.write_texture(handle, update.rgba8().to_vec());
+            self.textures.insert(
+                update.image(),
+                CachedTexture {
+                    handle,
+                    revision: update.revision(),
+                    dimensions,
+                },
+            );
+            uploaded += 1;
+        }
+        if uploaded > 0 {
+            device.submit(commands)?;
+        }
+        Ok(uploaded)
+    }
+
+    pub fn evict<D: GraphicsDevice>(&mut self, device: &mut D, images: &[ImageId]) {
+        for image in images {
+            if let Some(texture) = self.textures.remove(image) {
+                device.destroy_texture(texture.handle);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         BufferDescriptor, BufferHandle, BufferUsage, Command, CommandList, DeviceError,
-        GraphicsDevice, TextureDescriptor, TextureFormat, TextureHandle,
+        GraphicsDevice, TextureDescriptor, TextureFormat, TextureHandle, TextureResourceCache,
     };
 
     #[derive(Default)]
@@ -172,4 +252,39 @@ mod tests {
             Command::WriteBuffer { offset: 4, .. }
         ));
     }
+
+    #[test]
+    fn texture_cache_uploads_only_new_revisions_and_reuses_same_dimensions() {
+        let mut device = RecordingDevice::default();
+        let mut cache = TextureResourceCache::new();
+        let first = crate::render::ImageUpdate::new(
+            crate::render::ImageId::new(7),
+            crate::render::ImageRevision::new(1),
+            1,
+            1,
+            vec![1, 2, 3, 255],
+        )
+        .unwrap();
+        let newer = crate::render::ImageUpdate::new(
+            crate::render::ImageId::new(7),
+            crate::render::ImageRevision::new(2),
+            1,
+            1,
+            vec![4, 5, 6, 255],
+        )
+        .unwrap();
+
+        assert_eq!(
+            cache.upload_updates(&mut device, &[first.clone()]).unwrap(),
+            1
+        );
+        let handle = cache.handle(crate::render::ImageId::new(7));
+        assert_eq!(cache.upload_updates(&mut device, &[first]).unwrap(), 0);
+        assert_eq!(cache.upload_updates(&mut device, &[newer]).unwrap(), 1);
+        assert_eq!(cache.handle(crate::render::ImageId::new(7)), handle);
+        assert_eq!(device.submitted.len(), 2);
+    }
 }
+use std::collections::HashMap;
+
+use super::{ImageId, ImageRevision, ImageUpdate};
