@@ -3,6 +3,7 @@ use crate::gpu::{
     tile_vertices_for_commands, upload_tile_texture, GpuContext, GpuTextureStore, GpuTileTexture,
     PreparedTileBatch, TextureCache, TileDrawCommand,
 };
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use wgpu::util::DeviceExt;
@@ -14,6 +15,16 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 fn needs_batch_rebuild(previous: (u32, u32), next: (u32, u32)) -> bool {
     previous != next
+}
+
+const GPU_FRAME_HISTORY_CAPACITY: usize = 8;
+
+fn format_gpu_frame_history(history: &VecDeque<(u64, Duration)>) -> String {
+    history
+        .iter()
+        .map(|(frame, duration)| format!("#{frame}:{:.3}ms", duration.as_secs_f64() * 1_000.0))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +80,7 @@ pub struct GpuAppState {
     pub prepared_batch: Option<PreparedTileBatch>,
     pub texture_cache: TextureCache,
     pub last_frame_metrics: Option<GpuFrameMetrics>,
+    pub frame_timing_ring: VecDeque<(u64, Duration)>,
     cursor: crate::geometry::ScreenPoint,
     left_button_down: bool,
 }
@@ -86,6 +98,7 @@ impl GpuAppState {
             prepared_batch: None,
             texture_cache: TextureCache::default(),
             last_frame_metrics: None,
+            frame_timing_ring: VecDeque::with_capacity(GPU_FRAME_HISTORY_CAPACITY),
             cursor: crate::geometry::ScreenPoint::new(0, 0),
             left_button_down: false,
         }
@@ -135,6 +148,12 @@ impl GpuAppState {
     pub fn prepare_visible_batch(&mut self) {
         let preparation_started = Instant::now();
         self.canvas.begin_frame();
+        if let Some(timing) = self.canvas.last_finished_frame_timing() {
+            self.frame_timing_ring.push_back(timing);
+            while self.frame_timing_ring.len() > GPU_FRAME_HISTORY_CAPACITY {
+                self.frame_timing_ring.pop_front();
+            }
+        }
         self.canvas.record_frame_event(
             crate::orchestrator::FrameEventKind::ConfigurationProcessed,
             "configuracao processada",
@@ -312,12 +331,27 @@ impl GpuWindowApp {
             .as_ref()
             .is_some_and(|state| state.config.debug.text_overlay_frames)
         {
-            let text = format!(
-                "#{} tiles:{}",
-                self.tile_commands.len(),
-                self.tile_commands.len()
-            );
-            let upload = debug_overlay_upload(&text, 180, 16);
+            let history = self
+                .state
+                .as_ref()
+                .map(|state| format_gpu_frame_history(&state.frame_timing_ring))
+                .unwrap_or_default();
+            let text = if history.is_empty() {
+                format!(
+                    "#{} tiles:{}",
+                    self.tile_commands.len(),
+                    self.tile_commands.len()
+                )
+            } else {
+                format!(
+                    "#{} tiles:{}\n{}",
+                    self.tile_commands.len(),
+                    self.tile_commands.len(),
+                    history
+                )
+            };
+            let line_count = text.lines().count().max(1);
+            let upload = debug_overlay_upload(&text, 240, line_count as u32 * 16);
             let key = upload.key;
             if let (Some(context), Some(layout), Some(surface_config)) = (
                 &self.context,
@@ -558,7 +592,9 @@ impl ApplicationHandler for GpuWindowApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{needs_batch_rebuild, GpuFrameMetrics, PreparedTileBatch};
+    use super::{
+        format_gpu_frame_history, needs_batch_rebuild, GpuFrameMetrics, PreparedTileBatch,
+    };
     use crate::geometry::ScreenPoint;
     use crate::gpu::{TextureKey, TextureUpload, TileDrawCommand};
     use std::time::Duration;
@@ -628,6 +664,15 @@ mod tests {
             .prepared_batch
             .as_ref()
             .is_some_and(|batch| !batch.commands.is_empty()));
+    }
+
+    #[test]
+    fn frame_history_overlay_formats_one_line_per_ring_entry() {
+        let history = std::collections::VecDeque::from([
+            (7, Duration::from_micros(1_250)),
+            (8, Duration::from_micros(2_500)),
+        ]);
+        assert_eq!(format_gpu_frame_history(&history), "#7:1.250ms\n#8:2.500ms");
     }
 }
 
