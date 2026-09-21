@@ -12,7 +12,6 @@ use crate::render::{
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -35,6 +34,10 @@ fn vertex_buffer_capacity(current: usize, required: usize) -> usize {
         }
     }
     capacity
+}
+
+fn vertex_buffer_needs_recreation(current_capacity: usize, required_vertices: usize) -> bool {
+    required_vertices > current_capacity
 }
 
 const GPU_FRAME_HISTORY_CAPACITY: usize = 8;
@@ -393,9 +396,11 @@ pub struct GpuWindowApp {
     tile_vertex_buffer: Option<wgpu::Buffer>,
     tile_vertex_capacity: usize,
     overlay_vertex_buffer: Option<wgpu::Buffer>,
+    overlay_vertex_capacity: usize,
     overlay_texture: Option<GpuTileTexture>,
     overlay_command: Option<TileDrawCommand>,
     envelope_vertex_buffer: Option<wgpu::Buffer>,
+    envelope_vertex_capacity: usize,
     envelope_texture: Option<GpuTileTexture>,
     envelope_command: Option<TileDrawCommand>,
     envelope_cache_key: Option<EnvelopeCacheKey>,
@@ -425,9 +430,11 @@ impl GpuWindowApp {
             tile_vertex_buffer: None,
             tile_vertex_capacity: 0,
             overlay_vertex_buffer: None,
+            overlay_vertex_capacity: 0,
             overlay_texture: None,
             overlay_command: None,
             envelope_vertex_buffer: None,
+            envelope_vertex_capacity: 0,
             envelope_texture: None,
             envelope_command: None,
             envelope_cache_key: None,
@@ -457,8 +464,11 @@ impl GpuWindowApp {
         surface.configure(&context.device, config);
         if needs_batch_rebuild(previous, (config.width, config.height)) {
             self.tile_vertex_buffer = None;
+            self.tile_vertex_capacity = 0;
             self.overlay_vertex_buffer = None;
+            self.overlay_vertex_capacity = 0;
             self.envelope_vertex_buffer = None;
+            self.envelope_vertex_capacity = 0;
             self.envelope_texture = None;
             self.envelope_command = None;
             self.envelope_cache_key = None;
@@ -630,13 +640,29 @@ impl GpuWindowApp {
                     surface_config.width,
                     surface_config.height,
                 );
-                self.overlay_vertex_buffer = Some(context.device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
-                        label: Some("gpu-debug-overlay-vertices"),
-                        contents: bytemuck::cast_slice(&vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    },
-                ));
+                let required_vertices = vertices.len();
+                let capacity =
+                    vertex_buffer_capacity(self.overlay_vertex_capacity, required_vertices);
+                if self.overlay_vertex_buffer.is_none()
+                    || vertex_buffer_needs_recreation(
+                        self.overlay_vertex_capacity,
+                        required_vertices,
+                    )
+                {
+                    self.overlay_vertex_buffer =
+                        Some(context.device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("gpu-debug-overlay-vertices"),
+                            size: (capacity * std::mem::size_of::<crate::gpu::TileVertex>()) as u64,
+                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false,
+                        }));
+                    self.overlay_vertex_capacity = capacity;
+                }
+                if let Some(buffer) = &self.overlay_vertex_buffer {
+                    context
+                        .queue
+                        .write_buffer(buffer, 0, bytemuck::cast_slice(&vertices));
+                }
                 self.overlay_command = Some(command);
             }
             self.record_gpu_upload_stage(
@@ -686,13 +712,30 @@ impl GpuWindowApp {
                         surface_config.width,
                         surface_config.height,
                     );
-                    self.envelope_vertex_buffer = Some(context.device.create_buffer_init(
-                        &wgpu::util::BufferInitDescriptor {
-                            label: Some("gpu-allocation-envelope-vertices"),
-                            contents: bytemuck::cast_slice(&vertices),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        },
-                    ));
+                    let required_vertices = vertices.len();
+                    let capacity =
+                        vertex_buffer_capacity(self.envelope_vertex_capacity, required_vertices);
+                    if self.envelope_vertex_buffer.is_none()
+                        || vertex_buffer_needs_recreation(
+                            self.envelope_vertex_capacity,
+                            required_vertices,
+                        )
+                    {
+                        self.envelope_vertex_buffer =
+                            Some(context.device.create_buffer(&wgpu::BufferDescriptor {
+                                label: Some("gpu-allocation-envelope-vertices"),
+                                size: (capacity * std::mem::size_of::<crate::gpu::TileVertex>())
+                                    as u64,
+                                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                                mapped_at_creation: false,
+                            }));
+                        self.envelope_vertex_capacity = capacity;
+                    }
+                    if let Some(buffer) = &self.envelope_vertex_buffer {
+                        context
+                            .queue
+                            .write_buffer(buffer, 0, bytemuck::cast_slice(&vertices));
+                    }
                 }
             }
             self.record_gpu_upload_stage(
@@ -702,6 +745,8 @@ impl GpuWindowApp {
                 "envelope habilitado",
             );
         } else {
+            self.envelope_vertex_buffer = None;
+            self.envelope_vertex_capacity = 0;
             self.envelope_texture = None;
             self.envelope_command = None;
             self.envelope_cache_key = None;
@@ -1054,7 +1099,8 @@ impl ApplicationHandler for GpuWindowApp {
 mod tests {
     use super::{
         centered_bounds, format_gpu_frame_history, format_gpu_upload_stage, needs_batch_rebuild,
-        select_present_mode, vertex_buffer_capacity, GpuFrameMetrics, PreparedTileBatch,
+        select_present_mode, vertex_buffer_capacity, vertex_buffer_needs_recreation,
+        GpuFrameMetrics, PreparedTileBatch,
     };
     use crate::geometry::ScreenPoint;
     use crate::gpu::{TextureKey, TextureUpload, TileDrawCommand};
@@ -1128,6 +1174,13 @@ mod tests {
         assert_eq!(vertex_buffer_capacity(96, 48), 96);
         assert_eq!(vertex_buffer_capacity(96, 97), 192);
         assert_eq!(vertex_buffer_capacity(0, 1), 1);
+    }
+
+    #[test]
+    fn vertex_buffer_recreation_is_needed_only_after_capacity_is_exceeded() {
+        assert!(!vertex_buffer_needs_recreation(96, 96));
+        assert!(!vertex_buffer_needs_recreation(96, 48));
+        assert!(vertex_buffer_needs_recreation(96, 97));
     }
 
     #[test]

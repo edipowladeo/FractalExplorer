@@ -11,6 +11,9 @@ pub mod gpu_window;
 pub mod input;
 pub mod orchestrator;
 pub mod output;
+// TODO(profiling): reativar quando src/profiling.rs e a feature correspondente
+// forem adicionados pelo agente responsável.
+// pub mod profiling;
 pub mod precision;
 pub mod render;
 pub mod renderer;
@@ -34,6 +37,15 @@ pub struct Sprite {
     height: usize,
     pixels: Vec<u32>,
 }
+
+// TODO(profiling): reativar junto com o módulo de profiling.
+// #[cfg(test)]
+// mod profiling_tests {
+//     #[test]
+//     fn profiling_reports_whether_the_feature_is_enabled() {
+//         assert_eq!(crate::profiling::enabled(), cfg!(feature = "profiling"));
+//     }
+// }
 
 impl Sprite {
     /// Creates a sprite from a row-major pixel buffer.
