@@ -140,6 +140,23 @@ impl GpuAppState {
             "configuracao processada",
         );
 
+        self.canvas.expand_one_layer_per_frame();
+        self.canvas.record_frame_event(
+            crate::orchestrator::FrameEventKind::SurfacePrepared,
+            "superficie preparada",
+        );
+        let bounds = (
+            0,
+            0,
+            self.config.width.saturating_sub(1) as i32,
+            self.config.height.saturating_sub(1) as i32,
+        );
+        self.canvas.ensure_screen_coverage(bounds);
+        self.canvas.record_frame_event(
+            crate::orchestrator::FrameEventKind::ScreenCoverageCompleted,
+            "cobertura da tela concluida",
+        );
+
         for layer in self.canvas.layers() {
             self.orchestrator.render_layer(layer);
         }
@@ -159,6 +176,15 @@ impl GpuAppState {
                     let Some(tile) = layer.tile(row, column) else {
                         continue;
                     };
+                    if tile.status() == crate::TileStatus::Completed && tile.sprite().is_none() {
+                        let sprite = Arc::new(crate::renderer::sprite_from_tile(
+                            tile,
+                            self.config.effective_max_iterations() as u64,
+                            self.config.palette,
+                            self.config.palette_period,
+                        ));
+                        tile.set_sprite(sprite);
+                    }
                     let Some(sprite) = tile.sprite() else {
                         continue;
                     };
@@ -574,6 +600,35 @@ mod tests {
     fn resize_invalidates_vertices_only_when_surface_dimensions_change() {
         assert!(!needs_batch_rebuild((800, 600), (800, 600)));
         assert!(needs_batch_rebuild((800, 600), (1024, 768)));
+    }
+
+    #[test]
+    fn gpu_state_publishes_a_completed_tile_after_workers_run() {
+        let mut canvas = crate::TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-2.0, 1.0),
+            8,
+            8,
+            0.01,
+            ScreenPoint::new(0, 0),
+            8.0,
+            0.5,
+        );
+        canvas.set_initial_zoom(1.0);
+        let orchestrator = crate::Orchestrator::with_worker_count(crate::Mandelbrot::new(32), 2);
+        let mut state = super::GpuAppState::new(
+            canvas,
+            orchestrator,
+            crate::config::RendererConfig::default(),
+        );
+
+        state.prepare_visible_batch();
+        std::thread::sleep(Duration::from_millis(50));
+        state.prepare_visible_batch();
+
+        assert!(state
+            .prepared_batch
+            .as_ref()
+            .is_some_and(|batch| !batch.commands.is_empty()));
     }
 }
 

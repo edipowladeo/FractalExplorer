@@ -91,7 +91,7 @@ impl<'de> Deserialize<'de> for Palette {
     }
 }
 
-fn sprite_from_tile(
+pub(crate) fn sprite_from_tile(
     tile: &Tile,
     max_iterations: u64,
     palette: Palette,
