@@ -2,7 +2,7 @@
 debug_global = true
 
 [renderer]
-backend = "gpu"
+backend = "cpu"
 gpu_backend = "gl"
 width = 800
 height = 600
@@ -16,6 +16,9 @@ deallocation_ratio = 0.8
 max_apparent_pixel_size_exponent = 3
 min_apparent_pixel_size = 0.8
 zoom_multiplier = 1.8
+# Palette options: "rainbow", "inverted_rainbow" or "shade".
+palette = "rainbow"
+#palette = "inverted_rainbow"
 #palette = "shade"
 palette_period = 50.0
 #starting_point = "x=-1.50, y=0.0"
