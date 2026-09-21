@@ -439,8 +439,19 @@ impl GpuWindowApp {
         ) else {
             return;
         };
-        for upload in batch.uploads {
-            store.upload(context, layout, upload);
+        let image_updates = self
+            .state
+            .as_ref()
+            .map(|state| state.prepared_image_updates.clone())
+            .unwrap_or_default();
+        if image_updates.is_empty() {
+            for upload in batch.uploads {
+                store.upload(context, layout, upload);
+            }
+        } else {
+            for update in &image_updates {
+                store.upload_image_update(context, layout, update);
+            }
         }
         store.retain_only(texture_keys_for_commands(&frame_commands));
         if let Some(surface_config) = &self.surface_config {
