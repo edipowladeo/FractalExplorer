@@ -11,6 +11,7 @@ pub mod input;
 pub mod orchestrator;
 pub mod output;
 pub mod precision;
+pub mod render;
 pub mod renderer;
 
 pub use geometry::{Camera, CameraEnvelope};
