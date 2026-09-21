@@ -17,19 +17,24 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## TODO
 
-### T029 — Renderização integral na GPU com texturas e shaders
+### T029 — Renderização modular com destinos plugáveis
 
-- **Objetivo:** substituir a composição CPU de sprites por texturas e shaders GPU,
-  preservando o caminho CPU como referência e fallback durante a migração.
+- **Objetivo:** transformar o spike GPU validado em apenas mais um destino de
+  renderização, preservando um único caminho comum para configuração, janela,
+  input, canvas, tiles, overlays, instrumentação e encerramento.
 - **Plano:** ver [plano de implementação de T029](task-descriptions/T029-gpu-textures-shaders.md).
 - **Dependências:** T003, T005, T006 e T007; a primeira fatia pode reutilizar o
   processador CPU e os tiles atuais, migrando inicialmente apenas a composição.
-- **Critérios de aceitação:** composição por GPU sem `Sprite::draw_into_scaled`
-  no caminho GPU; equivalência CPU/GPU dentro de tolerância documentada;
-  navegação, camadas, resize, tiles progressivos, overlays e fallback CPU
-  preservados; renderer legado selecionável por flag; contratos comuns
-  multiplataforma sem dependência Windows; backend GPU Windows isolado; testes
-  GREEN, refactor, commit e push confirmados.
+- **Decisão arquitetural:** `RenderTarget` (apresentação) e `TileProcessor`
+  (cálculo CPU/GPGPU) serão plugins independentes. Recursos gráficos serão
+  encapsulados por handles, descritores, command lists e `GraphicsDevice`, sem
+  tipos de `wgpu`, `winit`, `minifb`, Metal ou OpenCL no domínio.
+- **Critérios de aceitação:** um único `ApplicationController` e `FrameBuilder`;
+  CPU/GPU selecionáveis por factory; equivalência dentro de tolerância
+  documentada; recursos comuns independentes do destino; buffers e texturas
+  persistentes; renderer legado como fallback; Metal e GPGPU adicionáveis sem
+  modificar canvas, UI, overlays ou instrumentação; testes GREEN, refactor,
+  commits focados e push confirmados.
 - **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
 
 ### T026 — Investigar e melhorar a precisão para zoom profundo
