@@ -6,7 +6,7 @@ use crate::render::device::{
     BufferDescriptor, BufferHandle, BufferUsage, Command, CommandList, DeviceError, GraphicsDevice,
     TextureDescriptor, TextureFormat, TextureHandle,
 };
-use crate::render::RenderFrame;
+use crate::render::{ImageUpdate, RenderFrame};
 use crate::{Sprite, TileSprite};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -649,6 +649,28 @@ impl GpuTextureStore {
     ) {
         let texture = upload_tile_texture(context, layout, &upload);
         self.textures.insert(upload.key, texture);
+    }
+
+    pub fn upload_image_update(
+        &mut self,
+        context: &GpuContext,
+        layout: &wgpu::BindGroupLayout,
+        update: &ImageUpdate,
+    ) {
+        let (width, height) = update.dimensions();
+        self.upload(
+            context,
+            layout,
+            TextureUpload {
+                key: TextureKey {
+                    tile: update.image().value() as usize,
+                    content_hash: update.revision().value(),
+                },
+                width,
+                height,
+                rgba8: update.rgba8().to_vec(),
+            },
+        );
     }
 
     pub fn get(&self, key: &TextureKey) -> Option<&GpuTileTexture> {
