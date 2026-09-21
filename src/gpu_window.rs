@@ -4,6 +4,7 @@ use crate::gpu::{
     texture_keys_for_commands, tile_vertices_for_commands, upload_tile_texture, GpuContext,
     GpuTextureStore, GpuTileTexture, PreparedTileBatch, TextureCache, TileDrawCommand,
 };
+use crate::input::{InputEvent, ZoomDirection};
 use crate::render::{
     FrameBuilder, ImageId, ImageRevision, ImageUpdate, Rect, RenderFrame, TileDraw, Viewport,
 };
@@ -154,7 +155,8 @@ impl GpuAppState {
         }
     }
 
-    fn handle_window_event(&mut self, event: &WindowEvent) {
+    fn input_events_for_window_event(&mut self, event: &WindowEvent) -> Vec<InputEvent> {
+        let mut input_events = Vec::new();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let next = crate::geometry::ScreenPoint::new(
@@ -162,10 +164,12 @@ impl GpuAppState {
                     position.y.round() as i32,
                 );
                 if self.left_button_down {
-                    self.canvas.drag(crate::geometry::ScreenPoint::new(
-                        next.x - self.cursor.x,
-                        next.y - self.cursor.y,
-                    ));
+                    input_events.push(InputEvent::Drag {
+                        delta: crate::geometry::ScreenPoint::new(
+                            next.x - self.cursor.x,
+                            next.y - self.cursor.y,
+                        ),
+                    });
                 }
                 self.cursor = next;
             }
@@ -178,20 +182,37 @@ impl GpuAppState {
                     MouseScrollDelta::PixelDelta(position) => position.y as f32 / 40.0,
                 };
                 if amount != 0.0 {
-                    let multiplier = self.config.zoom_multiplier;
-                    let current = self
-                        .canvas
-                        .layer(0)
-                        .map_or(self.config.max_apparent_pixel_size(), |layer| layer.zoom());
-                    let zoom = if amount > 0.0 {
-                        current * multiplier
-                    } else {
-                        current / multiplier
-                    };
-                    self.canvas.zoom_at(self.cursor, zoom);
+                    input_events.push(InputEvent::Zoom {
+                        direction: if amount > 0.0 {
+                            ZoomDirection::In
+                        } else {
+                            ZoomDirection::Out
+                        },
+                        cursor: self.cursor,
+                    });
                 }
             }
             _ => {}
+        }
+        input_events
+    }
+
+    fn apply_input_event(&mut self, event: InputEvent) {
+        match event {
+            InputEvent::Drag { delta } => self.canvas.drag(delta),
+            InputEvent::Zoom { direction, cursor } => {
+                let multiplier = self.config.zoom_multiplier;
+                let current = self
+                    .canvas
+                    .layer(0)
+                    .map_or(self.config.max_apparent_pixel_size(), |layer| layer.zoom());
+                let zoom = match direction {
+                    ZoomDirection::In => current * multiplier,
+                    ZoomDirection::Out => current / multiplier,
+                };
+                self.canvas.zoom_at(cursor, zoom);
+            }
+            InputEvent::MiddleClick(_) => {}
         }
     }
 
@@ -681,8 +702,20 @@ impl ApplicationHandler for GpuWindowApp {
                 return;
             }
         }
+        let input_events = self
+            .state
+            .as_mut()
+            .map(|state| state.input_events_for_window_event(&event))
+            .unwrap_or_default();
+        for input_event in input_events {
+            self.app_controller
+                .handle_event(AppEvent::Input(input_event));
+        }
+        let pending_input = self.app_controller.take_input_events();
         if let Some(state) = &mut self.state {
-            state.handle_window_event(&event);
+            for input_event in pending_input {
+                state.apply_input_event(input_event);
+            }
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
