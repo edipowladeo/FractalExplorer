@@ -156,6 +156,14 @@ impl GpuAppState {
         }
     }
 
+    pub fn resize_viewport(&mut self, viewport: Viewport) {
+        self.config.width = viewport.width().max(1) as usize;
+        self.config.height = viewport.height().max(1) as usize;
+        self.prepared_batch = None;
+        self.prepared_frame = None;
+        self.prepared_image_updates.clear();
+    }
+
     fn input_events_for_window_event(&mut self, event: &WindowEvent) -> Vec<InputEvent> {
         let mut input_events = Vec::new();
         match event {
@@ -731,7 +739,12 @@ impl ApplicationHandler for GpuWindowApp {
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => self.configure_surface(size.width, size.height),
+            WindowEvent::Resized(size) => {
+                if let Some(state) = &mut self.state {
+                    state.resize_viewport(Viewport::new(size.width, size.height));
+                }
+                self.configure_surface(size.width, size.height)
+            }
             WindowEvent::RedrawRequested => {
                 if let Some(state) = &mut self.state {
                     state.canvas.record_frame_event(
@@ -937,6 +950,7 @@ mod tests {
     };
     use crate::geometry::ScreenPoint;
     use crate::gpu::{TextureKey, TextureUpload, TileDrawCommand};
+    use crate::render::Viewport;
     use std::time::Duration;
 
     #[test]
@@ -975,6 +989,34 @@ mod tests {
     fn resize_invalidates_vertices_only_when_surface_dimensions_change() {
         assert!(!needs_batch_rebuild((800, 600), (800, 600)));
         assert!(needs_batch_rebuild((800, 600), (1024, 768)));
+    }
+
+    #[test]
+    fn gpu_state_resize_updates_the_logical_viewport_and_discards_prepared_frame() {
+        let canvas = crate::TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-2.0, 1.0),
+            8,
+            8,
+            0.01,
+            ScreenPoint::new(0, 0),
+            8.0,
+            0.5,
+        );
+        let orchestrator = crate::Orchestrator::with_worker_count(crate::Mandelbrot::new(32), 1);
+        let mut state = super::GpuAppState::new(
+            canvas,
+            orchestrator,
+            crate::config::RendererConfig::default(),
+        );
+        state.prepare_visible_batch();
+
+        state.resize_viewport(Viewport::new(1024, 768));
+
+        assert_eq!(state.config.width, 1024);
+        assert_eq!(state.config.height, 768);
+        assert!(state.prepared_batch.is_none());
+        assert!(state.prepared_frame.is_none());
+        assert!(state.prepared_image_updates.is_empty());
     }
 
     #[test]
