@@ -463,6 +463,31 @@ mod tests {
     }
 
     #[test]
+    fn formats_gpu_surface_timing_events_in_frame_order() {
+        let started_at = Instant::now();
+        let instrumentation = super::FrameInstrumentation {
+            frame_number: 8,
+            started_at,
+            events: vec![
+                super::FrameEvent {
+                    kind: super::FrameEventKind::GpuSurfaceAcquireStarted,
+                    description: "aquisicao da superficie GPU iniciada".to_string(),
+                    timestamp: started_at,
+                },
+                super::FrameEvent {
+                    kind: super::FrameEventKind::GpuSurfaceAcquireFinished,
+                    description: "aquisicao da superficie GPU concluida".to_string(),
+                    timestamp: started_at + Duration::from_millis(405),
+                },
+            ],
+        };
+
+        let line = instrumentation.format_event(&instrumentation.events[1], started_at);
+        assert!(line.contains("aquisicao da superficie GPU concluida"));
+        assert!(line.contains("Δ: 405.000"));
+    }
+
+    #[test]
     fn slow_frame_is_a_dump_trigger_without_layer_creation() {
         let started_at = Instant::now() - Duration::from_millis(1_001);
         let instrumentation = super::FrameInstrumentation {
@@ -920,6 +945,11 @@ pub(crate) enum FrameEventKind {
     Finalized,
     PresentationStarted,
     PresentationFinished,
+    GpuSurfaceAcquireStarted,
+    GpuSurfaceAcquireFinished,
+    GpuCommandsSubmitted,
+    GpuPresentationStarted,
+    GpuPresentationFinished,
     DumpStarted,
     DumpFinished,
     SlowFrame,
@@ -980,11 +1010,17 @@ impl FrameInstrumentation {
     }
 
     fn record_presentation_started(&mut self) {
-        self.record(FrameEventKind::PresentationStarted, BUFFER_PRESENTATION_STARTED);
+        self.record(
+            FrameEventKind::PresentationStarted,
+            BUFFER_PRESENTATION_STARTED,
+        );
     }
 
     fn record_presentation_finished(&mut self) {
-        self.record(FrameEventKind::PresentationFinished, BUFFER_PRESENTATION_FINISHED);
+        self.record(
+            FrameEventKind::PresentationFinished,
+            BUFFER_PRESENTATION_FINISHED,
+        );
     }
 
     fn record_dump_started(&mut self) {
@@ -1023,15 +1059,12 @@ impl FrameInstrumentation {
     ) -> Vec<String> {
         configured_events
             .iter()
-            .filter(|configured| {
-                match configured.as_str() {
-                    "slow_frame" => {
-                        self.has_kind(FrameEventKind::SlowFrame)
-                            || self.is_slow(slow_frame_threshold)
-                    }
-                    "layer_created" => self.has_kind(FrameEventKind::LayerCreated),
-                    _ => false,
+            .filter(|configured| match configured.as_str() {
+                "slow_frame" => {
+                    self.has_kind(FrameEventKind::SlowFrame) || self.is_slow(slow_frame_threshold)
                 }
+                "layer_created" => self.has_kind(FrameEventKind::LayerCreated),
+                _ => false,
             })
             .cloned()
             .collect()
@@ -1054,9 +1087,7 @@ impl FrameInstrumentation {
     }
 
     fn record_slow_if_needed_at(&mut self, timestamp: Instant, threshold: Duration) {
-        if self.is_slow_at(timestamp, threshold)
-            && !self.has_kind(FrameEventKind::SlowFrame)
-        {
+        if self.is_slow_at(timestamp, threshold) && !self.has_kind(FrameEventKind::SlowFrame) {
             self.record_trigger_at(FrameEventKind::SlowFrame, "frame lento", timestamp);
         }
     }

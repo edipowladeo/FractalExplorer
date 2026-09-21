@@ -479,6 +479,12 @@ impl ApplicationHandler for GpuWindowApp {
                 if let (Some(context), Some(surface), Some(pipeline)) =
                     (&self.context, &self.surface, &self.pipeline)
                 {
+                    if let Some(state) = &mut self.state {
+                        state.canvas.record_frame_event(
+                            crate::orchestrator::FrameEventKind::GpuSurfaceAcquireStarted,
+                            "aquisicao da superficie GPU iniciada",
+                        );
+                    }
                     let frame = match surface.get_current_texture() {
                         wgpu::CurrentSurfaceTexture::Success(frame)
                         | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -499,6 +505,12 @@ impl ApplicationHandler for GpuWindowApp {
                             return;
                         }
                     };
+                    if let Some(state) = &mut self.state {
+                        state.canvas.record_frame_event(
+                            crate::orchestrator::FrameEventKind::GpuSurfaceAcquireFinished,
+                            "aquisicao da superficie GPU concluida",
+                        );
+                    }
                     {
                         let view = frame
                             .texture
@@ -551,9 +563,23 @@ impl ApplicationHandler for GpuWindowApp {
                             }
                         }
                         context.queue.submit(Some(encoder.finish()));
+                        if let Some(state) = &mut self.state {
+                            state.canvas.record_frame_event(
+                                crate::orchestrator::FrameEventKind::GpuCommandsSubmitted,
+                                "comandos GPU submetidos",
+                            );
+                            state.canvas.record_frame_event(
+                                crate::orchestrator::FrameEventKind::GpuPresentationStarted,
+                                "apresentacao GPU iniciada",
+                            );
+                            state.canvas.record_frame_presentation_started();
+                        }
                         context.queue.present(frame);
                         if let Some(state) = &mut self.state {
-                            state.canvas.record_frame_presentation_started();
+                            state.canvas.record_frame_event(
+                                crate::orchestrator::FrameEventKind::GpuPresentationFinished,
+                                "apresentacao GPU concluida",
+                            );
                             state.canvas.record_frame_event(
                                 crate::orchestrator::FrameEventKind::BufferReadyForPresentation,
                                 "buffer pronto para apresentacao",
