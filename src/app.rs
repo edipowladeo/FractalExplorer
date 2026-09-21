@@ -1,8 +1,10 @@
+use crate::input::InputEvent;
 use crate::render::{FrameBuilder, RenderError, RenderFrame, Viewport};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppEvent {
     Resized(Viewport),
+    Input(InputEvent),
     RedrawRequested,
     CloseRequested,
 }
@@ -17,12 +19,14 @@ pub enum AppEffect {
 pub trait ApplicationController {
     fn handle_event(&mut self, event: AppEvent) -> Vec<AppEffect>;
     fn prepare_frame(&mut self) -> Result<RenderFrame, RenderError>;
+    fn take_input_events(&mut self) -> Vec<InputEvent>;
 }
 
 pub struct DefaultApplicationController {
     viewport: Viewport,
     closed: bool,
     frame_builder: FrameBuilder,
+    pending_input: Vec<InputEvent>,
 }
 
 impl DefaultApplicationController {
@@ -31,6 +35,7 @@ impl DefaultApplicationController {
             viewport,
             closed: false,
             frame_builder: FrameBuilder::new(),
+            pending_input: Vec::new(),
         }
     }
 
@@ -53,6 +58,10 @@ impl ApplicationController for DefaultApplicationController {
                 self.viewport = viewport;
                 vec![AppEffect::RequestRedraw]
             }
+            AppEvent::Input(input) => {
+                self.pending_input.push(input);
+                vec![AppEffect::RequestRedraw]
+            }
             AppEvent::RedrawRequested => vec![AppEffect::Render],
             AppEvent::CloseRequested => {
                 self.closed = true;
@@ -69,11 +78,17 @@ impl ApplicationController for DefaultApplicationController {
             .frame_builder
             .build(self.viewport, Vec::new(), Vec::new()))
     }
+
+    fn take_input_events(&mut self) -> Vec<InputEvent> {
+        std::mem::take(&mut self.pending_input)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{AppEffect, AppEvent, ApplicationController, DefaultApplicationController};
+    use crate::geometry::ScreenPoint;
+    use crate::input::{InputEvent, ZoomDirection};
     use crate::render::Viewport;
 
     #[test]
@@ -85,6 +100,16 @@ mod tests {
             vec![AppEffect::RequestRedraw]
         );
         assert_eq!(controller.viewport(), Viewport::new(1024, 768));
+        let input = InputEvent::Zoom {
+            direction: ZoomDirection::In,
+            cursor: ScreenPoint::new(12, 20),
+        };
+        assert_eq!(
+            controller.handle_event(AppEvent::Input(input)),
+            vec![AppEffect::RequestRedraw]
+        );
+        assert_eq!(controller.take_input_events(), vec![input]);
+        assert!(controller.take_input_events().is_empty());
         assert_eq!(
             controller.handle_event(AppEvent::RedrawRequested),
             vec![AppEffect::Render]
