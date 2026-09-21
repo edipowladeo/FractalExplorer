@@ -1,5 +1,6 @@
 //! Primitives shared by the first Windows sprite renderer.
 
+pub mod app;
 pub mod calculator;
 pub mod config;
 pub mod config_ui;
