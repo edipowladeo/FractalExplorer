@@ -29,6 +29,7 @@ pub struct TileConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct RendererConfig {
+    pub backend: String,
     pub width: usize,
     pub height: usize,
     pub max_iterations: u32,
@@ -45,6 +46,22 @@ pub struct RendererConfig {
     pub precision_level: usize,
     pub perturbation_fallback: bool,
     pub debug: RendererDebugConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RendererBackend {
+    Cpu,
+    Gpu,
+}
+
+impl RendererBackend {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "cpu" => Ok(Self::Cpu),
+            "gpu" => Ok(Self::Gpu),
+            other => Err(format!("backend de renderer desconhecido: {other}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -94,6 +111,7 @@ impl Default for TileConfig {
 impl Default for RendererConfig {
     fn default() -> Self {
         Self {
+            backend: "cpu".to_string(),
             width: 640,
             height: 480,
             max_iterations: 256,
@@ -133,6 +151,10 @@ impl Default for RendererDebugConfig {
 }
 
 impl RendererConfig {
+    pub fn backend_kind(&self) -> Result<RendererBackend, String> {
+        RendererBackend::parse(&self.backend)
+    }
+
     pub fn effective_max_iterations(&self) -> u32 {
         self.max_iterations
             .saturating_mul(self.precision_level as u32)
@@ -217,6 +239,7 @@ impl AppConfig {
 
 #[cfg(test)]
 mod tests {
+    use super::RendererBackend;
     use super::{AppConfig, RendererConfig};
 
     #[test]
@@ -270,6 +293,21 @@ mod tests {
             config.renderer.starting_point_coordinates().unwrap(),
             crate::geometry::ComplexPoint::new(-0.743643887037151, 0.131825904205330)
         );
+    }
+
+    #[test]
+    fn defaults_to_the_legacy_cpu_backend() {
+        assert_eq!(RendererConfig::default().backend, "cpu");
+        assert_eq!(
+            RendererConfig::default().backend_kind(),
+            Ok(RendererBackend::Cpu)
+        );
+    }
+
+    #[test]
+    fn parses_the_gpu_backend_and_rejects_unknown_backends() {
+        assert_eq!(RendererBackend::parse("gpu"), Ok(RendererBackend::Gpu));
+        assert!(RendererBackend::parse("vulkan").is_err());
     }
 
     #[test]
