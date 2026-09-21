@@ -320,6 +320,26 @@ mock e no adaptador `wgpu`, sem exigir uma GPU nos testes unitários.
 buffers; mudança de posição atualiza somente instâncias; mudança de imagem
 atualiza somente a textura cuja revisão mudou.
 
+#### Plano operacional de diagnóstico e contenção de stalls GPU
+
+1. Corrigir as flags do `config.toml` efetivamente carregado pelo worktree GPU,
+   mantendo `show_allocation_envelope = false` e `text_overlay_frames = false`
+   durante a medição da linha de base.
+2. Usar um ring buffer de três slots para os vértices dos tiles, evitando
+   sobrescrever um buffer que ainda pode estar em uso pela GPU.
+3. Usar o mesmo ring buffer de três slots para os vértices do overlay e do
+   envelope, com invalidação completa no resize ou na perda da superfície.
+4. Instrumentar a seleção dos slots, indicando slot ativo, crescimento do
+   buffer, reutilização e eventual espera observada durante a escrita.
+5. Separar a instrumentação de submissão em encoder finalizado, `queue.submit`,
+   `device.poll` e apresentação, para distinguir espera de upload e espera de
+   execução/apresentação.
+6. Comparar a linha de base sem overlays com as configurações de ring buffer de
+   dois e três slots, usando os mesmos eventos e a mesma cena.
+7. Registrar os resultados de CPU, backend GL e demais backends disponíveis,
+   classificando o custo como CPU, transferência, sincronização do driver ou
+   apresentação antes de escolher a otimização definitiva.
+
 ### Passo 7 — Eliminar os caminhos verticais duplicados
 
 - Remover preparação de canvas, overlays e configuração de `gpu_window.rs`.
