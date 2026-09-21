@@ -1,8 +1,9 @@
 use crate::app::{AppEffect, AppEvent, ApplicationController, DefaultApplicationController};
 use crate::gpu::{
     create_tile_pipeline, debug_overlay_upload, debug_overlay_upload_with_rectangles,
-    texture_keys_for_commands, tile_vertices_for_commands, upload_tile_texture, GpuContext,
-    GpuTextureStore, GpuTileTexture, PreparedTileBatch, TextureCache, TileDrawCommand,
+    texture_keys_for_commands, tile_commands_for_frame, tile_vertices_for_commands,
+    upload_tile_texture, GpuContext, GpuTextureStore, GpuTileTexture, PreparedTileBatch,
+    TextureCache, TileDrawCommand,
 };
 use crate::input::{InputEvent, ZoomDirection};
 use crate::render::{
@@ -882,15 +883,11 @@ impl ApplicationHandler for GpuWindowApp {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        let batch = self
-            .state
-            .as_mut()
-            .map(|state| {
-                state.prepare_visible_batch();
-                state.prepared_batch.take()
-            })
-            .flatten();
-        if let Some(batch) = batch {
+        let prepared = self.state.as_mut().map(|state| {
+            state.prepare_visible_batch();
+            (state.prepared_batch.take(), state.prepared_frame.clone())
+        });
+        if let Some((Some(batch), Some(frame))) = prepared {
             if let Some(state) = &mut self.state {
                 state.canvas.record_frame_event(
                     crate::orchestrator::FrameEventKind::GpuBatchPreparationFinished,
@@ -902,6 +899,7 @@ impl ApplicationHandler for GpuWindowApp {
                 );
             }
             self.upload_batch(batch);
+            self.tile_commands = tile_commands_for_frame(&frame);
             if let Some(state) = &mut self.state {
                 state.canvas.record_frame_event(
                     crate::orchestrator::FrameEventKind::GpuBatchUploadFinished,
