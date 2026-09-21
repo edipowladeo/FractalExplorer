@@ -262,7 +262,7 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::RendererBackend;
-    use super::{AppConfig, RendererConfig};
+    use super::{AppConfig, GpuBackend, RendererConfig};
 
     #[test]
     fn loads_window_size_and_debug_from_toml() {
