@@ -2,6 +2,7 @@
 debug_global = true
 
 [renderer]
+backend = "cpu"
 width = 800
 height = 600
 max_iterations = 256
