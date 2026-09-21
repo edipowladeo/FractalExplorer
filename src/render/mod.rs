@@ -1,3 +1,5 @@
+pub mod cpu;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ImageId(u64);
 
