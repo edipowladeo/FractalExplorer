@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use super::{
-    FrameOutcome, ImageId, ImageRevision, ImageUpdate, RenderCapabilities, RenderError,
-    RenderFrame, RenderTarget, SurfaceFailure, Viewport,
+    FrameOutcome, ImageId, ImageRevision, ImageUpdate, OverlayPrimitive, RenderCapabilities,
+    RenderError, RenderFrame, RenderTarget, SurfaceFailure, TileDraw, Viewport,
 };
 
 #[derive(Debug, Clone)]
@@ -46,7 +46,7 @@ impl CpuRenderTarget {
         viewport: Viewport,
         framebuffer: &mut [u8],
         image: &StoredImage,
-        tile: &super::TileDraw,
+        tile: &TileDraw,
     ) {
         let destination = tile.destination();
         if destination.width == 0 || destination.height == 0 {
@@ -119,6 +119,16 @@ impl RenderTarget for CpuRenderTarget {
             }
             Self::draw_image(self.viewport, &mut self.framebuffer, image, tile);
         }
+        for overlay in frame.overlays() {
+            let OverlayPrimitive::Image(tile) = overlay;
+            let Some(image) = self.images.get(&tile.image()) else {
+                continue;
+            };
+            if image.revision != tile.revision() {
+                continue;
+            }
+            Self::draw_image(self.viewport, &mut self.framebuffer, image, tile);
+        }
         Ok(FrameOutcome::submitted())
     }
 
@@ -143,7 +153,8 @@ fn framebuffer_len(viewport: Viewport) -> usize {
 #[cfg(test)]
 mod tests {
     use crate::render::{
-        ImageId, ImageRevision, ImageUpdate, Rect, RenderFrame, RenderTarget, TileDraw, Viewport,
+        ImageId, ImageRevision, ImageUpdate, OverlayPrimitive, Rect, RenderFrame, RenderTarget,
+        TileDraw, Viewport,
     };
 
     use super::CpuRenderTarget;
@@ -170,5 +181,42 @@ mod tests {
 
         assert_eq!(target.pixel_rgba8(0, 0), Some([0, 0, 0, 0]));
         assert_eq!(target.pixel_rgba8(1, 0), Some([10, 20, 30, 255]));
+    }
+
+    #[test]
+    fn cpu_target_composes_overlay_after_tiles() {
+        let mut target = CpuRenderTarget::new(Viewport::new(1, 1));
+        target
+            .update_images(&[
+                ImageUpdate::new(
+                    ImageId::new(1),
+                    ImageRevision::new(1),
+                    1,
+                    1,
+                    vec![10, 20, 30, 255],
+                )
+                .unwrap(),
+                ImageUpdate::new(
+                    ImageId::new(2),
+                    ImageRevision::new(1),
+                    1,
+                    1,
+                    vec![200, 210, 220, 255],
+                )
+                .unwrap(),
+            ])
+            .unwrap();
+
+        let tile = TileDraw::new(ImageId::new(1), ImageRevision::new(1), 0)
+            .with_destination(Rect::new(0, 0, 1, 1));
+        let overlay = TileDraw::new(ImageId::new(2), ImageRevision::new(1), 0)
+            .with_destination(Rect::new(0, 0, 1, 1));
+        let frame = RenderFrame::new(0, Viewport::new(1, 1))
+            .with_tile(tile)
+            .with_overlay(OverlayPrimitive::Image(overlay));
+
+        target.render(&frame).unwrap();
+
+        assert_eq!(target.pixel_rgba8(0, 0), Some([200, 210, 220, 255]));
     }
 }
