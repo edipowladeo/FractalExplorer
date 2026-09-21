@@ -1,4 +1,4 @@
-use crate::config::RendererConfig;
+use crate::config::{RendererBackend, RendererConfig};
 use crate::geometry::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
 use crate::orchestrator::CanvasNavigationEvent;
 use crate::output::OutputService;
@@ -181,6 +181,32 @@ pub fn run_with_updates(
 }
 
 pub fn run_with_updates_and_shutdown(
+    canvas: &mut TiledInfiniteCanvas,
+    orchestrator: &Orchestrator,
+    initial_config: &RendererConfig,
+    receiver: Receiver<RendererConfig>,
+    output: &OutputService,
+    renderer_closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), minifb::Error> {
+    match initial_config
+        .backend_kind()
+        .map_err(minifb::Error::WindowCreate)?
+    {
+        RendererBackend::Cpu => run_cpu_with_updates_and_shutdown(
+            canvas,
+            orchestrator,
+            initial_config,
+            receiver,
+            output,
+            renderer_closed,
+        ),
+        RendererBackend::Gpu => Err(minifb::Error::WindowCreate(
+            "backend GPU selecionado, mas o loop wgpu ainda nao foi conectado".to_string(),
+        )),
+    }
+}
+
+fn run_cpu_with_updates_and_shutdown(
     canvas: &mut TiledInfiniteCanvas,
     orchestrator: &Orchestrator,
     initial_config: &RendererConfig,
@@ -376,9 +402,9 @@ pub fn run_with_updates_and_shutdown(
         canvas.record_frame_event(
             crate::orchestrator::FrameEventKind::TilesRasterized,
             format!(
-            "tiles rasterizados neste frame: {drawn_tiles}, sprites novos neste frame: \
+                "tiles rasterizados neste frame: {drawn_tiles}, sprites novos neste frame: \
              {generated_sprites}, geracao de sprites: {:?}, rasterizacao: {:?}",
-            sprite_generation_duration, rasterization_duration,
+                sprite_generation_duration, rasterization_duration,
             ),
         );
         if let Some(cursor) = mouse_position {
@@ -767,7 +793,7 @@ fn draw_text(framebuffer: &mut [u32], size: ScreenSize, x: i32, y: i32, text: &s
     }
 }
 
-fn glyph(character: char) -> Option<[u8; 7]> {
+pub(crate) fn glyph(character: char) -> Option<[u8; 7]> {
     let glyph = match character {
         'C' => [
             0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110,
