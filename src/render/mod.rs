@@ -302,6 +302,19 @@ pub trait RenderTarget: Send {
     fn recover(&mut self, reason: SurfaceFailure) -> Result<(), RenderError>;
 }
 
+pub trait RenderTargetFactory: Send + Sync {
+    fn create(&self, viewport: Viewport) -> Result<Box<dyn RenderTarget>, RenderError>;
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CpuRenderTargetFactory;
+
+impl RenderTargetFactory for CpuRenderTargetFactory {
+    fn create(&self, viewport: Viewport) -> Result<Box<dyn RenderTarget>, RenderError> {
+        Ok(Box::new(cpu::CpuRenderTarget::new(viewport)))
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct FrameBuilder {
     next_frame_id: u64,
@@ -333,7 +346,8 @@ impl FrameBuilder {
 mod tests {
     use super::{
         FrameBuilder, FrameOutcome, ImageId, ImageRevision, ImageUpdate, RenderCapabilities,
-        RenderError, RenderFrame, RenderTarget, SurfaceFailure, TileDraw, Viewport,
+        RenderError, RenderFrame, RenderTarget, RenderTargetFactory, SurfaceFailure, TileDraw,
+        Viewport,
     };
 
     #[derive(Default)]
@@ -426,6 +440,19 @@ mod tests {
         assert_eq!(target.rendered_frames, vec![11]);
         assert_eq!(target.evicted_images, 1);
         assert_eq!(target.recovered, vec![SurfaceFailure::Lost]);
+    }
+
+    #[test]
+    fn cpu_factory_creates_the_common_render_target_contract() {
+        let factory = super::CpuRenderTargetFactory;
+        let mut target = factory
+            .create(Viewport::new(320, 200))
+            .expect("CPU target should be available");
+
+        assert_eq!(target.capabilities().persistent_resources, true);
+        target
+            .render(&RenderFrame::new(0, Viewport::new(320, 200)))
+            .expect("empty frame should render");
     }
 
     #[test]
