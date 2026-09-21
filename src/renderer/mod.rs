@@ -66,6 +66,10 @@ pub enum Palette {
     Rainbow,
     #[serde(rename = "inverted_rainbow")]
     InvertedRainbow,
+    #[serde(rename = "_pastel_rainbow")]
+    PastelRainbow,
+    #[serde(rename = "_pastel_shade")]
+    PastelShade,
 }
 
 impl Default for Palette {
@@ -84,6 +88,8 @@ impl<'de> Deserialize<'de> for Palette {
             "shade" => Ok(Self::Shade),
             "rainbow" => Ok(Self::Rainbow),
             "inverted_rainbow" => Ok(Self::InvertedRainbow),
+            "_pastel_rainbow" => Ok(Self::PastelRainbow),
+            "_pastel_shade" => Ok(Self::PastelShade),
             invalid => {
                 crate::print_local!(
                     "Aviso: paleta inválida '{invalid}'; usando fallback 'rainbow'"
@@ -903,6 +909,8 @@ fn color(iterations: u64, max_iterations: u64, palette: Palette, palette_period:
         Palette::Shade => shade_color(iterations, max_iterations),
         Palette::Rainbow => rainbow_color(iterations, palette_period),
         Palette::InvertedRainbow => inverted_rainbow_color(iterations, palette_period),
+        Palette::PastelRainbow => pastelize_color(rainbow_color(iterations, palette_period)),
+        Palette::PastelShade => pastelize_color(shade_color(iterations, max_iterations)),
     }
 }
 
@@ -935,6 +943,19 @@ fn inverted_rainbow_color(iterations: u64, palette_period: f64) -> u32 {
     ((color & 0x0000ff) << 16) | (color & 0x00ff00) | ((color & 0xff0000) >> 16)
 }
 
+fn pastelize_color(color: u32) -> u32 {
+    let encode = |channel: u32| {
+        let linear = channel as f64 / 255.0;
+        let srgb = if linear <= 0.003_130_8 {
+            12.92 * linear
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        };
+        (srgb * 255.0).round().clamp(0.0, 255.0) as u32
+    };
+    (encode(color >> 16) << 16) | (encode(color >> 8 & 0xff) << 8) | encode(color & 0xff)
+}
+
 fn has_live_window_size((width, height): (usize, usize)) -> bool {
     width > 0 && height > 0
 }
@@ -945,8 +966,8 @@ mod tests {
         allocation_screen_rect, draw_mouse_marker, draw_rectangle_outline, format_coordinates,
         format_copied_coordinates, format_frame_history_line, format_layer_overlay,
         format_worker_queue_line, format_worker_status_line, has_live_window_size,
-        inverted_rainbow_color, middle_click_coordinate_report, rainbow_color, sprite_from_tile,
-        FrameTimingRing, Palette, RenderSurface, ScreenRect,
+        inverted_rainbow_color, middle_click_coordinate_report, pastelize_color, rainbow_color,
+        sprite_from_tile, FrameTimingRing, Palette, RenderSurface, ScreenRect,
     };
     use crate::geometry::{ComplexPoint, ScreenPoint, ScreenSize};
     use crate::{Mandelbrot, Orchestrator, Tile, TiledInfiniteCanvas};
@@ -1039,6 +1060,24 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.renderer.palette, Palette::InvertedRainbow);
+    }
+
+    #[test]
+    fn parses_the_two_pastel_palette_names() {
+        for (name, expected) in [
+            ("_pastel_rainbow", Palette::PastelRainbow),
+            ("_pastel_shade", Palette::PastelShade),
+        ] {
+            let config: crate::config::AppConfig =
+                toml::from_str(&format!("[renderer]\npalette = \"{name}\""))
+                    .expect("pastel palette should parse");
+            assert_eq!(config.renderer.palette, expected);
+        }
+    }
+
+    #[test]
+    fn pastel_transform_reproduces_the_brightened_srgb_channel() {
+        assert_eq!(pastelize_color(0x808080), 0xbcbcbc);
     }
 
     #[test]
