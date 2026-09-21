@@ -3,7 +3,9 @@ use crate::gpu::{
     texture_keys_for_commands, tile_vertices_for_commands, upload_tile_texture, GpuContext,
     GpuTextureStore, GpuTileTexture, PreparedTileBatch, TextureCache, TileDrawCommand,
 };
-use crate::render::{FrameBuilder, ImageId, ImageRevision, Rect, RenderFrame, TileDraw, Viewport};
+use crate::render::{
+    FrameBuilder, ImageId, ImageRevision, ImageUpdate, Rect, RenderFrame, TileDraw, Viewport,
+};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -106,6 +108,7 @@ pub struct GpuAppState {
     pub config: crate::config::RendererConfig,
     pub prepared_batch: Option<PreparedTileBatch>,
     pub prepared_frame: Option<RenderFrame>,
+    pub prepared_image_updates: Vec<ImageUpdate>,
     frame_builder: FrameBuilder,
     pub texture_cache: TextureCache,
     pub last_frame_metrics: Option<GpuFrameMetrics>,
@@ -138,6 +141,7 @@ impl GpuAppState {
             config,
             prepared_batch: None,
             prepared_frame: None,
+            prepared_image_updates: Vec::new(),
             frame_builder: FrameBuilder::new(),
             texture_cache: TextureCache::default(),
             last_frame_metrics: None,
@@ -295,6 +299,20 @@ impl GpuAppState {
                     command.size.0,
                     command.size.1,
                 ))
+            })
+            .collect();
+        self.prepared_image_updates = batch
+            .uploads
+            .iter()
+            .filter_map(|upload| {
+                ImageUpdate::new(
+                    ImageId::new(upload.key.tile as u64),
+                    ImageRevision::new(upload.key.content_hash),
+                    upload.width,
+                    upload.height,
+                    upload.rgba8.clone(),
+                )
+                .ok()
             })
             .collect();
         self.prepared_frame = Some(self.frame_builder.build(
@@ -923,6 +941,7 @@ mod tests {
             .prepared_frame
             .as_ref()
             .is_some_and(|frame| !frame.tiles().is_empty()));
+        assert!(!state.prepared_image_updates.is_empty());
     }
 
     #[test]
