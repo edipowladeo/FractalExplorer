@@ -81,6 +81,18 @@ pub struct GpuFrameMetrics {
     prepare_duration: Duration,
 }
 
+fn format_gpu_upload_stage(label: &str, elapsed: Duration, detail: &str) -> String {
+    format!(
+        "{label}: {:.3} ms{}",
+        elapsed.as_secs_f64() * 1_000.0,
+        if detail.is_empty() {
+            String::new()
+        } else {
+            format!(" ({detail})")
+        }
+    )
+}
+
 impl GpuFrameMetrics {
     pub(crate) fn from_batch(batch: &PreparedTileBatch, prepare_duration: Duration) -> Self {
         Self {
@@ -455,30 +467,80 @@ impl GpuWindowApp {
 }
 
 impl GpuWindowApp {
+    fn record_gpu_upload_stage(
+        &mut self,
+        kind: crate::orchestrator::FrameEventKind,
+        label: &str,
+        started_at: Instant,
+        detail: impl AsRef<str>,
+    ) {
+        if let Some(state) = &mut self.state {
+            state.canvas.record_frame_event(
+                kind,
+                format_gpu_upload_stage(label, started_at.elapsed(), detail.as_ref()),
+            );
+        }
+    }
+
     pub fn upload_batch(&mut self, batch: PreparedTileBatch, frame_commands: Vec<TileDrawCommand>) {
-        let (Some(context), Some(layout), Some(store)) = (
-            &self.context,
-            &self.tile_bind_group_layout,
-            &mut self.texture_store,
-        ) else {
+        if self.context.is_none()
+            || self.tile_bind_group_layout.is_none()
+            || self.texture_store.is_none()
+        {
             return;
-        };
+        }
         let image_updates = self
             .state
             .as_ref()
             .map(|state| state.prepared_image_updates.clone())
             .unwrap_or_default();
-        if image_updates.is_empty() {
-            for upload in batch.uploads {
-                store.upload(context, layout, upload);
-            }
+        let texture_upload_count = if image_updates.is_empty() {
+            batch.uploads.len()
         } else {
-            for update in &image_updates {
-                store.upload_image_update(context, layout, update);
+            image_updates.len()
+        };
+        let texture_upload_started = Instant::now();
+        {
+            let (Some(context), Some(layout), Some(store)) = (
+                &self.context,
+                &self.tile_bind_group_layout,
+                &mut self.texture_store,
+            ) else {
+                return;
+            };
+            if image_updates.is_empty() {
+                for upload in batch.uploads {
+                    store.upload(context, layout, upload);
+                }
+            } else {
+                for update in &image_updates {
+                    store.upload_image_update(context, layout, update);
+                }
             }
         }
-        store.retain_only(texture_keys_for_commands(&frame_commands));
-        if let Some(surface_config) = &self.surface_config {
+        self.record_gpu_upload_stage(
+            crate::orchestrator::FrameEventKind::GpuBatchTextureUpload,
+            "upload de texturas do batch GPU",
+            texture_upload_started,
+            format!("{texture_upload_count} atualizacoes"),
+        );
+
+        let retention_started = Instant::now();
+        {
+            let Some(store) = &mut self.texture_store else {
+                return;
+            };
+            store.retain_only(texture_keys_for_commands(&frame_commands));
+        }
+        self.record_gpu_upload_stage(
+            crate::orchestrator::FrameEventKind::GpuBatchTextureRetention,
+            "retencao de texturas do batch GPU",
+            retention_started,
+            format!("{} comandos", frame_commands.len()),
+        );
+
+        let vertex_upload_started = Instant::now();
+        if let (Some(context), Some(surface_config)) = (&self.context, &self.surface_config) {
             let vertices = tile_vertices_for_commands(
                 &frame_commands,
                 surface_config.width,
@@ -503,6 +565,12 @@ impl GpuWindowApp {
                 }
             }
         }
+        self.record_gpu_upload_stage(
+            crate::orchestrator::FrameEventKind::GpuBatchVertexUpload,
+            "upload de vertices dos tiles",
+            vertex_upload_started,
+            format!("{} comandos", frame_commands.len()),
+        );
         self.tile_commands = frame_commands;
 
         self.overlay_texture = None;
@@ -517,6 +585,7 @@ impl GpuWindowApp {
             .as_ref()
             .is_some_and(|state| state.config.debug.show_allocation_envelope);
         if show_frame_overlay {
+            let overlay_started = Instant::now();
             let history = self
                 .state
                 .as_ref()
@@ -570,8 +639,15 @@ impl GpuWindowApp {
                 ));
                 self.overlay_command = Some(command);
             }
+            self.record_gpu_upload_stage(
+                crate::orchestrator::FrameEventKind::GpuBatchOverlayUpload,
+                "upload do overlay GPU",
+                overlay_started,
+                "overlay habilitado",
+            );
         }
         if show_envelope {
+            let envelope_started = Instant::now();
             if let (Some(context), Some(layout), Some(surface_config), Some(state)) = (
                 &self.context,
                 &self.tile_bind_group_layout,
@@ -619,6 +695,12 @@ impl GpuWindowApp {
                     ));
                 }
             }
+            self.record_gpu_upload_stage(
+                crate::orchestrator::FrameEventKind::GpuBatchEnvelopeUpload,
+                "upload do envelope GPU",
+                envelope_started,
+                "envelope habilitado",
+            );
         } else {
             self.envelope_texture = None;
             self.envelope_command = None;
@@ -971,8 +1053,8 @@ impl ApplicationHandler for GpuWindowApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        centered_bounds, format_gpu_frame_history, needs_batch_rebuild, select_present_mode,
-        vertex_buffer_capacity, GpuFrameMetrics, PreparedTileBatch,
+        centered_bounds, format_gpu_frame_history, format_gpu_upload_stage, needs_batch_rebuild,
+        select_present_mode, vertex_buffer_capacity, GpuFrameMetrics, PreparedTileBatch,
     };
     use crate::geometry::ScreenPoint;
     use crate::gpu::{TextureKey, TextureUpload, TileDrawCommand};
@@ -1009,6 +1091,30 @@ mod tests {
             GpuFrameMetrics::from_batch(&batch, Duration::ZERO).draw_calls(),
             1
         );
+    }
+
+    #[test]
+    fn gpu_upload_stage_description_includes_duration_and_detail() {
+        assert_eq!(
+            format_gpu_upload_stage(
+                "upload de texturas",
+                Duration::from_micros(1_250),
+                "3 atualizacoes",
+            ),
+            "upload de texturas: 1.250 ms (3 atualizacoes)"
+        );
+    }
+
+    #[test]
+    fn gpu_upload_stage_events_are_distinct() {
+        let kinds = [
+            crate::orchestrator::FrameEventKind::GpuBatchTextureUpload,
+            crate::orchestrator::FrameEventKind::GpuBatchTextureRetention,
+            crate::orchestrator::FrameEventKind::GpuBatchVertexUpload,
+            crate::orchestrator::FrameEventKind::GpuBatchOverlayUpload,
+            crate::orchestrator::FrameEventKind::GpuBatchEnvelopeUpload,
+        ];
+        assert_eq!(kinds.len(), 5);
     }
 
     #[test]
