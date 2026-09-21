@@ -3,6 +3,7 @@ use crate::gpu::{
     texture_keys_for_commands, tile_vertices_for_commands, upload_tile_texture, GpuContext,
     GpuTextureStore, GpuTileTexture, PreparedTileBatch, TextureCache, TileDrawCommand,
 };
+use crate::render::{FrameBuilder, ImageId, ImageRevision, Rect, RenderFrame, TileDraw, Viewport};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -104,6 +105,8 @@ pub struct GpuAppState {
     pub orchestrator: crate::Orchestrator,
     pub config: crate::config::RendererConfig,
     pub prepared_batch: Option<PreparedTileBatch>,
+    pub prepared_frame: Option<RenderFrame>,
+    frame_builder: FrameBuilder,
     pub texture_cache: TextureCache,
     pub last_frame_metrics: Option<GpuFrameMetrics>,
     pub frame_timing_ring: VecDeque<(u64, Duration)>,
@@ -134,6 +137,8 @@ impl GpuAppState {
             orchestrator,
             config,
             prepared_batch: None,
+            prepared_frame: None,
+            frame_builder: FrameBuilder::new(),
             texture_cache: TextureCache::default(),
             last_frame_metrics: None,
             frame_timing_ring: VecDeque::with_capacity(GPU_FRAME_HISTORY_CAPACITY),
@@ -273,6 +278,29 @@ impl GpuAppState {
         self.last_frame_metrics = Some(GpuFrameMetrics::from_batch(
             &batch,
             preparation_started.elapsed(),
+        ));
+        let frame_tiles = batch
+            .commands
+            .iter()
+            .enumerate()
+            .map(|(layer, command)| {
+                TileDraw::new(
+                    ImageId::new(command.texture.tile as u64),
+                    ImageRevision::new(command.texture.content_hash),
+                    layer as u32,
+                )
+                .with_destination(Rect::new(
+                    command.position.x,
+                    command.position.y,
+                    command.size.0,
+                    command.size.1,
+                ))
+            })
+            .collect();
+        self.prepared_frame = Some(self.frame_builder.build(
+            Viewport::new(self.config.width as u32, self.config.height as u32),
+            frame_tiles,
+            Vec::new(),
         ));
         self.prepared_batch = Some(batch);
     }
@@ -891,6 +919,10 @@ mod tests {
             .prepared_batch
             .as_ref()
             .is_some_and(|batch| !batch.commands.is_empty()));
+        assert!(state
+            .prepared_frame
+            .as_ref()
+            .is_some_and(|frame| !frame.tiles().is_empty()));
     }
 
     #[test]
