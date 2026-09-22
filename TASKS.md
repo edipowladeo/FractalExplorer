@@ -96,7 +96,7 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - Verificar visualmente se as camadas se alinham como níveis equivalentes de uma quadtree.
 - Usar o diagnóstico para orientar a futura conversão de coordenadas da camada pela câmera.
 
-### T021 — Resolver desalinhamento de tiles usando tipos pequenos
+### T029 — Resolver desalinhamento de tiles usando tipos pequenos
 
 - Investigar e corrigir o desalinhamento entre camadas sem implementar conversão de cada tile do plano complexo para a tela durante o desenho.
 - Reavaliar a solução atual de posicionamento relativo mantendo o custo e a representação numérica reduzidos quando possível.
@@ -114,7 +114,7 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - Validar o ciclo: retrair → verificar se ficou vazia → criar uma camada com um tile → expandir.
 - Confirmar que a mesma sequência é segura tanto para `TiledInfiniteCanvas`/camadas quanto para `TileLayer`/tiles.
 
-### T018 — Revisar invariância do pivô no zoom
+### T030 — Revisar invariância do pivô no zoom
 
 - Revisar o fluxo de zoom para garantir que o ponto do plano complexo sob o cursor permaneça na mesma posição do botão do mouse durante a operação.
 - Verificar a interação entre conversão tela/plano, transformação da camada, expansão/desalocação de tiles e processamento assíncrono.
@@ -194,13 +194,13 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## DONE
 
-### T020 — Integrar multiprecisão na camada e corrigir navegação
+### T031 — Integrar multiprecisão na camada e corrigir navegação (reconstrução histórica)
 
 - **Resultado:** a integração foi preservada para a reconstrução histórica; a
   implementação compatível com o canvas atual será reaplicada pelo merge
   `4bc041b`.
 
-### T020 — Integrar multiprecisão na camada e corrigir navegação
+### T032 — Integrar multiprecisão na camada e corrigir navegação
 
 - **Resultado:** `Orchestrator::from_config` aplica `multiprecision` ou
   `perturbation` a todos os tiles, inclusive os criados por expansão; o loop do
@@ -209,7 +209,7 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   GREEN passou com 44 testes, `cargo check --bin sprite-demo`, `cargo fmt` e
   `git diff --check`. A validação visual da navegação fica a cargo do usuário.
 
-### T019 — Implementar núcleo `Fixed<N>` com limbs `u64`
+### T033 — Implementar núcleo `Fixed<N>` com limbs `u64`
 
 - **Resultado:** implementados `Fixed<1>`, `Fixed<2>` e `Fixed<N>` com limbs
   `u64`, escala fracionária `32 * N`, cálculo Mandelbrot direto por pixel,
@@ -221,7 +221,7 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   sprite-demo` passou; `cargo fmt` e `git diff --check` passaram. A validação
   visual da janela fica a cargo do usuário.
 
-### T018 — Investigar e planejar a multiprecisão u64
+### T034 — Investigar e planejar a multiprecisão u64
 
 - **Resultado:** investigação do `fractalExplorer_kotlin2026` registrada em
   `PLANO_IMPLEMENTACAO_MULTIPRECISAO.md`, cobrindo full multiprecision,
