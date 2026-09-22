@@ -522,6 +522,7 @@ impl GpuWindowApp {
             envelope_cache_key: None,
             texture_store: None,
             tile_commands: Vec::new(),
+            surface_initialized: false,
         }
     }
 
@@ -535,6 +536,7 @@ impl GpuWindowApp {
         self.tile_vertex_ring = VertexBufferRing::new(ring_size);
         self.overlay_vertex_ring = VertexBufferRing::new(ring_size);
         self.envelope_vertex_ring = VertexBufferRing::new(ring_size);
+        self.surface_initialized = false;
     }
 
     fn configure_surface(&mut self, width: u32, height: u32) {
@@ -549,6 +551,7 @@ impl GpuWindowApp {
         config.height = height.max(1);
         surface.configure(&context.device, config);
         if needs_batch_rebuild(previous, (config.width, config.height)) {
+            self.surface_initialized = false;
             self.tile_vertex_ring.reset();
             self.overlay_vertex_ring.reset();
             self.envelope_vertex_ring.reset();
@@ -990,6 +993,7 @@ impl ApplicationHandler for GpuWindowApp {
                             if let Some(config) = &self.surface_config {
                                 surface.configure(&context.device, config);
                             }
+                            self.surface_initialized = false;
                             self.tile_vertex_ring.reset();
                             self.overlay_vertex_ring.reset();
                             self.envelope_vertex_ring.reset();
@@ -1015,6 +1019,10 @@ impl ApplicationHandler for GpuWindowApp {
                                 label: Some("gpu-clear"),
                             },
                         );
+                        let preserve_previous_frame = self
+                            .state
+                            .as_ref()
+                            .is_some_and(|state| state.config.preserve_previous_frame);
                         {
                             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                                 label: Some("gpu-clear-pass"),
@@ -1023,7 +1031,10 @@ impl ApplicationHandler for GpuWindowApp {
                                     depth_slice: None,
                                     resolve_target: None,
                                     ops: wgpu::Operations {
-                                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                        load: surface_load_op(
+                                            preserve_previous_frame,
+                                            self.surface_initialized,
+                                        ),
                                         store: wgpu::StoreOp::Store,
                                     },
                                 })],
@@ -1102,6 +1113,7 @@ impl ApplicationHandler for GpuWindowApp {
                             state.canvas.record_frame_presentation_started();
                         }
                         context.queue.present(frame);
+                        self.surface_initialized = true;
                         if let Some(state) = &mut self.state {
                             state.canvas.record_frame_event(
                                 crate::orchestrator::FrameEventKind::GpuPresentationFinished,
@@ -1255,6 +1267,22 @@ mod tests {
         assert_eq!(next_vertex_buffer_slot(1, 3), 2);
         assert_eq!(next_vertex_buffer_slot(2, 3), 0);
         assert_eq!(next_vertex_buffer_slot(0, 0), 0);
+    }
+
+    #[test]
+    fn surface_load_op_preserves_previous_pixels_only_after_initialization() {
+        assert!(matches!(
+            super::surface_load_op(false, false),
+            wgpu::LoadOp::Clear(_)
+        ));
+        assert!(matches!(
+            super::surface_load_op(true, false),
+            wgpu::LoadOp::Clear(_)
+        ));
+        assert!(matches!(
+            super::surface_load_op(true, true),
+            wgpu::LoadOp::Load
+        ));
     }
 
     #[test]

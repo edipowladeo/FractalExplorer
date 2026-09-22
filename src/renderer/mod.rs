@@ -156,8 +156,10 @@ impl RenderSurface {
         true
     }
 
-    fn clear(&mut self) {
-        self.framebuffer.fill(0x101820);
+    fn clear_if_needed(&mut self, preserve_previous_frame: bool) {
+        if !preserve_previous_frame {
+            self.framebuffer.fill(0x101820);
+        }
     }
 }
 
@@ -275,7 +277,7 @@ fn run_cpu_with_updates_and_shutdown(
         // `get_size` changes while the resize gesture is in progress, not only when it ends.
         let window_size = window.get_size();
         surface.update_window_size(window_size);
-        surface.clear();
+        surface.clear_if_needed(config.preserve_previous_frame);
         canvas.record_frame_event(
             crate::orchestrator::FrameEventKind::SurfacePrepared,
             "superficie preparada",
@@ -1019,6 +1021,18 @@ mod tests {
 
         assert!(!surface.update_window_size((960, 540)));
         assert!(!surface.update_window_size((0, 540)));
+    }
+
+    #[test]
+    fn render_surface_preserves_or_clears_previous_pixels_from_the_flag() {
+        let mut surface = RenderSurface::new(2, 2, 1.0, 1.0);
+        surface.framebuffer[0] = 0xabcdef;
+
+        surface.clear_if_needed(true);
+        assert_eq!(surface.framebuffer[0], 0xabcdef);
+
+        surface.clear_if_needed(false);
+        assert_eq!(surface.framebuffer[0], 0x101820);
     }
 
     #[test]
