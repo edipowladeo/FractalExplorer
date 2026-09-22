@@ -4,7 +4,7 @@ Estas instruções se aplicam a todo agente que atuar neste repositório.
 
 ## Controle global de HIL
 
-- [ ] HIL tests
+- [x] HIL tests
 
 Este é o único checkbox de HIL do repositório e é controlado exclusivamente pelo usuário.
 
@@ -67,3 +67,39 @@ Esse procedimento não depende da configuração de depuração do VS Code nem d
 - Não misturar alterações não relacionadas à tarefa atual.
 - Antes do push, verificar o diff, os testes e o branch/remoto de destino.
 - Se commit ou push não puder ser feito por falta de acesso, registrar o bloqueio e não mover a tarefa para `DONE`.
+
+### Política de sincronização entre branches
+
+- Regra de isolamento: **1 agente = 1 worktree = 1 branch**. Um agente não
+  deve trabalhar simultaneamente em mais de um worktree ou branch, e dois
+  agentes não devem compartilhar a mesma branch de trabalho.
+- A `develop` é mantida por um único agente neste fluxo. Outros agentes devem
+  criar uma branch própria a partir do estado atualizado e trabalhar em um
+  worktree próprio.
+- `develop` é uma branch longa, porém exclusiva do agente responsável por ela;
+  não fazer rebase nem force-push nela depois que commits forem publicados.
+- Para atualizar `develop` com `master`, usar merge explícito:
+
+  ```powershell
+  git fetch origin
+  git switch develop
+  git merge --no-ff origin/master
+  git push origin develop
+  ```
+
+- Para PRs de `develop` para `master`, preferir merge commit. Evitar rebase-and-
+  merge e squash-and-merge nessa branch longa, pois podem gerar divergências
+  históricas em PRs posteriores.
+- Branches `feature/*` podem ser rebaseadas enquanto privadas. Depois do
+  primeiro push ou uso por outro agente, não reescrever seu histórico sem
+  coordenação.
+- Após o merge de uma PR, a PR é fechada pelo GitHub. Uma nova PR só deve ser
+  criada quando `develop` tiver commits novos em relação a `master`.
+- Antes de abrir ou atualizar uma PR, verificar a divergência e a possibilidade
+  de merge:
+
+  ```powershell
+  git fetch origin
+  git rev-list --left-right --count origin/master...origin/develop
+  gh pr view <numero> --json mergeable,mergeStateStatus
+  ```
