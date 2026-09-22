@@ -15,30 +15,6 @@ Fila de trabalho do rewrite do FractalExplorer em Rust. A ordem de `TODO` é del
 
 Estas decisões definem a primeira fatia vertical, mas não antecipam a implementação dos itens em `BACKLOG`.
 
-## Plano de implementação GPU
-
-O plano abaixo é a sequência prevista para chegar aos processadores GPGPU. Os
-itens continuam no `BACKLOG` até serem promovidos explicitamente para `TODO`.
-
-1. **T003 — Ampliar o processador CPU determinístico**
-   - Criar a referência CPU independente de plataforma, com cancelamento e
-     comportamento determinístico.
-2. **T005 — Implementar paletas e coloração interpolada**
-   - Estabilizar a saída visual que será comparada pelos backends.
-3. **T006 — Implementar o agendador de tiles e progressive rendering**
-   - Separar cálculo, retenção e desenho, cobrindo prioridade e cancelamento.
-4. **T007 — Criar a suíte de conformidade entre backends**
-   - Comparar pontos e imagens representativos contra a referência CPU.
-5. **T008 — Adicionar processador GPGPU com OpenCL**
-   - Implementar OpenCL como processador plugável e validar contra a CPU.
-6. **T009 — Adicionar processador GPGPU com Metal**
-   - Implementar Metal como processador plugável e validar contra a CPU.
-
-Assim, faltam seis tarefas neste caminho: quatro pré-requisitos e duas
-implementações de processador GPU. O renderizador `wgpu` existente não conta
-como uma dessas etapas, pois é o caminho de apresentação gráfica, não um
-processador GPGPU Mandelbrot.
-
 ## TODO
 
 ### T029 — Renderização modular com destinos plugáveis
