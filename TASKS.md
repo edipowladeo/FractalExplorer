@@ -35,6 +35,13 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   persistentes; renderer legado como fallback; Metal e GPGPU adicionáveis sem
   modificar canvas, UI, overlays ou instrumentação; testes GREEN, refactor,
   commits focados e push confirmados.
+- **Passo 0 em andamento:** adicionada a caracterização determinística do
+  `PreparedTileBatch` para preservar identidade, ordem e destino no
+  `RenderFrame`. RED confirmou a ausência da conversão isolada; GREEN passou
+  após a extração de `frame_tiles_from_batch`. `cargo fmt`, `git diff --check`
+  e `cargo test --lib` passaram com 160 testes. Ainda faltam consolidar os
+  cenários de viewport, envelopes, overlays, configuração e encerramento antes
+  de considerar o passo concluído.
 - **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
 
 ### T026 — Investigar e melhorar a precisão para zoom profundo
