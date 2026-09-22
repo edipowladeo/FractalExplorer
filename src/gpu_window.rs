@@ -7,7 +7,7 @@ use crate::gpu::{
 };
 use crate::input::{InputEvent, ZoomDirection};
 use crate::render::{
-    FrameBuilder, ImageId, ImageRevision, ImageUpdate, Rect, RenderFrame, TileDraw, Viewport,
+    FrameBuilder, ImageId, ImageRevision, ImageUpdate, PreparedFrame, Rect, TileDraw, Viewport,
 };
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -354,8 +354,7 @@ pub struct GpuAppState {
     pub orchestrator: crate::Orchestrator,
     pub config: crate::config::RendererConfig,
     pub prepared_batch: Option<PreparedTileBatch>,
-    pub prepared_frame: Option<RenderFrame>,
-    pub prepared_image_updates: Vec<ImageUpdate>,
+    pub prepared_frame: Option<PreparedFrame>,
     frame_builder: FrameBuilder,
     pub texture_cache: TextureCache,
     pub last_frame_metrics: Option<GpuFrameMetrics>,
@@ -388,7 +387,6 @@ impl GpuAppState {
             config,
             prepared_batch: None,
             prepared_frame: None,
-            prepared_image_updates: Vec::new(),
             frame_builder: FrameBuilder::new(),
             texture_cache: TextureCache::default(),
             last_frame_metrics: None,
@@ -405,7 +403,6 @@ impl GpuAppState {
         self.config.height = viewport.height().max(1) as usize;
         self.prepared_batch = None;
         self.prepared_frame = None;
-        self.prepared_image_updates.clear();
     }
 
     fn input_events_for_window_event(&mut self, event: &WindowEvent) -> Vec<InputEvent> {
@@ -559,7 +556,7 @@ impl GpuAppState {
             preparation_started.elapsed(),
         ));
         let frame_tiles = frame_tiles_from_batch(&batch);
-        self.prepared_image_updates = batch
+        let image_updates = batch
             .uploads
             .iter()
             .filter_map(|upload| {
@@ -573,11 +570,12 @@ impl GpuAppState {
                 .ok()
             })
             .collect();
-        self.prepared_frame = Some(self.frame_builder.build(
+        let frame = self.frame_builder.build(
             Viewport::new(self.config.width as u32, self.config.height as u32),
             frame_tiles,
             Vec::new(),
-        ));
+        );
+        self.prepared_frame = Some(PreparedFrame::new(frame, image_updates));
         self.prepared_batch = Some(batch);
     }
 }
@@ -783,7 +781,8 @@ impl GpuWindowApp {
         let image_updates = self
             .state
             .as_ref()
-            .map(|state| state.prepared_image_updates.clone())
+            .and_then(|state| state.prepared_frame.as_ref())
+            .map(|prepared| prepared.image_updates().to_vec())
             .unwrap_or_default();
         let texture_upload_count = if image_updates.is_empty() {
             batch.uploads.len()
@@ -1433,7 +1432,7 @@ impl ApplicationHandler for GpuWindowApp {
                     "upload do batch GPU iniciado",
                 );
             }
-            self.upload_batch(batch, tile_commands_for_frame(&frame));
+            self.upload_batch(batch, tile_commands_for_frame(frame.frame()));
             if let Some(state) = &mut self.state {
                 state.canvas.record_frame_event(
                     crate::orchestrator::FrameEventKind::GpuBatchUploadFinished,
@@ -1681,7 +1680,6 @@ mod tests {
         assert_eq!(state.config.height, 768);
         assert!(state.prepared_batch.is_none());
         assert!(state.prepared_frame.is_none());
-        assert!(state.prepared_image_updates.is_empty());
     }
 
     #[test]
@@ -1714,8 +1712,11 @@ mod tests {
         assert!(state
             .prepared_frame
             .as_ref()
-            .is_some_and(|frame| !frame.tiles().is_empty()));
-        assert!(!state.prepared_image_updates.is_empty());
+            .is_some_and(|prepared| !prepared.frame().tiles().is_empty()));
+        assert!(state
+            .prepared_frame
+            .as_ref()
+            .is_some_and(|prepared| !prepared.image_updates().is_empty()));
     }
 
     #[test]
