@@ -32,6 +32,7 @@ pub struct RendererConfig {
     pub backend: String,
     pub gpu_backend: String,
     pub gpu_vertex_buffer_ring_size: usize,
+    pub preserve_previous_frame: bool,
     pub width: usize,
     pub height: usize,
     pub max_iterations: u32,
@@ -132,6 +133,7 @@ impl Default for RendererConfig {
             backend: "cpu".to_string(),
             gpu_backend: "auto".to_string(),
             gpu_vertex_buffer_ring_size: 3,
+            preserve_previous_frame: true,
             width: 640,
             height: 480,
             max_iterations: 256,
@@ -360,6 +362,14 @@ mod tests {
 
         assert_eq!(config.gpu_backend, "auto");
         assert_eq!(config.gpu_backend_kind(), Ok(GpuBackend::Auto));
+    }
+
+    #[test]
+    fn preserves_previous_frame_by_default_and_accepts_the_flag() {
+        assert!(RendererConfig::default().preserve_previous_frame);
+
+        let config: RendererConfig = toml::from_str("preserve_previous_frame = false").unwrap();
+        assert!(!config.preserve_previous_frame);
     }
 
     #[test]
