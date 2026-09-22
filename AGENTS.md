@@ -4,7 +4,7 @@ Estas instruções se aplicam a todo agente que atuar neste repositório.
 
 ## Controle global de HITL
 
-- [ ] HITL tests
+- [x] HITL tests
 
 Este é o único checkbox de HITL do repositório e é controlado exclusivamente pelo usuário.
 
