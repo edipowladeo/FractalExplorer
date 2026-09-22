@@ -261,6 +261,29 @@ impl RenderFrame {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreparedFrame {
+    frame: RenderFrame,
+    image_updates: Vec<ImageUpdate>,
+}
+
+impl PreparedFrame {
+    pub fn new(frame: RenderFrame, image_updates: Vec<ImageUpdate>) -> Self {
+        Self {
+            frame,
+            image_updates,
+        }
+    }
+
+    pub fn frame(&self) -> &RenderFrame {
+        &self.frame
+    }
+
+    pub fn image_updates(&self) -> &[ImageUpdate] {
+        &self.image_updates
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RenderCapabilities {
     pub partial_image_updates: bool,
@@ -389,9 +412,9 @@ impl FrameBuilder {
 #[cfg(test)]
 mod tests {
     use super::{
-        FrameBuilder, FrameOutcome, ImageId, ImageRevision, ImageUpdate, RenderCapabilities,
-        RenderError, RenderFrame, RenderTarget, RenderTargetFactory, RenderTargetSession,
-        SurfaceFailure, TileDraw, Viewport,
+        FrameBuilder, FrameOutcome, ImageId, ImageRevision, ImageUpdate, PreparedFrame, Rect,
+        RenderCapabilities, RenderError, RenderFrame, RenderTarget, RenderTargetFactory,
+        RenderTargetSession, SurfaceFailure, TileDraw, Viewport,
     };
 
     #[derive(Default)]
@@ -466,6 +489,27 @@ mod tests {
         assert!(
             ImageUpdate::new(ImageId::new(4), ImageRevision::new(9), 2, 1, vec![0; 4]).is_err()
         );
+    }
+
+    #[test]
+    fn prepared_frame_keeps_logical_frame_separate_from_image_updates() {
+        let frame = RenderFrame::new(4, Viewport::new(2, 1)).with_tile(
+            TileDraw::new(ImageId::new(7), ImageRevision::new(11), 0)
+                .with_destination(Rect::new(1, 0, 1, 1)),
+        );
+        let update = ImageUpdate::new(
+            ImageId::new(7),
+            ImageRevision::new(11),
+            1,
+            1,
+            vec![10, 20, 30, 255],
+        )
+        .unwrap();
+
+        let prepared = PreparedFrame::new(frame.clone(), vec![update.clone()]);
+
+        assert_eq!(prepared.frame(), &frame);
+        assert_eq!(prepared.image_updates(), &[update]);
     }
 
     #[test]
