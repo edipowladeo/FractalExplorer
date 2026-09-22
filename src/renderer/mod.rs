@@ -117,6 +117,34 @@ pub(crate) fn sprite_from_tile(
     Sprite::from_pixels(tile.width() as usize, tile.height() as usize, pixels)
 }
 
+fn prepared_cpu_tile(
+    image: crate::render::ImageId,
+    revision: crate::render::ImageRevision,
+    layer: u32,
+    destination: crate::render::Rect,
+    sprite: &Sprite,
+) -> (crate::render::TileDraw, crate::render::ImageUpdate) {
+    let rgba8 = sprite
+        .pixels()
+        .iter()
+        .flat_map(|pixel| [(pixel >> 16) as u8, (pixel >> 8) as u8, *pixel as u8, 0xff])
+        .collect();
+    let update = crate::render::ImageUpdate::new(
+        image,
+        revision,
+        sprite.width() as u32,
+        sprite.height() as u32,
+        rgba8,
+    )
+    .expect("sprite dimensions and pixels must form a valid image update");
+    let draw = crate::render::TileDraw::new(image, revision, layer).with_destination(destination);
+    (draw, update)
+}
+
+fn cpu_tile_image_id(layer: usize, row: usize, column: usize) -> crate::render::ImageId {
+    crate::render::ImageId::new(((layer as u64) << 42) | ((row as u64) << 21) | column as u64)
+}
+
 /// Framebuffer and viewport-derived regions for the current native window size.
 struct RenderSurface {
     screen_size: ScreenSize,
@@ -249,6 +277,7 @@ fn run_cpu_with_updates_and_shutdown(
     let mut render_plan = PrecisionDecisionManager::from_config(initial_config).map_err(|_| {
         minifb::Error::WindowCreate("invalid renderer precision configuration".to_string())
     })?;
+    let mut frame_builder = crate::render::FrameBuilder::new();
     while window.is_open() && !window.is_key_down(Key::Escape) {
         crate::output::begin_frame();
         canvas.begin_frame();
@@ -374,7 +403,10 @@ fn run_cpu_with_updates_and_shutdown(
         let mut sprite_generation_duration = Duration::ZERO;
         let mut rasterization_duration = Duration::ZERO;
         let mut drawn_tiles = 0;
-        for layer in canvas.layers() {
+        let mut frame_tiles = Vec::new();
+        let mut image_updates = Vec::new();
+        let mut completed_sprites = Vec::new();
+        for (layer_index, layer) in canvas.layers().iter().enumerate() {
             let (tile_width, tile_height) = layer.tile_screen_size();
             for row in 0..layer.row_count() {
                 for column in 0..layer.column_count() {
@@ -396,19 +428,54 @@ fn run_cpu_with_updates_and_shutdown(
                         tile.sprite().expect("tile sprite should exist")
                     });
                     let tile_position = canvas.complex_to_screen(tile.coordinate().clone());
-                    let started = Instant::now();
-                    sprite.draw_into_scaled(
-                        &mut surface.framebuffer,
-                        surface.screen_size.width,
-                        tile_position.x as isize,
-                        tile_position.y as isize,
-                        tile_width as usize,
-                        tile_height as usize,
+                    let image_id = cpu_tile_image_id(layer_index, row, column);
+                    let (tile_draw, image_update) = prepared_cpu_tile(
+                        image_id,
+                        crate::render::ImageRevision::new(1),
+                        layer_index as u32,
+                        crate::render::Rect::new(
+                            tile_position.x as i32,
+                            tile_position.y as i32,
+                            tile_width,
+                            tile_height,
+                        ),
+                        &sprite,
                     );
-                    rasterization_duration += started.elapsed();
-                    drawn_tiles += 1;
+                    frame_tiles.push(tile_draw);
+                    image_updates.push(image_update);
+                    completed_sprites.push(sprite);
                 }
             }
+        }
+        let prepared_frame = crate::render::PreparedFrame::new(
+            frame_builder.build(
+                crate::render::Viewport::new(
+                    surface.screen_size.width as u32,
+                    surface.screen_size.height as u32,
+                ),
+                frame_tiles,
+                Vec::new(),
+            ),
+            image_updates,
+        );
+        for (tile, sprite) in prepared_frame
+            .frame()
+            .tiles()
+            .iter()
+            .zip(completed_sprites.iter())
+        {
+            let started = Instant::now();
+            let destination = tile.destination();
+            sprite.draw_into_scaled(
+                &mut surface.framebuffer,
+                surface.screen_size.width,
+                destination.x as isize,
+                destination.y as isize,
+                destination.width as usize,
+                destination.height as usize,
+            );
+            rasterization_duration += started.elapsed();
+            drawn_tiles += 1;
         }
         canvas.record_frame_event(
             crate::orchestrator::FrameEventKind::TilesRasterized,
@@ -970,10 +1037,11 @@ mod tests {
         allocation_screen_rect, draw_mouse_marker, draw_rectangle_outline, format_coordinates,
         format_copied_coordinates, format_frame_history_line, format_layer_overlay,
         format_worker_queue_line, format_worker_status_line, has_live_window_size,
-        inverted_rainbow_color, middle_click_coordinate_report, pastelize_color, rainbow_color,
-        sprite_from_tile, FrameTimingRing, Palette, RenderSurface, ScreenRect,
+        inverted_rainbow_color, middle_click_coordinate_report, pastelize_color, prepared_cpu_tile,
+        rainbow_color, sprite_from_tile, FrameTimingRing, Palette, RenderSurface, ScreenRect,
     };
     use crate::geometry::{ComplexPoint, ScreenPoint, ScreenSize};
+    use crate::render::{ImageId, ImageRevision, Rect};
     use crate::{Mandelbrot, Orchestrator, Tile, TiledInfiniteCanvas};
     use std::time::Duration;
 
@@ -986,6 +1054,31 @@ mod tests {
         assert_eq!((sprite.width(), sprite.height()), (3, 3));
         assert_eq!(sprite.pixels()[4], 0);
         assert_ne!(sprite.pixels()[0], 0);
+    }
+
+    #[test]
+    fn prepares_cpu_sprite_as_the_shared_image_contract() {
+        let sprite = crate::Sprite::from_pixels(2, 1, vec![0x00112233, 0x00445566]);
+
+        let (draw, update) = prepared_cpu_tile(
+            ImageId::new(7),
+            ImageRevision::new(3),
+            2,
+            Rect::new(-1, 4, 3, 2),
+            &sprite,
+        );
+
+        assert_eq!(draw.image(), ImageId::new(7));
+        assert_eq!(draw.revision(), ImageRevision::new(3));
+        assert_eq!(draw.layer(), 2);
+        assert_eq!(draw.destination(), Rect::new(-1, 4, 3, 2));
+        assert_eq!(update.image(), ImageId::new(7));
+        assert_eq!(update.revision(), ImageRevision::new(3));
+        assert_eq!(update.dimensions(), (2, 1));
+        assert_eq!(
+            update.rgba8(),
+            &[0x11, 0x22, 0x33, 0xff, 0x44, 0x55, 0x66, 0xff]
+        );
     }
 
     #[test]

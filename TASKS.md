@@ -42,12 +42,14 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   ausência da conversão isolada e GREEN passou após a extração de
   `frame_tiles_from_batch`. `cargo fmt`, `git diff --check` e `cargo test
   --lib` passaram com 160 testes. Não foi necessária validação HILT.
-- **Passo 1 em andamento:** criado `PreparedFrame`, que mantém o
-  `RenderFrame` lógico separado dos `ImageUpdate` em um snapshot imutável; o
-  estado GPU já publica e consome esse contrato. RED confirmou o tipo ausente;
-  GREEN passou após a implementação e a migração do estado GPU. `cargo fmt`,
-  `git diff --check` e `cargo test --lib` passaram com 161 testes. O CPU
-  legado ainda não publica o mesmo snapshot, portanto o passo permanece aberto.
+- **Passo 1 concluído:** criado `PreparedFrame`, que mantém o `RenderFrame`
+  lógico separado dos `ImageUpdate` em um snapshot imutável; os caminhos GPU e
+  CPU publicam e consomem o mesmo contrato. No CPU, a conversão de sprites
+  preserva identidade, revisão, ordem, destino e payload RGBA, e o rasterizador
+  usa os destinos do snapshot. RED confirmou o tipo ausente e depois a unidade
+  de preparação CPU ausente; GREEN passou após a implementação e a migração.
+  `cargo fmt`, `git diff --check` e `cargo test --lib` passaram com 162 testes.
+  Não foi necessária validação HILT.
 - **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
 
 ### T026 — Investigar e melhorar a precisão para zoom profundo
