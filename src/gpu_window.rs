@@ -507,6 +507,14 @@ pub struct GpuWindowApp {
     texture_store: Option<GpuTextureStore>,
     tile_commands: Vec<crate::gpu::TileDrawCommand>,
     surface_initialized: bool,
+    composition_texture: Option<CompositionTexture>,
+}
+
+struct CompositionTexture {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    width: u32,
+    height: u32,
 }
 
 impl GpuWindowApp {
@@ -544,6 +552,7 @@ impl GpuWindowApp {
             texture_store: None,
             tile_commands: Vec::new(),
             surface_initialized: false,
+            composition_texture: None,
         }
     }
 
@@ -558,6 +567,7 @@ impl GpuWindowApp {
         self.overlay_vertex_ring = VertexBufferRing::new(ring_size);
         self.envelope_vertex_ring = VertexBufferRing::new(ring_size);
         self.surface_initialized = false;
+        self.composition_texture = None;
     }
 
     fn configure_surface(&mut self, width: u32, height: u32) {
@@ -573,12 +583,50 @@ impl GpuWindowApp {
         surface.configure(&context.device, config);
         if needs_batch_rebuild(previous, (config.width, config.height)) {
             self.surface_initialized = false;
+            self.composition_texture = None;
             self.tile_vertex_ring.reset();
             self.overlay_vertex_ring.reset();
             self.envelope_vertex_ring.reset();
             self.envelope_texture = None;
             self.envelope_command = None;
             self.envelope_cache_key = None;
+        }
+    }
+
+    fn ensure_composition_texture(
+        &mut self,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) {
+        let needs_recreation = self.composition_texture.as_ref().is_none_or(|texture| {
+            texture.width != width || texture.height != height
+        });
+        if needs_recreation {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("persistent-composition"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.composition_texture = Some(CompositionTexture {
+                texture,
+                view,
+                width,
+                height,
+            });
+            self.surface_initialized = false;
         }
     }
 }
@@ -926,7 +974,7 @@ impl ApplicationHandler for GpuWindowApp {
         };
         let size = window.inner_size();
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
             format,
             color_space: wgpu::SurfaceColorSpace::Auto,
             width: size.width.max(1),
@@ -992,6 +1040,21 @@ impl ApplicationHandler for GpuWindowApp {
                 self.configure_surface(size.width, size.height)
             }
             WindowEvent::RedrawRequested => {
+                let composition_parameters = self
+                    .surface_config
+                    .as_ref()
+                    .map(|config| (config.format, config.width, config.height));
+                if let (Some(context), Some((format, width, height))) =
+                    (self.context.take(), composition_parameters)
+                {
+                    self.ensure_composition_texture(
+                        &context.device,
+                        format,
+                        width,
+                        height,
+                    );
+                    self.context = Some(context);
+                }
                 if let Some(state) = &mut self.state {
                     state.canvas.record_frame_event(
                         crate::orchestrator::FrameEventKind::GpuRedrawReceived,
@@ -1037,9 +1100,10 @@ impl ApplicationHandler for GpuWindowApp {
                         );
                     }
                     {
-                        let view = frame
-                            .texture
-                            .create_view(&wgpu::TextureViewDescriptor::default());
+                        let composition = self
+                            .composition_texture
+                            .as_ref()
+                            .expect("composition texture must exist");
                         let mut encoder = context.device.create_command_encoder(
                             &wgpu::CommandEncoderDescriptor {
                                 label: Some("gpu-clear"),
@@ -1053,7 +1117,7 @@ impl ApplicationHandler for GpuWindowApp {
                             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                                 label: Some("gpu-clear-pass"),
                                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                    view: &view,
+                                    view: &composition.view,
                                     depth_slice: None,
                                     resolve_target: None,
                                     ops: wgpu::Operations {
@@ -1104,6 +1168,25 @@ impl ApplicationHandler for GpuWindowApp {
                                 }
                             }
                         }
+                        encoder.copy_texture_to_texture(
+                            wgpu::TexelCopyTextureInfo {
+                                texture: &composition.texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d::ZERO,
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            wgpu::TexelCopyTextureInfo {
+                                texture: &frame.texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d::ZERO,
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            wgpu::Extent3d {
+                                width: composition.width,
+                                height: composition.height,
+                                depth_or_array_layers: 1,
+                            },
+                        );
                         let command_buffer = encoder.finish();
                         if let Some(state) = &mut self.state {
                             state.canvas.record_frame_event(
