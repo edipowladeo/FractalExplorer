@@ -38,6 +38,10 @@ fn surface_usage(supported: wgpu::TextureUsages) -> wgpu::TextureUsages {
     wgpu::TextureUsages::RENDER_ATTACHMENT & supported
 }
 
+fn uses_persistent_composition(preserve_previous_frame: bool) -> bool {
+    preserve_previous_frame
+}
+
 fn vertex_buffer_capacity(current: usize, required: usize) -> usize {
     if required <= current {
         return current;
@@ -1075,6 +1079,10 @@ impl ApplicationHandler for GpuWindowApp {
                 self.configure_surface(size.width, size.height)
             }
             WindowEvent::RedrawRequested => {
+                let preserve_previous_frame = self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.config.preserve_previous_frame);
                 let composition_parameters = self
                     .surface_config
                     .as_ref()
@@ -1082,18 +1090,20 @@ impl ApplicationHandler for GpuWindowApp {
                 if let (Some(context), Some((format, width, height))) =
                     (self.context.take(), composition_parameters)
                 {
-                    let layout = self
-                        .tile_bind_group_layout
-                        .take()
-                        .expect("tile bind group layout must exist");
-                    self.ensure_composition_texture(
-                        &context.device,
-                        &layout,
-                        format,
-                        width,
-                        height,
-                    );
-                    self.tile_bind_group_layout = Some(layout);
+                    if uses_persistent_composition(preserve_previous_frame) {
+                        let layout = self
+                            .tile_bind_group_layout
+                            .take()
+                            .expect("tile bind group layout must exist");
+                        self.ensure_composition_texture(
+                            &context.device,
+                            &layout,
+                            format,
+                            width,
+                            height,
+                        );
+                        self.tile_bind_group_layout = Some(layout);
+                    }
                     self.context = Some(context);
                 }
                 if let Some(state) = &mut self.state {
@@ -1141,19 +1151,23 @@ impl ApplicationHandler for GpuWindowApp {
                         );
                     }
                     {
-                        let composition = self
-                            .composition_texture
-                            .as_ref()
-                            .expect("composition texture must exist");
+                        let composition = if uses_persistent_composition(preserve_previous_frame) {
+                            Some(
+                                self.composition_texture
+                                    .as_ref()
+                                    .expect("composition texture must exist"),
+                            )
+                        } else {
+                            None
+                        };
+                        let surface_view = frame
+                            .texture
+                            .create_view(&wgpu::TextureViewDescriptor::default());
                         let mut encoder = context.device.create_command_encoder(
                             &wgpu::CommandEncoderDescriptor {
                                 label: Some("gpu-clear"),
                             },
                         );
-                        let preserve_previous_frame = self
-                            .state
-                            .as_ref()
-                            .is_some_and(|state| state.config.preserve_previous_frame);
                         let composition_started = Instant::now();
                         if let Some(state) = &mut self.state {
                             state.canvas.record_frame_event(
@@ -1165,7 +1179,9 @@ impl ApplicationHandler for GpuWindowApp {
                             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                                 label: Some("gpu-clear-pass"),
                                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                    view: &composition.view,
+                                    view: composition
+                                        .map(|composition| &composition.view)
+                                        .unwrap_or(&surface_view),
                                     depth_slice: None,
                                     resolve_target: None,
                                     ops: wgpu::Operations {
@@ -1226,17 +1242,14 @@ impl ApplicationHandler for GpuWindowApp {
                                 ),
                             );
                         }
-                        let present_pass_started = Instant::now();
-                        if let Some(state) = &mut self.state {
-                            state.canvas.record_frame_event(
-                                crate::orchestrator::FrameEventKind::GpuSurfacePresentPassStarted,
-                                "passe de apresentacao da superficie GPU iniciado",
-                            );
-                        }
-                        let surface_view = frame
-                            .texture
-                            .create_view(&wgpu::TextureViewDescriptor::default());
-                        {
+                        if let Some(composition) = composition {
+                            let present_pass_started = Instant::now();
+                            if let Some(state) = &mut self.state {
+                                state.canvas.record_frame_event(
+                                    crate::orchestrator::FrameEventKind::GpuSurfacePresentPassStarted,
+                                    "passe de apresentacao da superficie GPU iniciado",
+                                );
+                            }
                             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                                 label: Some("gpu-present-pass"),
                                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1258,16 +1271,16 @@ impl ApplicationHandler for GpuWindowApp {
                             pass.set_bind_group(0, &composition.bind_group, &[]);
                             pass.set_vertex_buffer(0, composition.present_vertex_buffer.slice(..));
                             pass.draw(0..6, 0..1);
-                        }
-                        if let Some(state) = &mut self.state {
-                            state.canvas.record_frame_event(
-                                crate::orchestrator::FrameEventKind::GpuSurfacePresentPassFinished,
-                                format_gpu_upload_stage(
-                                    "passe de apresentacao da superficie GPU concluido",
-                                    present_pass_started.elapsed(),
-                                    "codificacao do render pass",
-                                ),
-                            );
+                            if let Some(state) = &mut self.state {
+                                state.canvas.record_frame_event(
+                                    crate::orchestrator::FrameEventKind::GpuSurfacePresentPassFinished,
+                                    format_gpu_upload_stage(
+                                        "passe de apresentacao da superficie GPU concluido",
+                                        present_pass_started.elapsed(),
+                                        "codificacao do render pass",
+                                    ),
+                                );
+                            }
                         }
                         let command_buffer = encoder.finish();
                         if let Some(state) = &mut self.state {
@@ -1523,6 +1536,12 @@ mod tests {
         let supported = wgpu::TextureUsages::RENDER_ATTACHMENT;
 
         assert_eq!(super::surface_usage(supported), supported);
+    }
+
+    #[test]
+    fn persistent_composition_is_used_only_when_frame_preservation_is_enabled() {
+        assert!(super::uses_persistent_composition(true));
+        assert!(!super::uses_persistent_composition(false));
     }
 
     #[test]
