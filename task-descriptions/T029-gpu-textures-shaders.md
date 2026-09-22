@@ -253,6 +253,12 @@ Enquanto a migração estiver em curso, CPU e GPU devem continuar selecionáveis
 
 **Saída:** uma suíte capaz de detectar nova divergência antes da extração.
 
+Os testes devem separar comportamento determinístico de comportamento dependente
+de plataforma. Viewport, envelopes, ordem de camadas, input normalizado,
+configuração, shutdown e sequência de frames devem ser cobertos com fakes e
+golden data. A abertura de janela, desenho efetivo, resize durante o gesto e
+qualidade visual ficam para uma validação HITL curta e explícita.
+
 ### Passo 1 — Introduzir `RenderFrame` e identidades estáveis
 
 - Criar `ImageId`, `ImageRevision`, `ImageUpdate`, `TileDraw`,
@@ -274,6 +280,9 @@ para a mesma cena, inclusive viewport reduzida e envelope.
 **Teste RED principal:** o controlador completo funciona com um target fake e
 produz a sequência esperada de resize, updates, render, eviction e recovery.
 
+Este passo não exige HITL para ser concluído. Uma execução visual CPU pode ser
+usada apenas como smoke test depois que o contrato estiver GREEN.
+
 ### Passo 3 — Extrair `ApplicationController`
 
 - Unificar configuração, canvas, agendamento, input, instrumentação, overlays e
@@ -284,6 +293,9 @@ produz a sequência esperada de resize, updates, render, eviction e recovery.
 
 **Teste RED principal:** uma sequência normalizada de eventos produz os mesmos
 efeitos e frames, independentemente do runtime e do target fake usados.
+
+O runtime falso deve cobrir resize contínuo, redraw, configuração e fechamento;
+nenhum desses casos deve depender de uma janela real.
 
 ### Passo 4 — Normalizar o runtime de janela
 
@@ -296,6 +308,10 @@ efeitos e frames, independentemente do runtime e do target fake usados.
 **Teste RED principal:** fake runtime cobre resize contínuo, redraw, fechamento
 da janela de renderer e fechamento da Config UI sem conhecer CPU/GPU.
 
+HITL fica reservado para confirmar que o adaptador traduz corretamente os
+eventos reais da janela, especialmente resize durante o arrasto, redraw e
+encerramento coordenado.
+
 ### Passo 5 — Introduzir wrappers `GraphicsDevice`
 
 - Criar handles, descritores, `CommandList`, capabilities e erros portáveis.
@@ -306,6 +322,11 @@ da janela de renderer e fechamento da Config UI sem conhecer CPU/GPU.
 
 **Teste RED principal:** a composição de uma cena gera o mesmo command list no
 mock e no adaptador `wgpu`, sem exigir uma GPU nos testes unitários.
+
+Handles, descritores, cache, invalidação e ordem de comandos devem permanecer
+testáveis exclusivamente com `MockGraphicsDevice`. A criação real de device e
+surface é uma verificação opcional de integração, não um requisito do ciclo
+RED/GREEN.
 
 ### Passo 6 — Migrar o destino GPU para os contratos
 
@@ -319,6 +340,12 @@ mock e no adaptador `wgpu`, sem exigir uma GPU nos testes unitários.
 **Teste RED principal:** frames sem mudança não criam nem enviam texturas ou
 buffers; mudança de posição atualiza somente instâncias; mudança de imagem
 atualiza somente a textura cuja revisão mudou.
+
+O comportamento de recursos deve ser fechado com `MockGraphicsDevice` antes da
+validação HITL. A validação manual deste passo fica limitada a uma cena GPU
+real: abrir, renderizar, redimensionar, usar pan/zoom, alternar overlays e
+fechar. Stalls, sincronização de driver, apresentação e qualidade dos shaders
+não devem ser simulados além do que o mock consegue afirmar.
 
 #### Plano operacional de diagnóstico e contenção de stalls GPU
 
@@ -351,6 +378,10 @@ atualiza somente a textura cuja revisão mudou.
 **Gate arquitetural:** busca estática e testes impedem imports de `wgpu`,
 `winit` ou `minifb` em `app_core`, `orchestrator` e contratos de renderização.
 
+O gate pode ser verificado automaticamente com busca de dependências, fake
+runtime e fake target. HITL serve apenas para confirmar que a experiência CPU e
+GPU continua equivalente nos fluxos principais.
+
 ### Passo 8 — Conformidade, fallback e recuperação
 
 - Comparar CPU e GPU por cenas representativas e tolerância explícita.
@@ -362,6 +393,10 @@ atualiza somente a textura cuja revisão mudou.
 
 **Teste RED principal:** qualquer falha recuperável preserva o estado lógico da
 aplicação e troca/recria somente o adaptador afetado.
+
+Perda de surface/device, fallback e recriação de cache devem ser simulados com
+erros injetáveis. HITL é necessária somente para confirmar recuperação em um
+backend real quando a plataforma permitir provocar ou observar essa falha.
 
 ### Passo 9 — Preparar GPGPU sem acoplar apresentação
 
@@ -376,6 +411,10 @@ aplicação e troca/recria somente o adaptador afetado.
 **Observação:** este passo prepara a arquitetura; implementar o kernel GPGPU
 continua sendo tarefa própria e usa a suíte de conformidade.
 
+As quatro combinações devem ser cobertas primeiro com fake processor e fake
+target. Execução GPGPU real e medições de transferência são validações de
+hardware opcionais, não critérios para os testes unitários.
+
 ### Passo 10 — Provar a substituição com Metal
 
 - Compilar o backend `wgpu`/Metal em macOS sem mudanças no domínio.
@@ -388,6 +427,9 @@ continua sendo tarefa própria e usa a suíte de conformidade.
 **Critério:** adicionar Metal exige novos adaptadores e configuração, mas não
 alterações no canvas, controlador, frame builder, overlays ou Config UI.
 
+Compilação, contratos e seleção podem ser verificados sem hardware Metal; a
+execução visual e a integração com o device Metal exigem HITL em macOS.
+
 ## Estratégia TDD e pirâmide de testes
 
 - **Unitários, sempre rápidos:** frame builder, controlador, resource registry,
@@ -399,8 +441,16 @@ alterações no canvas, controlador, frame builder, overlays ou Config UI.
 - **Integração sem hardware:** fake runtime + fake target + mock device.
 - **Integração com hardware:** opt-in, separada, nunca necessária para o ciclo
   unitário RED/GREEN.
+- **HIL mínimo:** uma verificação por backend real cobrindo inicialização,
+  renderização, resize, pan/zoom, configuração, overlays e encerramento.
+- **HIL adicional:** shaders, apresentação, stalls, perda de device/surface e
+  Metal real somente quando a alteração tocar esses limites.
 - **HIL:** somente quando o checkbox global for marcado pelo usuário. Enquanto
   estiver desmarcado, a aplicação não será iniciada automaticamente.
+
+O objetivo é manter a maior parte da migração rápida, determinística e
+reproduzível. HITL não deve substituir testes de contrato nem ser usado para
+validar lógica que pode ser exercitada por fakes, mocks ou golden data.
 
 Cada passo registra no `TASKS.md` o teste que falhou no RED, os testes GREEN e
 o refactor realizado. Verificações pesadas e benchmarks só serão executados por
