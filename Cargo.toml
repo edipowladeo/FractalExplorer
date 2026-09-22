@@ -8,6 +8,7 @@ license = "MIT"
 [features]
 default = ["native-ui"]
 native-ui = ["dep:eframe"]
+tracy = ["dep:profiling"]
 
 [dependencies]
 eframe = { version = "0.36.2", optional = true }
@@ -19,7 +20,7 @@ bytemuck = { version = "1.25", features = ["derive"] }
 arboard = "3"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-profiling = { version = "1.0.18", features = ["profile-with-tracy"] }
+profiling = { version = "1.0.18", features = ["profile-with-tracy"], optional = true }
 
 [lib]
 name = "fractal_explorer"

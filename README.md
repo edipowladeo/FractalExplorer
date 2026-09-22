@@ -54,7 +54,7 @@ O protótipo é acompanhado pela `T001` em [TASKS.md](TASKS.md) e permanece em `
 Para executar a aplicacao com o Tracy Profiler:
 
 ```powershell
-cargo run --bin sprite-demo -- profiler
+cargo run --features tracy --bin sprite-demo -- profiler
 ```
 
 O argumento `profiler` e apenas o rotulo exibido no titulo da janela. Depois que
@@ -67,11 +67,18 @@ podem consumir CPU e memoria mesmo quando nenhum profiler esta conectado. O
 impacto depende da quantidade de instrumentacao e deve ser medido no hardware
 alvo.
 
-Nesta configuracao, a dependencia Tracy e compilada sempre; portanto,
-`cargo build --release` ainda produz um binario instrumentado. Para um release
-de producao sem esse custo, e necessario desabilitar a instrumentacao por uma
-feature de compilacao (ou remover a dependencia/marcacoes) antes de gerar o
-binario. Apenas nao abrir o Tracy Profiler nao elimina a garantia de overhead.
+A feature `tracy` controla a dependencia e as marcacoes. Builds sem essa
+feature, inclusive `cargo build --release`, nao compilam o cliente Tracy nem
+executam as zonas de profiling. Para uma captura em release, habilite-a
+explicitamente:
+
+```powershell
+cargo build --release --features tracy
+```
+
+Assim, nao e necessario remover o profiler do codigo antes de gerar o release
+de producao; basta nao habilitar a feature `tracy`. O binario com a feature
+continua sujeito ao overhead normal das marcacoes, mesmo sem conexao.
 
 ## Dynamic configuration UI
 

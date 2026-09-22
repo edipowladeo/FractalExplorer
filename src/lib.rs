@@ -39,6 +39,12 @@ pub struct Sprite {
 #[cfg(test)]
 mod profiling_tests {
     #[test]
+    fn profiling_reports_whether_the_tracy_feature_is_enabled() {
+        assert_eq!(crate::profiling::enabled(), cfg!(feature = "tracy"));
+    }
+
+    #[cfg(feature = "tracy")]
+    #[test]
     fn profiling_client_can_start_without_a_connected_profiler() {
         let client = crate::profiling::start();
         drop(client);

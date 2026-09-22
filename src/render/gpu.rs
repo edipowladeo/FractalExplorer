@@ -57,7 +57,7 @@ impl<D: GraphicsDevice> RenderTarget for GpuRenderTarget<D> {
     }
 
     fn render(&mut self, frame: &RenderFrame) -> Result<FrameOutcome, RenderError> {
-        profiling::scope!("gpu_render_target");
+        crate::profile_scope!("gpu_render_target");
         if frame.viewport() != self.viewport {
             return Err(RenderError::InvalidFrame(
                 "frame viewport differs from target viewport",
