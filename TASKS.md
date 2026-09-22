@@ -17,6 +17,26 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## TODO
 
+### T029 — Renderização modular com destinos plugáveis
+
+- **Objetivo:** transformar o spike GPU validado em apenas mais um destino de
+  renderização, preservando um único caminho comum para configuração, janela,
+  input, canvas, tiles, overlays, instrumentação e encerramento.
+- **Plano:** ver [plano de implementação de T029](task-descriptions/T029-gpu-textures-shaders.md).
+- **Dependências:** T003, T005, T006 e T007; a primeira fatia pode reutilizar o
+  processador CPU e os tiles atuais, migrando inicialmente apenas a composição.
+- **Decisão arquitetural:** `RenderTarget` (apresentação) e `TileProcessor`
+  (cálculo CPU/GPGPU) serão plugins independentes. Recursos gráficos serão
+  encapsulados por handles, descritores, command lists e `GraphicsDevice`, sem
+  tipos de `wgpu`, `winit`, `minifb`, Metal ou OpenCL no domínio.
+- **Critérios de aceitação:** um único `ApplicationController` e `FrameBuilder`;
+  CPU/GPU selecionáveis por factory; equivalência dentro de tolerância
+  documentada; recursos comuns independentes do destino; buffers e texturas
+  persistentes; renderer legado como fallback; Metal e GPGPU adicionáveis sem
+  modificar canvas, UI, overlays ou instrumentação; testes GREEN, refactor,
+  commits focados e push confirmados.
+- **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
+
 ### T026 — Investigar e melhorar a precisão para zoom profundo
 
 - **Critério de aceitação:** a câmera, camadas e tiles preservam coordenadas e passo suficientes para zoom profundo; copiar uma localização e restaurá-la na mesma versão mantém a mesma visão. Ver [diretriz de precisão](task-descriptions/T026-deep-zoom-precision.md).
@@ -71,6 +91,18 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   mas o push para `origin/multiprecisao` foi recusado pela política do ambiente.
 
 ## BACKLOG
+
+### T030 - Filtrar tiles totalmente sobrepostos na composicao
+
+- Identificar tiles cuja area visivel esteja completamente coberta por tiles de
+  camadas superiores ja incluidos no batch.
+- Remover esses tiles do batch de renderizacao sem alterar o resultado visual,
+  respeitando ordem de camadas, opacidade, viewport reduzida e envelope de
+  debug.
+- Manter o filtro independente do destino de renderizacao, para que CPU e GPU
+  recebam a mesma selecao logica de tiles.
+- Cobrir com testes a sobreposicao parcial, total, transparencia, camadas
+  invertidas e a ausencia de tiles cobertos no batch final.
 
 ### T027 — Representar `delta` como expoente inteiro positivo
 
