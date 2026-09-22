@@ -92,6 +92,18 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## BACKLOG
 
+### T030 - Filtrar tiles totalmente sobrepostos na composicao
+
+- Identificar tiles cuja area visivel esteja completamente coberta por tiles de
+  camadas superiores ja incluidos no batch.
+- Remover esses tiles do batch de renderizacao sem alterar o resultado visual,
+  respeitando ordem de camadas, opacidade, viewport reduzida e envelope de
+  debug.
+- Manter o filtro independente do destino de renderizacao, para que CPU e GPU
+  recebam a mesma selecao logica de tiles.
+- Cobrir com testes a sobreposicao parcial, total, transparencia, camadas
+  invertidas e a ausencia de tiles cobertos no batch final.
+
 ### T027 — Representar `delta` como expoente inteiro positivo
 
 - Fazer com que `delta` seja representado exclusivamente por um expoente inteiro positivo na camada, no tile e em todos os demais pontos em que essa informação for necessária.
