@@ -163,6 +163,69 @@ pub fn run(
     run_with_updates(canvas, orchestrator, config, receiver, output)
 }
 
+fn format_shutdown_overlay_dump(
+    canvas: &TiledInfiniteCanvas,
+    orchestrator: &Orchestrator,
+    surface: &RenderSurface,
+    frame_timing_ring: &FrameTimingRing,
+    mouse_position: Option<ScreenPoint>,
+) -> String {
+    let mut lines = vec!["Overlay dump on shutdown".to_owned()];
+    let mouse = mouse_position.map(|cursor| canvas.screen_to_complex(cursor));
+
+    lines.push(match mouse {
+        Some(ref point) => format!(
+            "status bar: x={:.15} y={:.15}",
+            point.x, point.y
+        ),
+        None => "status bar: unavailable".to_owned(),
+    });
+    lines.push(format!(
+        "allocation envelope: allocation={:?} deallocation={:?}",
+        surface.allocation, surface.deallocation
+    ));
+
+    lines.push("layers:".to_owned());
+    lines.extend(canvas.layers().iter().enumerate().map(|(index, layer)| {
+        format_layer_overlay(
+            index,
+            layer.zoom(),
+            delta_exponent(layer.delta()),
+            layer.column_count(),
+            layer.row_count(),
+            mouse.clone(),
+        )
+    }));
+
+    lines.push("queue:".to_owned());
+    lines.extend(canvas.layers().iter().enumerate().flat_map(|(layer_index, layer)| {
+        layer
+            .pending_work_positions()
+            .into_iter()
+            .map(move |(row, column)| {
+                format_worker_queue_line(
+                    layer_index,
+                    row,
+                    column,
+                    delta_exponent(layer.delta()),
+                )
+            })
+    }));
+
+    lines.push("workers:".to_owned());
+    lines.extend(orchestrator.worker_statuses().iter().map(|worker| {
+        format_worker_status_line(worker.id, worker.tile.as_ref())
+    }));
+
+    lines.push("frames:".to_owned());
+    lines.extend(
+        frame_timing_ring
+            .entries_in_ring_order()
+            .map(format_frame_history_line),
+    );
+    lines.join("\n") + "\n"
+}
+
 pub fn run_with_updates(
     canvas: &mut TiledInfiniteCanvas,
     orchestrator: &Orchestrator,
@@ -207,6 +270,7 @@ pub fn run_with_updates_and_shutdown(
     let _output_scope = output.attach_to_current_thread();
     let mut input = InputState::new();
     let mut frame_timing_ring = FrameTimingRing::default();
+    let mut last_mouse_position = None;
     canvas.set_frame_dump_events(config.debug.frame_dump_events.clone());
     canvas.set_slow_frame_threshold_ms(config.debug.slow_frame_threshold_ms);
     let mut render_plan = PrecisionDecisionManager::from_config(initial_config).map_err(|_| {
@@ -279,6 +343,7 @@ pub fn run_with_updates_and_shutdown(
         } else {
             None
         };
+        last_mouse_position = mouse_position;
         let events = input.update(
             mouse_position,
             window.get_mouse_down(MouseButton::Left),
@@ -514,6 +579,15 @@ pub fn run_with_updates_and_shutdown(
         canvas.finish_frame();
         crate::output::flush_frame();
     }
+
+    let shutdown_dump = format_shutdown_overlay_dump(
+        canvas,
+        orchestrator,
+        &surface,
+        &frame_timing_ring,
+        last_mouse_position,
+    );
+    output.submit_final_and_wait(shutdown_dump);
 
     // Closing the native window leaves the loop and releases the renderer
     // before the application returns from `main`.
@@ -909,6 +983,7 @@ mod tests {
     use super::{
         allocation_screen_rect, draw_mouse_marker, draw_rectangle_outline, format_coordinates,
         format_copied_coordinates, format_frame_history_line, format_layer_overlay,
+        format_shutdown_overlay_dump,
         format_worker_queue_line, format_worker_status_line, has_live_window_size,
         middle_click_coordinate_report, sprite_from_tile, FrameTimingRing, Palette, RenderSurface,
         ScreenRect,
@@ -1025,6 +1100,37 @@ mod tests {
             "Worker 2: tile pos -2.000x3.000 delta=1.000"
         );
         assert_eq!(format_worker_status_line(3, None), "Worker 3: ocioso");
+    }
+
+    #[test]
+    fn shutdown_overlay_dump_contains_all_overlay_groups() {
+        let canvas = TiledInfiniteCanvas::new(
+            ComplexPoint::new(-2.0, 1.0),
+            8,
+            8,
+            0.01,
+            ScreenPoint::new(0, 0),
+            8.0,
+            0.5,
+        );
+        let orchestrator = Orchestrator::with_worker_count(Mandelbrot::new(32), 1);
+        let surface = RenderSurface::new(640, 480, 1.2, 0.8);
+        let frame_timing_ring = FrameTimingRing::default();
+
+        let dump = format_shutdown_overlay_dump(
+            &canvas,
+            &orchestrator,
+            &surface,
+            &frame_timing_ring,
+            None,
+        );
+
+        assert!(dump.contains("status bar:"));
+        assert!(dump.contains("allocation envelope:"));
+        assert!(dump.contains("layers:"));
+        assert!(dump.contains("queue:"));
+        assert!(dump.contains("workers:"));
+        assert!(dump.contains("frames:"));
     }
 
     #[test]

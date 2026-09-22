@@ -9,12 +9,18 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt::{Arguments, Write as FmtWrite};
 use std::io::{self, Write};
+use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
 struct QueueState {
-    batches: VecDeque<String>,
+    batches: VecDeque<OutputBatch>,
     accepting: bool,
+}
+
+struct OutputBatch {
+    text: String,
+    completion: Option<SyncSender<()>>,
 }
 
 struct SharedQueue {
@@ -37,6 +43,31 @@ impl SharedQueue {
         if batch.is_empty() {
             return;
         }
+        self.push_batch(OutputBatch {
+            text: batch,
+            completion: None,
+        });
+    }
+
+    fn push_final(&self, batch: String, completion: SyncSender<()>) {
+        if batch.is_empty() {
+            let _ = completion.send(());
+            return;
+        }
+        let mut state = self.state.lock().expect("output queue mutex poisoned");
+        if state.accepting {
+            state.batches.push_back(OutputBatch {
+                text: batch,
+                completion: Some(completion),
+            });
+            state.accepting = false;
+            self.wake.notify_one();
+        } else {
+            let _ = completion.send(());
+        }
+    }
+
+    fn push_batch(&self, batch: OutputBatch) {
         let mut state = self.state.lock().expect("output queue mutex poisoned");
         if state.accepting {
             state.batches.push_back(batch);
@@ -50,7 +81,7 @@ impl SharedQueue {
         self.wake.notify_one();
     }
 
-    fn take_next(&self) -> Option<String> {
+    fn take_next(&self) -> Option<OutputBatch> {
         let mut state = self.state.lock().expect("output queue mutex poisoned");
         loop {
             if let Some(batch) = state.batches.pop_front() {
@@ -70,6 +101,7 @@ impl SharedQueue {
             .expect("output queue mutex poisoned")
             .batches
             .drain(..)
+            .map(|batch| batch.text)
             .collect()
     }
 }
@@ -114,6 +146,17 @@ impl OutputService {
     /// Publishes a non-frame message without waiting for stdout.
     pub fn submit(&self, message: String) {
         self.queue.push(message);
+    }
+
+    /// Enqueues the final asynchronous output and waits until stdout is flushed.
+    /// After this call, the queue rejects every subsequent output batch.
+    pub fn submit_final_and_wait(&self, message: String) {
+        flush_frame();
+        let (completion_sender, completion_receiver) = mpsc::sync_channel(0);
+        self.queue.push_final(message, completion_sender);
+        completion_receiver
+            .recv()
+            .expect("output writer stopped before final output was flushed");
     }
 }
 
@@ -182,8 +225,11 @@ fn write_batches(queue: Arc<SharedQueue>) {
     let stdout = io::stdout();
     while let Some(batch) = queue.take_next() {
         let mut stdout_lock = stdout.lock();
-        let _ = stdout_lock.write_all(batch.as_bytes());
+        let _ = stdout_lock.write_all(batch.text.as_bytes());
         let _ = stdout_lock.flush();
+        if let Some(completion) = batch.completion {
+            let _ = completion.send(());
+        }
     }
     let mut stdout_lock = stdout.lock();
     let _ = stdout_lock.flush();
@@ -219,7 +265,28 @@ mod tests {
         queue.push("last batch\n".to_owned());
         queue.close();
 
-        assert_eq!(queue.take_next().as_deref(), Some("last batch\n"));
+        assert_eq!(
+            queue.take_next().map(|batch| batch.text),
+            Some("last batch\n".to_owned())
+        );
         assert!(queue.take_next().is_none());
+    }
+
+    #[test]
+    fn final_batch_closes_the_queue_and_rejects_later_output() {
+        let queue = SharedQueue::new();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(0);
+
+        queue.push_final("final overlays\n".to_owned(), sender);
+        queue.push("must not be written\n".to_owned());
+
+        let final_batch = queue.take_next().expect("final batch should be queued");
+        assert_eq!(final_batch.text, "final overlays\n");
+        assert!(final_batch.completion.is_some());
+        assert!(queue.take_next().is_none());
+        assert!(queue.state.lock().expect("queue mutex poisoned").batches.is_empty());
+
+        drop(final_batch);
+        assert!(receiver.try_recv().is_err());
     }
 }
