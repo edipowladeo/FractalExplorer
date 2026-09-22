@@ -405,6 +405,34 @@ impl GpuAppState {
         self.prepared_frame = None;
     }
 
+    pub fn apply_config(
+        &mut self,
+        next_config: crate::config::RendererConfig,
+    ) -> Result<(), String> {
+        let render_plan = crate::PrecisionDecisionManager::from_config(&next_config)
+            .map_err(|_| "invalid renderer precision configuration".to_string())?;
+        let viewport_changed =
+            (self.config.width, self.config.height) != (next_config.width, next_config.height);
+        self.config = next_config;
+        self.canvas
+            .set_frame_dump_events(self.config.debug.frame_dump_events.clone());
+        self.canvas
+            .set_slow_frame_threshold_ms(self.config.debug.slow_frame_threshold_ms);
+        self.orchestrator.set_render_plan(render_plan);
+        self.canvas.set_render_plan(render_plan);
+        self.canvas.invalidate_tiles();
+        if viewport_changed {
+            self.resize_viewport(Viewport::new(
+                self.config.width as u32,
+                self.config.height as u32,
+            ));
+        } else {
+            self.prepared_batch = None;
+            self.prepared_frame = None;
+        }
+        Ok(())
+    }
+
     fn input_events_for_window_event(&mut self, event: &WindowEvent) -> Vec<InputEvent> {
         let mut input_events = Vec::new();
         match event {
@@ -583,6 +611,8 @@ impl GpuAppState {
 pub struct GpuWindowApp {
     pub state: Option<GpuAppState>,
     app_controller: DefaultApplicationController,
+    config_updates: Option<std::sync::mpsc::Receiver<crate::config::RendererConfig>>,
+    renderer_closed: Option<Arc<std::sync::atomic::AtomicBool>>,
     context: Option<GpuContext>,
     window: Option<Arc<Window>>,
     surface: Option<wgpu::Surface<'static>>,
@@ -629,6 +659,8 @@ impl GpuWindowApp {
         Self {
             state,
             app_controller: DefaultApplicationController::new(viewport),
+            config_updates: None,
+            renderer_closed: None,
             context: None,
             window: None,
             surface: None,
@@ -663,6 +695,33 @@ impl GpuWindowApp {
         self.envelope_vertex_ring = VertexBufferRing::new(ring_size);
         self.surface_initialized = false;
         self.composition_texture = None;
+    }
+
+    pub fn with_state_and_config_updates(
+        state: Option<GpuAppState>,
+        config_updates: std::sync::mpsc::Receiver<crate::config::RendererConfig>,
+        renderer_closed: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        let mut app = Self::with_state(state);
+        app.config_updates = Some(config_updates);
+        app.renderer_closed = Some(renderer_closed);
+        app
+    }
+
+    fn apply_pending_config_updates(&mut self) {
+        let Some(receiver) = &self.config_updates else {
+            return;
+        };
+        while let Ok(config) = receiver.try_recv() {
+            if let Some(state) = &mut self.state {
+                if let Err(error) = state.apply_config(config) {
+                    crate::print_local!("Aviso: configuraÃ§Ã£o GPU ignorada: {error}");
+                    continue;
+                }
+                self.app_controller
+                    .handle_event(AppEvent::ConfigurationChanged);
+            }
+        }
     }
 
     fn configure_surface(&mut self, width: u32, height: u32) {
@@ -1115,6 +1174,11 @@ impl ApplicationHandler for GpuWindowApp {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        if matches!(&event, WindowEvent::CloseRequested) {
+            if let Some(renderer_closed) = &self.renderer_closed {
+                renderer_closed.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
         let app_event = match &event {
             WindowEvent::CloseRequested => Some(AppEvent::CloseRequested),
             WindowEvent::Resized(size) => {
@@ -1417,6 +1481,7 @@ impl ApplicationHandler for GpuWindowApp {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        self.apply_pending_config_updates();
         let prepared = self.state.as_mut().map(|state| {
             state.prepare_visible_batch();
             (state.prepared_batch.take(), state.prepared_frame.clone())
@@ -1681,6 +1746,70 @@ mod tests {
         assert_eq!(state.config.height, 768);
         assert!(state.prepared_batch.is_none());
         assert!(state.prepared_frame.is_none());
+    }
+
+    #[test]
+    fn gpu_state_applies_renderer_configuration_through_one_entry_point() {
+        let canvas = crate::TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-2.0, 1.0),
+            8,
+            8,
+            0.01,
+            ScreenPoint::new(0, 0),
+            8.0,
+            0.5,
+        );
+        let orchestrator = crate::Orchestrator::with_worker_count(crate::Mandelbrot::new(32), 1);
+        let mut state = super::GpuAppState::new(
+            canvas,
+            orchestrator,
+            crate::config::RendererConfig::default(),
+        );
+        state.prepare_visible_batch();
+        let mut next = state.config.clone();
+        next.width = 1024;
+        next.height = 768;
+        next.palette_period = 7.0;
+
+        state.apply_config(next.clone()).unwrap();
+
+        assert_eq!(state.config.width, next.width);
+        assert_eq!(state.config.height, next.height);
+        assert_eq!(state.config.palette_period, next.palette_period);
+        assert!(state.prepared_batch.is_none());
+        assert!(state.prepared_frame.is_none());
+    }
+
+    #[test]
+    fn gpu_runtime_drains_configuration_updates_without_window_access() {
+        let canvas = crate::TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-2.0, 1.0),
+            8,
+            8,
+            0.01,
+            ScreenPoint::new(0, 0),
+            8.0,
+            0.5,
+        );
+        let orchestrator = crate::Orchestrator::with_worker_count(crate::Mandelbrot::new(32), 1);
+        let initial = crate::config::RendererConfig::default();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut app = super::GpuWindowApp::with_state_and_config_updates(
+            Some(super::GpuAppState::new(
+                canvas,
+                orchestrator,
+                initial.clone(),
+            )),
+            receiver,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let mut next = initial;
+        next.palette_period = 9.0;
+        sender.send(next).unwrap();
+
+        app.apply_pending_config_updates();
+
+        assert_eq!(app.state.as_ref().unwrap().config.palette_period, 9.0);
     }
 
     #[test]

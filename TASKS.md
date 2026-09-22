@@ -67,7 +67,11 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   canvas/scheduler e produzir os tiles e overlays reais; o loop CPU agora
   também publica e consome o snapshot pelo controlador, e resize, input,
   configuração e encerramento passam pela mesma normalização de eventos. O
-  passo não foi concluído nem exige validação HILT neste ponto.
+  runtime GPU agora drena atualizações de configuração por canal e sinaliza o
+  encerramento ao Config UI, ambos sem acesso à janela nos testes. O passo não
+  foi concluído. A próxima integração — conectar o canal ao `main`/`eframe` e
+  validar resize, configuração, overlays e shutdown numa janela GPU real —
+  requer validação HILT.
 - **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
 
 ### T026 — Investigar e melhorar a precisão para zoom profundo
