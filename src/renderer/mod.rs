@@ -305,6 +305,10 @@ fn run_cpu_with_updates_and_shutdown(
                 config = next_config;
                 canvas.set_frame_dump_events(config.debug.frame_dump_events.clone());
                 canvas.set_slow_frame_threshold_ms(config.debug.slow_frame_threshold_ms);
+                <crate::app::DefaultApplicationController as crate::app::ApplicationController>::handle_event(
+                    &mut app_controller,
+                    crate::app::AppEvent::ConfigurationChanged,
+                );
             }
         }
         canvas.record_frame_event(
@@ -377,6 +381,16 @@ fn run_cpu_with_updates_and_shutdown(
             window.get_scroll_wheel().map_or(0.0, |(_, y)| y),
         );
         for event in events {
+            <crate::app::DefaultApplicationController as crate::app::ApplicationController>::handle_event(
+                &mut app_controller,
+                crate::app::AppEvent::Input(event),
+            );
+        }
+        let pending_input =
+            <crate::app::DefaultApplicationController as crate::app::ApplicationController>::take_input_events(
+                &mut app_controller,
+            );
+        for event in pending_input {
             match event {
                 InputEvent::Drag { delta } => canvas.drag(delta),
                 InputEvent::MiddleClick(cursor) => {
@@ -653,6 +667,10 @@ fn run_cpu_with_updates_and_shutdown(
 
     // Closing the native window leaves the loop and releases the renderer
     // before the application returns from `main`.
+    <crate::app::DefaultApplicationController as crate::app::ApplicationController>::handle_event(
+        &mut app_controller,
+        crate::app::AppEvent::CloseRequested,
+    );
     drop(window);
     renderer_closed.store(true, std::sync::atomic::Ordering::Release);
     Ok(())
