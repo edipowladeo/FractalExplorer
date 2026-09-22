@@ -29,6 +29,10 @@ pub struct TileConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct RendererConfig {
+    pub backend: String,
+    pub gpu_backend: String,
+    pub gpu_vertex_buffer_ring_size: usize,
+    pub preserve_previous_frame: bool,
     pub width: usize,
     pub height: usize,
     pub max_iterations: u32,
@@ -45,6 +49,38 @@ pub struct RendererConfig {
     pub precision_level: usize,
     pub perturbation_fallback: bool,
     pub debug: RendererDebugConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RendererBackend {
+    Cpu,
+    Gpu,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuBackend {
+    Auto,
+    Gl,
+}
+
+impl GpuBackend {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "gl" => Ok(Self::Gl),
+            other => Err(format!("backend GPU desconhecido: {other}")),
+        }
+    }
+}
+
+impl RendererBackend {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "cpu" => Ok(Self::Cpu),
+            "gpu" => Ok(Self::Gpu),
+            other => Err(format!("backend de renderer desconhecido: {other}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -94,6 +130,10 @@ impl Default for TileConfig {
 impl Default for RendererConfig {
     fn default() -> Self {
         Self {
+            backend: "cpu".to_string(),
+            gpu_backend: "auto".to_string(),
+            gpu_vertex_buffer_ring_size: 3,
+            preserve_previous_frame: true,
             width: 640,
             height: 480,
             max_iterations: 256,
@@ -132,7 +172,21 @@ impl Default for RendererDebugConfig {
     }
 }
 
+impl RendererDebugConfig {
+    pub fn overlays_enabled(&self) -> bool {
+        self.text_overlay_global
+    }
+}
+
 impl RendererConfig {
+    pub fn backend_kind(&self) -> Result<RendererBackend, String> {
+        RendererBackend::parse(&self.backend)
+    }
+
+    pub fn gpu_backend_kind(&self) -> Result<GpuBackend, String> {
+        GpuBackend::parse(&self.gpu_backend)
+    }
+
     pub fn effective_max_iterations(&self) -> u32 {
         self.max_iterations
             .saturating_mul(self.precision_level as u32)
@@ -217,7 +271,8 @@ impl AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, RendererConfig};
+    use super::RendererBackend;
+    use super::{AppConfig, GpuBackend, RendererConfig};
 
     #[test]
     fn loads_window_size_and_debug_from_toml() {
@@ -237,6 +292,7 @@ mod tests {
             palette_period = 5.0
             starting_point = "x=-0.743643887037151, y=0.131825904205330"
             perturbation_fallback = true
+            gpu_vertex_buffer_ring_size = 2
 
             [renderer.debug]
             reduced_viewport = true
@@ -253,6 +309,7 @@ mod tests {
         assert!(config.renderer.debug.reduced_viewport);
         assert_eq!(config.renderer.debug.reduced_viewport_allocation_ratio, 0.5);
         assert!(config.renderer.debug.show_allocation_envelope);
+        assert_eq!(config.renderer.gpu_vertex_buffer_ring_size, 2);
         assert_eq!(config.renderer.effective_allocation_ratio(), 0.5);
         assert_eq!(config.renderer.palette, crate::renderer::Palette::Rainbow);
         assert_eq!(config.renderer.palette_period, 5.0);
@@ -270,6 +327,55 @@ mod tests {
             config.renderer.starting_point_coordinates().unwrap(),
             crate::geometry::ComplexPoint::new(-0.743643887037151, 0.131825904205330)
         );
+    }
+
+    #[test]
+    fn global_overlay_flag_is_the_master_overlay_switch() {
+        let mut debug = super::RendererDebugConfig::default();
+        debug.text_overlay_global = false;
+        debug.text_overlay_frames = true;
+        debug.show_allocation_envelope = true;
+        assert!(!debug.overlays_enabled());
+
+        debug.text_overlay_global = true;
+        assert!(debug.overlays_enabled());
+    }
+
+    #[test]
+    fn defaults_to_the_legacy_cpu_backend() {
+        assert_eq!(RendererConfig::default().backend, "cpu");
+        assert_eq!(
+            RendererConfig::default().backend_kind(),
+            Ok(RendererBackend::Cpu)
+        );
+    }
+
+    #[test]
+    fn parses_the_gpu_backend_and_rejects_unknown_backends() {
+        assert_eq!(RendererBackend::parse("gpu"), Ok(RendererBackend::Gpu));
+        assert!(RendererBackend::parse("vulkan").is_err());
+    }
+
+    #[test]
+    fn defaults_to_automatic_gpu_backend_selection() {
+        let config = RendererConfig::default();
+
+        assert_eq!(config.gpu_backend, "auto");
+        assert_eq!(config.gpu_backend_kind(), Ok(GpuBackend::Auto));
+    }
+
+    #[test]
+    fn preserves_previous_frame_by_default_and_accepts_the_flag() {
+        assert!(RendererConfig::default().preserve_previous_frame);
+
+        let config: RendererConfig = toml::from_str("preserve_previous_frame = false").unwrap();
+        assert!(!config.preserve_previous_frame);
+    }
+
+    #[test]
+    fn parses_the_opengl_gpu_backend_and_rejects_unknown_values() {
+        assert_eq!(GpuBackend::parse("gl"), Ok(GpuBackend::Gl));
+        assert!(GpuBackend::parse("dx12").is_err());
     }
 
     #[test]

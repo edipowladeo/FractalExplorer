@@ -2,6 +2,10 @@
 debug_global = true
 
 [renderer]
+backend = "gpu"
+gpu_backend = "gl"
+gpu_vertex_buffer_ring_size = 3
+preserve_previous_frame = false
 width = 800
 height = 600
 max_iterations = 256
@@ -14,6 +18,11 @@ deallocation_ratio = 0.8
 max_apparent_pixel_size_exponent = 3
 min_apparent_pixel_size = 0.8
 zoom_multiplier = 1.8
+# Palette options: "rainbow", "rainbow_inverted", "rainbow_pastel", "rainbow_inverted_pastel" or "shade".
+#palette = "rainbow"
+#palette = "rainbow_inverted"
+palette = "rainbow_pastel"
+#palette = "rainbow_inverted_pastel"
 #palette = "shade"
 palette_period = 50.0
 #starting_point = "x=-1.50, y=0.0"
@@ -23,11 +32,12 @@ starting_point = "x: -1.484300952308614   y: 0.000109681311738   zoom: 37.767873
 reduced_viewport = true
 reduced_viewport_allocation_ratio = 0.7
 show_allocation_envelope = true
-text_overlay_global = false
-text_overlay_workers = false
-text_overlay_layers = false
-text_overlay_queue = false
-middle_click_coordinate_report = false
+text_overlay_global = true
+text_overlay_workers = true
+text_overlay_layers = true
+text_overlay_queue = true
+text_overlay_frames = true
+middle_click_coordinate_report = true
 #frame_dump_events = ["layer_created", "slow_frame"]
 frame_dump_events = ["slow_frame"]
 slow_frame_threshold_ms = 100
@@ -36,5 +46,5 @@ slow_frame_threshold_ms = 100
 workers = 8
 
 [orchestrator.tile]
-width = 30
-height = 20
+width = 25
+height = 25

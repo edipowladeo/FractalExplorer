@@ -315,6 +315,52 @@ mod tests {
     }
 
     #[test]
+    fn zoom_in_does_not_retract_larger_layer_before_next_layer_is_displayable() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(0.0, 0.0),
+            1,
+            1,
+            1.0,
+            crate::geometry::ScreenPoint::new(0, 0),
+            1.0,
+            0.5,
+        );
+        canvas.expand_one_layer_per_frame();
+        canvas.expand_one_layer_per_frame();
+        canvas.zoom_at(crate::geometry::ScreenPoint::new(0, 0), 2.0);
+
+        assert!(!canvas.retract_one_layer_per_frame());
+        assert_eq!(canvas.layer_count(), 2);
+    }
+
+    #[test]
+    fn zoom_in_retracts_larger_layer_after_next_layer_is_displayable() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(0.0, 0.0),
+            1,
+            1,
+            1.0,
+            crate::geometry::ScreenPoint::new(0, 0),
+            1.0,
+            0.5,
+        );
+        canvas.expand_one_layer_per_frame();
+        canvas.expand_one_layer_per_frame();
+        canvas.zoom_at(crate::geometry::ScreenPoint::new(0, 0), 2.0);
+
+        let next_layer_tile = canvas.layer(1).unwrap().tile(0, 0).unwrap();
+        next_layer_tile.status.store(
+            TileStatus::Completed as u8,
+            std::sync::atomic::Ordering::Release,
+        );
+        next_layer_tile.set_sprite(Arc::new(crate::Sprite::solid(1, 1, 0)));
+
+        assert!(canvas.retract_one_layer_per_frame());
+        assert_eq!(canvas.layer_count(), 1);
+        assert_eq!(canvas.layer(0).unwrap().zoom(), 1.0);
+    }
+
+    #[test]
     fn tile_layer_composes_its_initial_tile_without_receiving_one() {
         let layer = TileLayer::new(
             crate::geometry::ComplexPoint::new(-1.0, 1.0),
@@ -460,6 +506,31 @@ mod tests {
             instrumentation.format_event(&event, previous_timestamp),
             "Frame: 113.183 Δ: 0.009, trabalho das camadas agendado."
         );
+    }
+
+    #[test]
+    fn formats_gpu_surface_timing_events_in_frame_order() {
+        let started_at = Instant::now();
+        let instrumentation = super::FrameInstrumentation {
+            frame_number: 8,
+            started_at,
+            events: vec![
+                super::FrameEvent {
+                    kind: super::FrameEventKind::GpuSurfaceAcquireStarted,
+                    description: "aquisicao da superficie GPU iniciada".to_string(),
+                    timestamp: started_at,
+                },
+                super::FrameEvent {
+                    kind: super::FrameEventKind::GpuSurfaceAcquireFinished,
+                    description: "aquisicao da superficie GPU concluida".to_string(),
+                    timestamp: started_at + Duration::from_millis(405),
+                },
+            ],
+        };
+
+        let line = instrumentation.format_event(&instrumentation.events[1], started_at);
+        assert!(line.contains("aquisicao da superficie GPU concluida"));
+        assert!(line.contains("Δ: 405.000"));
     }
 
     #[test]
@@ -920,6 +991,28 @@ pub(crate) enum FrameEventKind {
     Finalized,
     PresentationStarted,
     PresentationFinished,
+    GpuSurfaceAcquireStarted,
+    GpuSurfaceAcquireFinished,
+    GpuBatchPreparationFinished,
+    GpuBatchUploadStarted,
+    GpuBatchUploadFinished,
+    GpuBatchTextureUpload,
+    GpuBatchTextureRetention,
+    GpuBatchVertexUpload,
+    GpuBatchOverlayUpload,
+    GpuBatchEnvelopeUpload,
+    GpuRedrawRequested,
+    GpuRedrawReceived,
+    GpuCommandEncodingFinished,
+    GpuCompositionPassStarted,
+    GpuCompositionPassFinished,
+    GpuSurfacePresentPassStarted,
+    GpuSurfacePresentPassFinished,
+    GpuCommandsSubmitted,
+    GpuDevicePollStarted,
+    GpuDevicePollFinished,
+    GpuPresentationStarted,
+    GpuPresentationFinished,
     DumpStarted,
     DumpFinished,
     SlowFrame,
@@ -980,11 +1073,17 @@ impl FrameInstrumentation {
     }
 
     fn record_presentation_started(&mut self) {
-        self.record(FrameEventKind::PresentationStarted, BUFFER_PRESENTATION_STARTED);
+        self.record(
+            FrameEventKind::PresentationStarted,
+            BUFFER_PRESENTATION_STARTED,
+        );
     }
 
     fn record_presentation_finished(&mut self) {
-        self.record(FrameEventKind::PresentationFinished, BUFFER_PRESENTATION_FINISHED);
+        self.record(
+            FrameEventKind::PresentationFinished,
+            BUFFER_PRESENTATION_FINISHED,
+        );
     }
 
     fn record_dump_started(&mut self) {
@@ -1023,15 +1122,12 @@ impl FrameInstrumentation {
     ) -> Vec<String> {
         configured_events
             .iter()
-            .filter(|configured| {
-                match configured.as_str() {
-                    "slow_frame" => {
-                        self.has_kind(FrameEventKind::SlowFrame)
-                            || self.is_slow(slow_frame_threshold)
-                    }
-                    "layer_created" => self.has_kind(FrameEventKind::LayerCreated),
-                    _ => false,
+            .filter(|configured| match configured.as_str() {
+                "slow_frame" => {
+                    self.has_kind(FrameEventKind::SlowFrame) || self.is_slow(slow_frame_threshold)
                 }
+                "layer_created" => self.has_kind(FrameEventKind::LayerCreated),
+                _ => false,
             })
             .cloned()
             .collect()
@@ -1054,9 +1150,7 @@ impl FrameInstrumentation {
     }
 
     fn record_slow_if_needed_at(&mut self, timestamp: Instant, threshold: Duration) {
-        if self.is_slow_at(timestamp, threshold)
-            && !self.has_kind(FrameEventKind::SlowFrame)
-        {
+        if self.is_slow_at(timestamp, threshold) && !self.has_kind(FrameEventKind::SlowFrame) {
             self.record_trigger_at(FrameEventKind::SlowFrame, "frame lento", timestamp);
         }
     }
@@ -1443,6 +1537,10 @@ impl TiledInfiniteCanvas {
         self.last_finished_frame_timing
     }
 
+    pub fn current_frame_number(&self) -> u64 {
+        self.frame_number
+    }
+
     /// Parameters supplied at canvas creation, before any navigation command.
     pub fn initial_state(&self) -> CanvasInitialState {
         CanvasInitialState {
@@ -1552,8 +1650,14 @@ impl TiledInfiniteCanvas {
             .front()
             .is_some_and(|layer| layer.zoom() > self.max_apparent_pixel_size)
         {
-            self.layers.pop_front();
-            return true;
+            if self
+                .layers
+                .get(1)
+                .is_some_and(TileLayer::is_ready_for_display)
+            {
+                self.layers.pop_front();
+                return true;
+            }
         }
         if self
             .layers
@@ -1633,6 +1737,13 @@ impl TiledInfiniteCanvas {
 }
 
 impl TileLayer {
+    fn is_ready_for_display(&self) -> bool {
+        self.tiles
+            .iter()
+            .flatten()
+            .all(|tile| tile.status() == TileStatus::Completed && tile.sprite().is_some())
+    }
+
     pub fn from_tile(
         tile: Arc<Tile>,
         screen_position: crate::geometry::ScreenPoint,

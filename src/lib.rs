@@ -1,14 +1,18 @@
 //! Primitives shared by the first Windows sprite renderer.
 
+pub mod app;
 pub mod calculator;
 pub mod config;
 pub mod config_ui;
 pub mod fixed;
 pub mod geometry;
+pub mod gpu;
+pub mod gpu_window;
 pub mod input;
 pub mod orchestrator;
 pub mod output;
 pub mod precision;
+pub mod render;
 pub mod renderer;
 
 pub use geometry::{Camera, CameraEnvelope};

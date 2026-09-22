@@ -1,4 +1,4 @@
-use crate::config::RendererConfig;
+use crate::config::{RendererBackend, RendererConfig};
 use crate::geometry::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
 use crate::orchestrator::CanvasNavigationEvent;
 use crate::output::OutputService;
@@ -64,6 +64,12 @@ fn format_frame_history_line(entry: Option<FrameHistoryEntry>) -> String {
 pub enum Palette {
     Shade,
     Rainbow,
+    #[serde(rename = "rainbow_inverted")]
+    InvertedRainbow,
+    #[serde(rename = "rainbow_pastel")]
+    PastelRainbow,
+    #[serde(rename = "rainbow_inverted_pastel")]
+    InvertedRainbowPastel,
 }
 
 impl Default for Palette {
@@ -81,6 +87,9 @@ impl<'de> Deserialize<'de> for Palette {
         match value.to_ascii_lowercase().as_str() {
             "shade" => Ok(Self::Shade),
             "rainbow" => Ok(Self::Rainbow),
+            "rainbow_inverted" => Ok(Self::InvertedRainbow),
+            "rainbow_pastel" => Ok(Self::PastelRainbow),
+            "rainbow_inverted_pastel" => Ok(Self::InvertedRainbowPastel),
             invalid => {
                 crate::print_local!(
                     "Aviso: paleta inválida '{invalid}'; usando fallback 'rainbow'"
@@ -91,7 +100,7 @@ impl<'de> Deserialize<'de> for Palette {
     }
 }
 
-fn sprite_from_tile(
+pub(crate) fn sprite_from_tile(
     tile: &Tile,
     max_iterations: u64,
     palette: Palette,
@@ -147,8 +156,10 @@ impl RenderSurface {
         true
     }
 
-    fn clear(&mut self) {
-        self.framebuffer.fill(0x101820);
+    fn clear_if_needed(&mut self, preserve_previous_frame: bool) {
+        if !preserve_previous_frame {
+            self.framebuffer.fill(0x101820);
+        }
     }
 }
 
@@ -251,6 +262,32 @@ pub fn run_with_updates_and_shutdown(
     output: &OutputService,
     renderer_closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), minifb::Error> {
+    match initial_config
+        .backend_kind()
+        .map_err(minifb::Error::WindowCreate)?
+    {
+        RendererBackend::Cpu => run_cpu_with_updates_and_shutdown(
+            canvas,
+            orchestrator,
+            initial_config,
+            receiver,
+            output,
+            renderer_closed,
+        ),
+        RendererBackend::Gpu => Err(minifb::Error::WindowCreate(
+            "backend GPU selecionado, mas o loop wgpu ainda nao foi conectado".to_string(),
+        )),
+    }
+}
+
+fn run_cpu_with_updates_and_shutdown(
+    canvas: &mut TiledInfiniteCanvas,
+    orchestrator: &Orchestrator,
+    initial_config: &RendererConfig,
+    receiver: Receiver<RendererConfig>,
+    output: &OutputService,
+    renderer_closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), minifb::Error> {
     let mut config = initial_config.clone();
     let mut surface = RenderSurface::new(
         config.width,
@@ -304,7 +341,7 @@ pub fn run_with_updates_and_shutdown(
         // `get_size` changes while the resize gesture is in progress, not only when it ends.
         let window_size = window.get_size();
         surface.update_window_size(window_size);
-        surface.clear();
+        surface.clear_if_needed(config.preserve_previous_frame);
         canvas.record_frame_event(
             crate::orchestrator::FrameEventKind::SurfacePrepared,
             "superficie preparada",
@@ -384,7 +421,7 @@ pub fn run_with_updates_and_shutdown(
             crate::orchestrator::FrameEventKind::InputProcessed,
             "entrada processada",
         );
-        if config.debug.text_overlay_global {
+        if config.debug.overlays_enabled() {
             if let Some(cursor) = mouse_position {
                 let complex = canvas.screen_to_complex(cursor);
                 draw_status_bar(
@@ -441,9 +478,9 @@ pub fn run_with_updates_and_shutdown(
         canvas.record_frame_event(
             crate::orchestrator::FrameEventKind::TilesRasterized,
             format!(
-            "tiles rasterizados neste frame: {drawn_tiles}, sprites novos neste frame: \
+                "tiles rasterizados neste frame: {drawn_tiles}, sprites novos neste frame: \
              {generated_sprites}, geracao de sprites: {:?}, rasterizacao: {:?}",
-            sprite_generation_duration, rasterization_duration,
+                sprite_generation_duration, rasterization_duration,
             ),
         );
         if let Some(cursor) = mouse_position {
@@ -454,7 +491,7 @@ pub fn run_with_updates_and_shutdown(
                 0x00ffff,
             );
         }
-        if config.debug.show_allocation_envelope {
+        if config.debug.overlays_enabled() && config.debug.show_allocation_envelope {
             draw_rectangle_outline(
                 &mut surface.framebuffer,
                 surface.screen_size,
@@ -468,7 +505,7 @@ pub fn run_with_updates_and_shutdown(
                 0xffff00,
             );
         }
-        if config.debug.text_overlay_layers {
+        if config.debug.overlays_enabled() && config.debug.text_overlay_layers {
             let overlays: Vec<_> = canvas
                 .layers()
                 .iter()
@@ -500,7 +537,7 @@ pub fn run_with_updates_and_shutdown(
                 );
             }
         }
-        if config.debug.text_overlay_queue {
+        if config.debug.overlays_enabled() && config.debug.text_overlay_queue {
             let queue_lines: Vec<_> = canvas
                 .layers()
                 .iter()
@@ -535,7 +572,7 @@ pub fn run_with_updates_and_shutdown(
                 );
             }
         }
-        if config.debug.text_overlay_workers {
+        if config.debug.overlays_enabled() && config.debug.text_overlay_workers {
             for (line, worker) in orchestrator.worker_statuses().iter().enumerate() {
                 let worker_line = format_worker_status_line(worker.id, worker.tile.as_ref());
                 draw_text(
@@ -548,7 +585,7 @@ pub fn run_with_updates_and_shutdown(
                 );
             }
         }
-        if config.debug.text_overlay_frames {
+        if config.debug.overlays_enabled() && config.debug.text_overlay_frames {
             let x = surface.screen_size.width.saturating_sub(240) as i32;
             for (line, entry) in frame_timing_ring.entries_in_ring_order().enumerate() {
                 draw_text(
@@ -841,7 +878,7 @@ fn draw_text(framebuffer: &mut [u32], size: ScreenSize, x: i32, y: i32, text: &s
     }
 }
 
-fn glyph(character: char) -> Option<[u8; 7]> {
+pub(crate) fn glyph(character: char) -> Option<[u8; 7]> {
     let glyph = match character {
         'C' => [
             0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110,
@@ -947,6 +984,11 @@ fn color(iterations: u64, max_iterations: u64, palette: Palette, palette_period:
     match palette {
         Palette::Shade => shade_color(iterations, max_iterations),
         Palette::Rainbow => rainbow_color(iterations, palette_period),
+        Palette::InvertedRainbow => inverted_rainbow_color(iterations, palette_period),
+        Palette::PastelRainbow => pastelize_color(rainbow_color(iterations, palette_period)),
+        Palette::InvertedRainbowPastel => {
+            pastelize_color(inverted_rainbow_color(iterations, palette_period))
+        }
     }
 }
 
@@ -974,6 +1016,24 @@ fn rainbow_color(iterations: u64, palette_period: f64) -> u32 {
     ((red * 255.0) as u32) << 16 | ((green * 255.0) as u32) << 8 | (blue * 255.0) as u32
 }
 
+fn inverted_rainbow_color(iterations: u64, palette_period: f64) -> u32 {
+    let color = rainbow_color(iterations, palette_period);
+    ((color & 0x0000ff) << 16) | (color & 0x00ff00) | ((color & 0xff0000) >> 16)
+}
+
+fn pastelize_color(color: u32) -> u32 {
+    let encode = |channel: u32| {
+        let linear = channel as f64 / 255.0;
+        let srgb = if linear <= 0.003_130_8 {
+            12.92 * linear
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        };
+        (srgb * 255.0).round().clamp(0.0, 255.0) as u32
+    };
+    (encode(color >> 16) << 16) | (encode(color >> 8 & 0xff) << 8) | encode(color & 0xff)
+}
+
 fn has_live_window_size((width, height): (usize, usize)) -> bool {
     width > 0 && height > 0
 }
@@ -985,8 +1045,8 @@ mod tests {
         format_copied_coordinates, format_frame_history_line, format_layer_overlay,
         format_shutdown_overlay_dump,
         format_worker_queue_line, format_worker_status_line, has_live_window_size,
-        middle_click_coordinate_report, sprite_from_tile, FrameTimingRing, Palette, RenderSurface,
-        ScreenRect,
+        inverted_rainbow_color, middle_click_coordinate_report, pastelize_color, rainbow_color,
+        sprite_from_tile, FrameTimingRing, Palette, RenderSurface, ScreenRect,
     };
     use crate::geometry::{ComplexPoint, ScreenPoint, ScreenSize};
     use crate::{Mandelbrot, Orchestrator, Tile, TiledInfiniteCanvas};
@@ -1039,6 +1099,18 @@ mod tests {
     }
 
     #[test]
+    fn render_surface_preserves_or_clears_previous_pixels_from_the_flag() {
+        let mut surface = RenderSurface::new(2, 2, 1.0, 1.0);
+        surface.framebuffer[0] = 0xabcdef;
+
+        surface.clear_if_needed(true);
+        assert_eq!(surface.framebuffer[0], 0xabcdef);
+
+        surface.clear_if_needed(false);
+        assert_eq!(surface.framebuffer[0], 0x101820);
+    }
+
+    #[test]
     fn does_not_poll_mouse_position_for_a_zero_sized_window() {
         assert!(!has_live_window_size((0, 540)));
         assert!(!has_live_window_size((960, 0)));
@@ -1055,6 +1127,48 @@ mod tests {
             crate::config::RendererConfig::default().palette,
             Palette::Rainbow
         );
+    }
+
+    #[test]
+    fn inverted_rainbow_swaps_red_and_blue_channels() {
+        let rainbow = rainbow_color(3, 5.0);
+        let inverted = inverted_rainbow_color(3, 5.0);
+
+        assert_eq!(
+            inverted,
+            ((rainbow & 0x0000ff) << 16) | (rainbow & 0x00ff00) | ((rainbow & 0xff0000) >> 16)
+        );
+    }
+
+    #[test]
+    fn parses_inverted_rainbow_palette_name() {
+        let config: crate::config::AppConfig = toml::from_str(
+            r#"
+            [renderer]
+            palette = "rainbow_inverted"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.renderer.palette, Palette::InvertedRainbow);
+    }
+
+    #[test]
+    fn parses_the_two_pastel_palette_names() {
+        for (name, expected) in [
+            ("rainbow_pastel", Palette::PastelRainbow),
+            ("rainbow_inverted_pastel", Palette::InvertedRainbowPastel),
+        ] {
+            let config: crate::config::AppConfig =
+                toml::from_str(&format!("[renderer]\npalette = \"{name}\""))
+                    .expect("pastel palette should parse");
+            assert_eq!(config.renderer.palette, expected);
+        }
+    }
+
+    #[test]
+    fn pastel_transform_reproduces_the_brightened_srgb_channel() {
+        assert_eq!(pastelize_color(0x808080), 0xbcbcbc);
     }
 
     #[test]
