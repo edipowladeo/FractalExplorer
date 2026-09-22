@@ -870,9 +870,10 @@ impl GpuWindowApp {
                     || debug.text_overlay_queue
                     || debug.text_overlay_workers)
         });
-        let show_envelope = self.state.as_ref().is_some_and(|state| {
-            state.config.debug.overlays_enabled() && state.config.debug.show_allocation_envelope
-        });
+        let show_envelope = self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.config.debug.should_show_allocation_envelope());
         if show_text_overlay {
             let overlay_started = Instant::now();
             let text = self

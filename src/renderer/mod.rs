@@ -427,7 +427,7 @@ fn run_cpu_with_updates_and_shutdown(
                 0x00ffff,
             );
         }
-        if config.debug.overlays_enabled() && config.debug.show_allocation_envelope {
+        if config.debug.should_show_allocation_envelope() {
             draw_rectangle_outline(
                 &mut surface.framebuffer,
                 surface.screen_size,
