@@ -142,6 +142,89 @@ fn format_gpu_frame_history(history: &VecDeque<(u64, Duration)>) -> String {
         .join("\n")
 }
 
+fn format_gpu_frame_overlay_header(frame_number: u64, visible_tiles: usize) -> String {
+    format!("Frame #{frame_number}, tiles:{visible_tiles}")
+}
+
+fn gpu_delta_exponent(delta: f64) -> f64 {
+    -delta.log2()
+}
+
+fn format_gpu_overlay_text(state: &GpuAppState, visible_tiles: usize) -> String {
+    let debug = &state.config.debug;
+    let mut lines = Vec::new();
+    let frame_number = state.canvas.current_frame_number();
+
+    if debug.text_overlay_frames {
+        lines.push(format_gpu_frame_overlay_header(frame_number, visible_tiles));
+        let history = format_gpu_frame_history(&state.frame_timing_ring);
+        if !history.is_empty() {
+            lines.extend(history.lines().map(str::to_owned));
+        }
+    }
+
+    if debug.text_overlay_layers {
+        let mouse = Some(state.canvas.screen_to_complex(state.cursor));
+        lines.extend(
+            state
+                .canvas
+                .layers()
+                .iter()
+                .enumerate()
+                .map(|(index, layer)| {
+                    let mouse_text = mouse.as_ref().map_or_else(String::new, |point| {
+                        format!(" mouse={:.15}x{:.15}", point.x, point.y)
+                    });
+                    format!(
+                        "Camada {index}: zoom={:.3} delta={:.3} {}x{} tiles{mouse_text}",
+                        layer.zoom().log2(),
+                        gpu_delta_exponent(layer.delta()),
+                        layer.column_count(),
+                        layer.row_count(),
+                    )
+                }),
+        );
+    }
+
+    if debug.text_overlay_queue {
+        lines.extend(
+            state
+                .canvas
+                .layers()
+                .iter()
+                .enumerate()
+                .flat_map(|(layer_index, layer)| {
+                    layer
+                        .pending_work_positions()
+                        .into_iter()
+                        .map(move |(row, column)| {
+                            format!(
+                                "Camada={layer_index} pos {row}x{column} delta={:.3}",
+                                gpu_delta_exponent(layer.delta())
+                            )
+                        })
+                }),
+        );
+    }
+
+    if debug.text_overlay_workers {
+        lines.extend(state.orchestrator.worker_statuses().into_iter().map(
+            |worker| match worker.tile {
+                Some(tile) => format!(
+                    "Worker {}: tile pos {:.3}x{:.3} delta={:.3}",
+                    worker.id,
+                    tile.coordinate.x,
+                    tile.coordinate.y,
+                    gpu_delta_exponent(tile.delta),
+                ),
+                None => format!("Worker {}: ocioso", worker.id),
+            },
+        ));
+    }
+
+    lines.join("\n")
+}
+
 fn select_present_mode(modes: &[wgpu::PresentMode]) -> Option<wgpu::PresentMode> {
     [wgpu::PresentMode::AutoNoVsync, wgpu::PresentMode::Immediate]
         .into_iter()
@@ -779,35 +862,24 @@ impl GpuWindowApp {
         self.tile_commands = frame_commands;
 
         self.overlay_command = None;
-        let show_frame_overlay = self.state.as_ref().is_some_and(|state| {
-            state.config.debug.overlays_enabled() && state.config.debug.text_overlay_frames
+        let show_text_overlay = self.state.as_ref().is_some_and(|state| {
+            let debug = &state.config.debug;
+            debug.overlays_enabled()
+                && (debug.text_overlay_frames
+                    || debug.text_overlay_layers
+                    || debug.text_overlay_queue
+                    || debug.text_overlay_workers)
         });
         let show_envelope = self.state.as_ref().is_some_and(|state| {
             state.config.debug.overlays_enabled() && state.config.debug.show_allocation_envelope
         });
-        if show_frame_overlay {
+        if show_text_overlay {
             let overlay_started = Instant::now();
-            let history = self
+            let text = self
                 .state
                 .as_ref()
-                .map(|state| format_gpu_frame_history(&state.frame_timing_ring))
+                .map(|state| format_gpu_overlay_text(state, self.tile_commands.len()))
                 .unwrap_or_default();
-            let text = if !show_frame_overlay {
-                String::new()
-            } else if history.is_empty() {
-                format!(
-                    "#{} tiles:{}",
-                    self.tile_commands.len(),
-                    self.tile_commands.len()
-                )
-            } else {
-                format!(
-                    "#{} tiles:{}\n{}",
-                    self.tile_commands.len(),
-                    self.tile_commands.len(),
-                    history
-                )
-            };
             let line_count = text.lines().count().max(1);
             let upload = debug_overlay_upload(&text, 240, line_count as u32 * 16);
             let key = upload.key;
@@ -1380,9 +1452,10 @@ impl ApplicationHandler for GpuWindowApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        centered_bounds, format_gpu_frame_history, format_gpu_upload_stage, needs_batch_rebuild,
-        next_vertex_buffer_slot, overlay_cache_key, overlay_needs_refresh, select_present_mode,
-        vertex_buffer_capacity, vertex_buffer_needs_recreation, GpuFrameMetrics, PreparedTileBatch,
+        centered_bounds, format_gpu_frame_history, format_gpu_frame_overlay_header,
+        format_gpu_upload_stage, needs_batch_rebuild, next_vertex_buffer_slot, overlay_cache_key,
+        overlay_needs_refresh, select_present_mode, vertex_buffer_capacity,
+        vertex_buffer_needs_recreation, GpuFrameMetrics, PreparedTileBatch,
     };
     use crate::geometry::ScreenPoint;
     use crate::gpu::{TextureKey, TextureUpload, TileDrawCommand};
@@ -1613,6 +1686,40 @@ mod tests {
             (8, Duration::from_micros(2_500)),
         ]);
         assert_eq!(format_gpu_frame_history(&history), "#7:1.250ms\n#8:2.500ms");
+    }
+
+    #[test]
+    fn frame_overlay_header_uses_frame_number_instead_of_tile_count() {
+        assert_eq!(
+            format_gpu_frame_overlay_header(1530, 84),
+            "Frame #1530, tiles:84"
+        );
+    }
+
+    #[test]
+    fn gpu_text_overlay_includes_each_enabled_overlay_group() {
+        let canvas = crate::TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-2.0, 1.0),
+            8,
+            8,
+            0.01,
+            ScreenPoint::new(0, 0),
+            8.0,
+            0.5,
+        );
+        let orchestrator = crate::Orchestrator::with_worker_count(crate::Mandelbrot::new(32), 1);
+        let mut state = super::GpuAppState::new(
+            canvas,
+            orchestrator,
+            crate::config::RendererConfig::default(),
+        );
+        state.prepare_visible_batch();
+
+        let text = super::format_gpu_overlay_text(&state, 84);
+
+        assert!(text.contains("Frame #1, tiles:84"));
+        assert!(text.contains("Camada 0:"));
+        assert!(text.contains("Worker 0:"));
     }
 
     #[test]
