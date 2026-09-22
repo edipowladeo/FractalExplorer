@@ -62,8 +62,10 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   retornar `PreparedFrame`, alinhando a API comum ao snapshot usado por CPU e
   GPU. RED confirmou que o controlador ainda retornava `RenderFrame`; GREEN
   passou após encapsular frame e updates, com 2 testes do controlador. O
-  controlador ainda precisa receber o canvas/scheduler e produzir os tiles e
-  overlays reais, portanto não foi concluído nem exige HILT neste ponto.
+  `publish_frame` agora recebe o snapshot do runtime GPU e o invalida em
+  resize, também coberto por RED/GREEN. O controlador ainda precisa receber o
+  canvas/scheduler e produzir os tiles e overlays reais, portanto não foi
+  concluído nem exige validação HILT neste ponto.
 - **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
 
 ### T026 — Investigar e melhorar a precisão para zoom profundo
