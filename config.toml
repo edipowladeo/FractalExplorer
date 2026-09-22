@@ -4,6 +4,7 @@ debug_global = true
 [renderer]
 backend = "cpu"
 gpu_backend = "gl"
+preserve_previous_frame = true
 width = 800
 height = 600
 max_iterations = 256
