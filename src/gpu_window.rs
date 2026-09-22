@@ -2,8 +2,8 @@ use crate::app::{AppEffect, AppEvent, ApplicationController, DefaultApplicationC
 use crate::gpu::{
     create_tile_pipeline, debug_overlay_upload, debug_overlay_upload_with_rectangles,
     texture_keys_for_commands, tile_commands_for_frame, tile_vertices_for_commands,
-    upload_tile_texture, GpuContext, GpuTextureStore, GpuTileTexture, PreparedTileBatch,
-    TextureCache, TileDrawCommand,
+    upload_tile_texture, write_tile_texture, GpuContext, GpuTextureStore, GpuTileTexture,
+    PreparedTileBatch, TextureCache, TileDrawCommand,
 };
 use crate::input::{InputEvent, ZoomDirection};
 use crate::render::{
@@ -157,6 +157,25 @@ struct EnvelopeCacheKey {
     height: u32,
     allocation: (i32, i32, i32, i32),
     deallocation: (i32, i32, i32, i32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OverlayCacheKey {
+    width: u32,
+    height: u32,
+    content_hash: u64,
+}
+
+fn overlay_cache_key(upload: &crate::gpu::TextureUpload) -> OverlayCacheKey {
+    OverlayCacheKey {
+        width: upload.width,
+        height: upload.height,
+        content_hash: upload.key.content_hash,
+    }
+}
+
+fn overlay_needs_refresh(previous: Option<OverlayCacheKey>, next: OverlayCacheKey) -> bool {
+    previous != Some(next)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -479,6 +498,7 @@ pub struct GpuWindowApp {
     tile_vertex_ring: VertexBufferRing,
     overlay_vertex_ring: VertexBufferRing,
     overlay_texture: Option<GpuTileTexture>,
+    overlay_cache_key: Option<OverlayCacheKey>,
     overlay_command: Option<TileDrawCommand>,
     envelope_vertex_ring: VertexBufferRing,
     envelope_texture: Option<GpuTileTexture>,
@@ -515,6 +535,7 @@ impl GpuWindowApp {
             tile_vertex_ring: VertexBufferRing::new(ring_size),
             overlay_vertex_ring: VertexBufferRing::new(ring_size),
             overlay_texture: None,
+            overlay_cache_key: None,
             overlay_command: None,
             envelope_vertex_ring: VertexBufferRing::new(ring_size),
             envelope_texture: None,
@@ -670,21 +691,13 @@ impl GpuWindowApp {
         );
         self.tile_commands = frame_commands;
 
-        self.overlay_texture = None;
         self.overlay_command = None;
-        let show_frame_overlay = self
-            .state
-            .as_ref()
-            .is_some_and(|state| {
-                state.config.debug.overlays_enabled() && state.config.debug.text_overlay_frames
-            });
-        let show_envelope = self
-            .state
-            .as_ref()
-            .is_some_and(|state| {
-                state.config.debug.overlays_enabled()
-                    && state.config.debug.show_allocation_envelope
-            });
+        let show_frame_overlay = self.state.as_ref().is_some_and(|state| {
+            state.config.debug.overlays_enabled() && state.config.debug.text_overlay_frames
+        });
+        let show_envelope = self.state.as_ref().is_some_and(|state| {
+            state.config.debug.overlays_enabled() && state.config.debug.show_allocation_envelope
+        });
         if show_frame_overlay {
             let overlay_started = Instant::now();
             let history = self
@@ -716,7 +729,17 @@ impl GpuWindowApp {
                 &self.tile_bind_group_layout,
                 &self.surface_config,
             ) {
-                self.overlay_texture = Some(upload_tile_texture(context, layout, &upload));
+                let cache_key = overlay_cache_key(&upload);
+                if overlay_needs_refresh(self.overlay_cache_key, cache_key) {
+                    if let Some(texture) = self.overlay_texture.as_ref().filter(|texture| {
+                        texture.width == upload.width && texture.height == upload.height
+                    }) {
+                        write_tile_texture(context, &texture.texture, &upload);
+                    } else {
+                        self.overlay_texture = Some(upload_tile_texture(context, layout, &upload));
+                    }
+                    self.overlay_cache_key = Some(cache_key);
+                }
                 let position = crate::geometry::ScreenPoint::new(
                     8,
                     surface_config.height.saturating_sub(upload.height + 8) as i32,
@@ -752,6 +775,9 @@ impl GpuWindowApp {
                     self.overlay_vertex_ring.slot_count()
                 ),
             );
+        } else {
+            self.overlay_texture = None;
+            self.overlay_cache_key = None;
         }
         if show_envelope {
             let envelope_started = Instant::now();
@@ -1177,8 +1203,8 @@ impl ApplicationHandler for GpuWindowApp {
 mod tests {
     use super::{
         centered_bounds, format_gpu_frame_history, format_gpu_upload_stage, needs_batch_rebuild,
-        next_vertex_buffer_slot, select_present_mode, vertex_buffer_capacity,
-        vertex_buffer_needs_recreation, GpuFrameMetrics, PreparedTileBatch,
+        next_vertex_buffer_slot, overlay_cache_key, overlay_needs_refresh, select_present_mode,
+        vertex_buffer_capacity, vertex_buffer_needs_recreation, GpuFrameMetrics, PreparedTileBatch,
     };
     use crate::geometry::ScreenPoint;
     use crate::gpu::{TextureKey, TextureUpload, TileDrawCommand};
@@ -1239,6 +1265,48 @@ mod tests {
             crate::orchestrator::FrameEventKind::GpuBatchEnvelopeUpload,
         ];
         assert_eq!(kinds.len(), 5);
+    }
+
+    #[test]
+    fn overlay_cache_reuses_an_unchanged_image_and_refreshes_changed_content() {
+        let first = TextureUpload {
+            key: TextureKey {
+                tile: usize::MAX,
+                content_hash: 10,
+            },
+            width: 240,
+            height: 16,
+            rgba8: vec![0; 240 * 16 * 4],
+        };
+        let same = TextureUpload {
+            key: TextureKey {
+                tile: usize::MAX,
+                content_hash: 10,
+            },
+            width: 240,
+            height: 16,
+            rgba8: vec![255; 240 * 16 * 4],
+        };
+        let changed = TextureUpload {
+            key: TextureKey {
+                tile: usize::MAX,
+                content_hash: 11,
+            },
+            width: 240,
+            height: 32,
+            rgba8: vec![0; 240 * 32 * 4],
+        };
+        let first_key = overlay_cache_key(&first);
+
+        assert!(overlay_needs_refresh(None, first_key));
+        assert!(!overlay_needs_refresh(
+            Some(first_key),
+            overlay_cache_key(&same)
+        ));
+        assert!(overlay_needs_refresh(
+            Some(first_key),
+            overlay_cache_key(&changed)
+        ));
     }
 
     #[test]
