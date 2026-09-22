@@ -633,6 +633,8 @@ pub struct GpuTileTexture {
     pub view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
     pub bind_group: wgpu::BindGroup,
+    pub width: u32,
+    pub height: u32,
 }
 
 pub struct GpuTextureStore {
@@ -711,25 +713,7 @@ pub fn upload_tile_texture(
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    context.queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &upload.rgba8,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(4 * upload.width),
-            rows_per_image: Some(upload.height),
-        },
-        wgpu::Extent3d {
-            width: upload.width,
-            height: upload.height,
-            depth_or_array_layers: 1,
-        },
-    );
+    write_tile_texture(context, &texture, upload);
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     let sampler = context.device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("tile-sampler"),
@@ -758,7 +742,31 @@ pub fn upload_tile_texture(
         view,
         sampler,
         bind_group,
+        width: upload.width,
+        height: upload.height,
     }
+}
+
+pub fn write_tile_texture(context: &GpuContext, texture: &wgpu::Texture, upload: &TextureUpload) {
+    context.queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &upload.rgba8,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * upload.width),
+            rows_per_image: Some(upload.height),
+        },
+        wgpu::Extent3d {
+            width: upload.width,
+            height: upload.height,
+            depth_or_array_layers: 1,
+        },
+    );
 }
 
 fn hash_pixels(pixels: &[u32]) -> u64 {
