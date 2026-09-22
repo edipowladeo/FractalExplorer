@@ -400,6 +400,9 @@ impl GraphicsDevice for WgpuGraphicsDevice<'_> {
                         },
                     );
                 }
+                // Draw/present commands are consumed by the window render
+                // pass. This resource adapter only owns uploads and handles.
+                Command::DrawTexture { .. } | Command::Present => {}
             }
         }
         Ok(())
