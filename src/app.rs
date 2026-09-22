@@ -29,6 +29,7 @@ pub struct DefaultApplicationController {
     closed: bool,
     frame_builder: FrameBuilder,
     pending_input: Vec<InputEvent>,
+    published_frame: Option<PreparedFrame>,
 }
 
 impl DefaultApplicationController {
@@ -38,6 +39,7 @@ impl DefaultApplicationController {
             closed: false,
             frame_builder: FrameBuilder::new(),
             pending_input: Vec::new(),
+            published_frame: None,
         }
     }
 
@@ -47,6 +49,11 @@ impl DefaultApplicationController {
 
     pub const fn is_closed(&self) -> bool {
         self.closed
+    }
+
+    pub fn publish_frame(&mut self, frame: PreparedFrame) {
+        self.viewport = frame.frame().viewport();
+        self.published_frame = Some(frame);
     }
 }
 
@@ -58,6 +65,7 @@ impl ApplicationController for DefaultApplicationController {
         match event {
             AppEvent::Resized(viewport) => {
                 self.viewport = viewport;
+                self.published_frame = None;
                 vec![AppEffect::RequestRedraw]
             }
             AppEvent::Input(input) => {
@@ -79,11 +87,13 @@ impl ApplicationController for DefaultApplicationController {
         if self.closed {
             return Err(RenderError::InvalidFrame("application is closed"));
         }
-        Ok(PreparedFrame::new(
-            self.frame_builder
-                .build(self.viewport, Vec::new(), Vec::new()),
-            Vec::new(),
-        ))
+        Ok(self.published_frame.clone().unwrap_or_else(|| {
+            PreparedFrame::new(
+                self.frame_builder
+                    .build(self.viewport, Vec::new(), Vec::new()),
+                Vec::new(),
+            )
+        }))
     }
 
     fn take_input_events(&mut self) -> Vec<InputEvent> {
@@ -93,7 +103,9 @@ impl ApplicationController for DefaultApplicationController {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppEffect, AppEvent, ApplicationController, DefaultApplicationController};
+    use super::{
+        AppEffect, AppEvent, ApplicationController, DefaultApplicationController, PreparedFrame,
+    };
     use crate::geometry::ScreenPoint;
     use crate::input::{InputEvent, ZoomDirection};
     use crate::render::Viewport;
@@ -135,10 +147,15 @@ mod tests {
     #[test]
     fn controller_prepares_a_shared_frame_snapshot() {
         let mut controller = DefaultApplicationController::new(Viewport::new(320, 200));
+        let published = PreparedFrame::new(
+            crate::render::RenderFrame::new(9, Viewport::new(320, 200)),
+            Vec::new(),
+        );
+
+        controller.publish_frame(published.clone());
 
         let prepared = controller.prepare_frame().unwrap();
 
-        assert_eq!(prepared.frame().viewport(), Viewport::new(320, 200));
-        assert!(prepared.image_updates().is_empty());
+        assert_eq!(prepared, published);
     }
 }
