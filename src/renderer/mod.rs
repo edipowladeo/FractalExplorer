@@ -250,6 +250,7 @@ fn run_cpu_with_updates_and_shutdown(
         minifb::Error::WindowCreate("invalid renderer precision configuration".to_string())
     })?;
     while window.is_open() && !window.is_key_down(Key::Escape) {
+        profiling::scope!("renderer_frame");
         crate::output::begin_frame();
         canvas.begin_frame();
         if let Some((frame_number, duration)) = canvas.last_finished_frame_timing() {
@@ -549,6 +550,7 @@ fn run_cpu_with_updates_and_shutdown(
         )?;
         canvas.record_frame_presentation_finished();
         canvas.finish_frame();
+        crate::profiling::finish_frame();
         crate::output::flush_frame();
     }
 

@@ -12,6 +12,7 @@ pub mod input;
 pub mod orchestrator;
 pub mod output;
 pub mod precision;
+pub mod profiling;
 pub mod render;
 pub mod renderer;
 
@@ -33,6 +34,15 @@ pub struct Sprite {
     width: usize,
     height: usize,
     pixels: Vec<u32>,
+}
+
+#[cfg(test)]
+mod profiling_tests {
+    #[test]
+    fn profiling_client_can_start_without_a_connected_profiler() {
+        let client = crate::profiling::start();
+        drop(client);
+    }
 }
 
 impl Sprite {

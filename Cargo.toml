@@ -19,6 +19,7 @@ bytemuck = { version = "1.25", features = ["derive"] }
 arboard = "3"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+profiling = { version = "1.0.18", features = ["profile-with-tracy"] }
 
 [lib]
 name = "fractal_explorer"
