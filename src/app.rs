@@ -1,5 +1,5 @@
 use crate::input::InputEvent;
-use crate::render::{FrameBuilder, RenderError, RenderFrame, Viewport};
+use crate::render::{FrameBuilder, PreparedFrame, RenderError, Viewport};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppEvent {
@@ -20,7 +20,7 @@ pub enum AppEffect {
 
 pub trait ApplicationController {
     fn handle_event(&mut self, event: AppEvent) -> Vec<AppEffect>;
-    fn prepare_frame(&mut self) -> Result<RenderFrame, RenderError>;
+    fn prepare_frame(&mut self) -> Result<PreparedFrame, RenderError>;
     fn take_input_events(&mut self) -> Vec<InputEvent>;
 }
 
@@ -75,13 +75,15 @@ impl ApplicationController for DefaultApplicationController {
         }
     }
 
-    fn prepare_frame(&mut self) -> Result<RenderFrame, RenderError> {
+    fn prepare_frame(&mut self) -> Result<PreparedFrame, RenderError> {
         if self.closed {
             return Err(RenderError::InvalidFrame("application is closed"));
         }
-        Ok(self
-            .frame_builder
-            .build(self.viewport, Vec::new(), Vec::new()))
+        Ok(PreparedFrame::new(
+            self.frame_builder
+                .build(self.viewport, Vec::new(), Vec::new()),
+            Vec::new(),
+        ))
     }
 
     fn take_input_events(&mut self) -> Vec<InputEvent> {
@@ -128,5 +130,15 @@ mod tests {
             vec![AppEffect::Exit]
         );
         assert!(controller.is_closed());
+    }
+
+    #[test]
+    fn controller_prepares_a_shared_frame_snapshot() {
+        let mut controller = DefaultApplicationController::new(Viewport::new(320, 200));
+
+        let prepared = controller.prepare_frame().unwrap();
+
+        assert_eq!(prepared.frame().viewport(), Viewport::new(320, 200));
+        assert!(prepared.image_updates().is_empty());
     }
 }
