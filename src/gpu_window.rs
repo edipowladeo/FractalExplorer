@@ -660,11 +660,16 @@ impl GpuWindowApp {
         let show_frame_overlay = self
             .state
             .as_ref()
-            .is_some_and(|state| state.config.debug.text_overlay_frames);
+            .is_some_and(|state| {
+                state.config.debug.overlays_enabled() && state.config.debug.text_overlay_frames
+            });
         let show_envelope = self
             .state
             .as_ref()
-            .is_some_and(|state| state.config.debug.show_allocation_envelope);
+            .is_some_and(|state| {
+                state.config.debug.overlays_enabled()
+                    && state.config.debug.show_allocation_envelope
+            });
         if show_frame_overlay {
             let overlay_started = Instant::now();
             let history = self

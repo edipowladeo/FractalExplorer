@@ -354,7 +354,7 @@ fn run_cpu_with_updates_and_shutdown(
             crate::orchestrator::FrameEventKind::InputProcessed,
             "entrada processada",
         );
-        if config.debug.text_overlay_global {
+        if config.debug.overlays_enabled() {
             if let Some(cursor) = mouse_position {
                 let complex = canvas.screen_to_complex(cursor);
                 draw_status_bar(
@@ -424,7 +424,7 @@ fn run_cpu_with_updates_and_shutdown(
                 0x00ffff,
             );
         }
-        if config.debug.show_allocation_envelope {
+        if config.debug.overlays_enabled() && config.debug.show_allocation_envelope {
             draw_rectangle_outline(
                 &mut surface.framebuffer,
                 surface.screen_size,
@@ -438,7 +438,7 @@ fn run_cpu_with_updates_and_shutdown(
                 0xffff00,
             );
         }
-        if config.debug.text_overlay_layers {
+        if config.debug.overlays_enabled() && config.debug.text_overlay_layers {
             let overlays: Vec<_> = canvas
                 .layers()
                 .iter()
@@ -470,7 +470,7 @@ fn run_cpu_with_updates_and_shutdown(
                 );
             }
         }
-        if config.debug.text_overlay_queue {
+        if config.debug.overlays_enabled() && config.debug.text_overlay_queue {
             let queue_lines: Vec<_> = canvas
                 .layers()
                 .iter()
@@ -505,7 +505,7 @@ fn run_cpu_with_updates_and_shutdown(
                 );
             }
         }
-        if config.debug.text_overlay_workers {
+        if config.debug.overlays_enabled() && config.debug.text_overlay_workers {
             for (line, worker) in orchestrator.worker_statuses().iter().enumerate() {
                 let worker_line = format_worker_status_line(worker.id, worker.tile.as_ref());
                 draw_text(
@@ -518,7 +518,7 @@ fn run_cpu_with_updates_and_shutdown(
                 );
             }
         }
-        if config.debug.text_overlay_frames {
+        if config.debug.overlays_enabled() && config.debug.text_overlay_frames {
             let x = surface.screen_size.width.saturating_sub(240) as i32;
             for (line, entry) in frame_timing_ring.entries_in_ring_order().enumerate() {
                 draw_text(
