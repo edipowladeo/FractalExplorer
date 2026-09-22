@@ -315,6 +315,52 @@ mod tests {
     }
 
     #[test]
+    fn zoom_in_does_not_retract_larger_layer_before_next_layer_is_displayable() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(0.0, 0.0),
+            1,
+            1,
+            1.0,
+            crate::geometry::ScreenPoint::new(0, 0),
+            1.0,
+            0.5,
+        );
+        canvas.expand_one_layer_per_frame();
+        canvas.expand_one_layer_per_frame();
+        canvas.zoom_at(crate::geometry::ScreenPoint::new(0, 0), 2.0);
+
+        assert!(!canvas.retract_one_layer_per_frame());
+        assert_eq!(canvas.layer_count(), 2);
+    }
+
+    #[test]
+    fn zoom_in_retracts_larger_layer_after_next_layer_is_displayable() {
+        let mut canvas = TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(0.0, 0.0),
+            1,
+            1,
+            1.0,
+            crate::geometry::ScreenPoint::new(0, 0),
+            1.0,
+            0.5,
+        );
+        canvas.expand_one_layer_per_frame();
+        canvas.expand_one_layer_per_frame();
+        canvas.zoom_at(crate::geometry::ScreenPoint::new(0, 0), 2.0);
+
+        let next_layer_tile = canvas.layer(1).unwrap().tile(0, 0).unwrap();
+        next_layer_tile.status.store(
+            TileStatus::Completed as u8,
+            std::sync::atomic::Ordering::Release,
+        );
+        next_layer_tile.set_sprite(Arc::new(crate::Sprite::solid(1, 1, 0)));
+
+        assert!(canvas.retract_one_layer_per_frame());
+        assert_eq!(canvas.layer_count(), 1);
+        assert_eq!(canvas.layer(0).unwrap().zoom(), 1.0);
+    }
+
+    #[test]
     fn tile_layer_composes_its_initial_tile_without_receiving_one() {
         let layer = TileLayer::new(
             crate::geometry::ComplexPoint::new(-1.0, 1.0),
@@ -1596,8 +1642,14 @@ impl TiledInfiniteCanvas {
             .front()
             .is_some_and(|layer| layer.zoom() > self.max_apparent_pixel_size)
         {
-            self.layers.pop_front();
-            return true;
+            if self
+                .layers
+                .get(1)
+                .is_some_and(TileLayer::is_ready_for_display)
+            {
+                self.layers.pop_front();
+                return true;
+            }
         }
         if self
             .layers
@@ -1677,6 +1729,13 @@ impl TiledInfiniteCanvas {
 }
 
 impl TileLayer {
+    fn is_ready_for_display(&self) -> bool {
+        self.tiles
+            .iter()
+            .flatten()
+            .all(|tile| tile.status() == TileStatus::Completed && tile.sprite().is_some())
+    }
+
     pub fn from_tile(
         tile: Arc<Tile>,
         screen_position: crate::geometry::ScreenPoint,
