@@ -260,6 +260,11 @@ fn run_cpu_with_updates_and_shutdown(
         config.effective_allocation_ratio(),
         config.effective_deallocation_ratio(),
     );
+    let mut cpu_target = crate::render::cpu::CpuRenderTarget::new(crate::render::Viewport::new(
+        config.width as u32,
+        config.height as u32,
+    ));
+    cpu_target.set_clear_color([0x10, 0x18, 0x20, 0xff]);
     let mut window = Window::new(
         "FractalExplorer - Mandelbrot",
         config.width,
@@ -305,7 +310,19 @@ fn run_cpu_with_updates_and_shutdown(
         );
         // `get_size` changes while the resize gesture is in progress, not only when it ends.
         let window_size = window.get_size();
-        surface.update_window_size(window_size);
+        if surface.update_window_size(window_size) {
+            <crate::render::cpu::CpuRenderTarget as crate::render::RenderTarget>::resize(
+                &mut cpu_target,
+                crate::render::Viewport::new(
+                    surface.screen_size.width as u32,
+                    surface.screen_size.height as u32,
+                ),
+            )
+            .map_err(|error| {
+                minifb::Error::WindowCreate(format!("CPU resize failed: {error:?}"))
+            })?;
+        }
+        cpu_target.set_preserve_previous_frame(config.preserve_previous_frame);
         surface.clear_if_needed(config.preserve_previous_frame);
         canvas.record_frame_event(
             crate::orchestrator::FrameEventKind::SurfacePrepared,
@@ -402,10 +419,8 @@ fn run_cpu_with_updates_and_shutdown(
         let mut generated_sprites = 0;
         let mut sprite_generation_duration = Duration::ZERO;
         let mut rasterization_duration = Duration::ZERO;
-        let mut drawn_tiles = 0;
         let mut frame_tiles = Vec::new();
         let mut image_updates = Vec::new();
-        let mut completed_sprites = Vec::new();
         for (layer_index, layer) in canvas.layers().iter().enumerate() {
             let (tile_width, tile_height) = layer.tile_screen_size();
             for row in 0..layer.row_count() {
@@ -443,7 +458,6 @@ fn run_cpu_with_updates_and_shutdown(
                     );
                     frame_tiles.push(tile_draw);
                     image_updates.push(image_update);
-                    completed_sprites.push(sprite);
                 }
             }
         }
@@ -458,25 +472,29 @@ fn run_cpu_with_updates_and_shutdown(
             ),
             image_updates,
         );
-        for (tile, sprite) in prepared_frame
-            .frame()
-            .tiles()
-            .iter()
-            .zip(completed_sprites.iter())
+        let started = Instant::now();
+        <crate::render::cpu::CpuRenderTarget as crate::render::RenderTarget>::update_images(
+            &mut cpu_target,
+            prepared_frame.image_updates(),
+        )
+        .map_err(|error| {
+            minifb::Error::WindowCreate(format!("CPU image update failed: {error:?}"))
+        })?;
+        <crate::render::cpu::CpuRenderTarget as crate::render::RenderTarget>::render(
+            &mut cpu_target,
+            prepared_frame.frame(),
+        )
+        .map_err(|error| minifb::Error::WindowCreate(format!("CPU render failed: {error:?}")))?;
+        for (destination, pixel) in surface
+            .framebuffer
+            .iter_mut()
+            .zip(cpu_target.framebuffer_rgba8().chunks_exact(4))
         {
-            let started = Instant::now();
-            let destination = tile.destination();
-            sprite.draw_into_scaled(
-                &mut surface.framebuffer,
-                surface.screen_size.width,
-                destination.x as isize,
-                destination.y as isize,
-                destination.width as usize,
-                destination.height as usize,
-            );
-            rasterization_duration += started.elapsed();
-            drawn_tiles += 1;
+            *destination =
+                (u32::from(pixel[0]) << 16) | (u32::from(pixel[1]) << 8) | u32::from(pixel[2]);
         }
+        rasterization_duration += started.elapsed();
+        let drawn_tiles = prepared_frame.frame().tiles().len();
         canvas.record_frame_event(
             crate::orchestrator::FrameEventKind::TilesRasterized,
             format!(
