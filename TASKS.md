@@ -50,6 +50,14 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   de preparação CPU ausente; GREEN passou após a implementação e a migração.
   `cargo fmt`, `git diff --check` e `cargo test --lib` passaram com 162 testes.
   Não foi necessária validação HILT.
+- **Passo 2 em andamento:** o `RenderTargetPipeline` agora centraliza a
+  sequência de resize, uploads, render, eviction e recovery, coberta por fake
+  determinística. O `CpuRenderTarget` passou a preservar a semântica de
+  framebuffer anterior, cor de fundo e o loop CPU já usa resize/update/render
+  pelo contrato comum. RED/GREEN cobriram a preservação de pixels; `cargo fmt`,
+  `git diff --check` e `cargo test --lib` passaram com 164 testes. Ainda falta
+  remover a seleção direta de backend do `main` e fechar o fallback pela
+  factory; não foi necessária validação HILT até aqui.
 - **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
 
 ### T026 — Investigar e melhorar a precisão para zoom profundo
