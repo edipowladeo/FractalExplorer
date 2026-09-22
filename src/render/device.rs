@@ -68,6 +68,15 @@ pub enum Command {
         height: u32,
         bytes: Vec<u8>,
     },
+    DrawTexture {
+        texture: TextureHandle,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        opacity_bits: u32,
+    },
+    Present,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -101,6 +110,29 @@ impl CommandList {
 
     pub fn commands(&self) -> &[Command] {
         &self.commands
+    }
+
+    pub fn draw_texture(
+        &mut self,
+        texture: TextureHandle,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        opacity: f32,
+    ) {
+        self.commands.push(Command::DrawTexture {
+            texture,
+            x,
+            y,
+            width,
+            height,
+            opacity_bits: opacity.to_bits(),
+        });
+    }
+
+    pub fn present(&mut self) {
+        self.commands.push(Command::Present);
     }
 }
 

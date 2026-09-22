@@ -22,6 +22,17 @@ fn needs_batch_rebuild(previous: (u32, u32), next: (u32, u32)) -> bool {
     previous != next
 }
 
+fn surface_load_op(
+    preserve_previous_frame: bool,
+    surface_initialized: bool,
+) -> wgpu::LoadOp<wgpu::Color> {
+    if preserve_previous_frame && surface_initialized {
+        wgpu::LoadOp::Load
+    } else {
+        wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+    }
+}
+
 fn vertex_buffer_capacity(current: usize, required: usize) -> usize {
     if required <= current {
         return current;
@@ -475,6 +486,7 @@ pub struct GpuWindowApp {
     envelope_cache_key: Option<EnvelopeCacheKey>,
     texture_store: Option<GpuTextureStore>,
     tile_commands: Vec<crate::gpu::TileDrawCommand>,
+    surface_initialized: bool,
 }
 
 impl GpuWindowApp {
