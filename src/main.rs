@@ -28,6 +28,7 @@ fn initial_view_parameters(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    fractal_explorer::app::initialize_window_title(std::env::args().nth(1).as_deref());
     let _profiling_client = fractal_explorer::profiling::start();
     let output = std::sync::Arc::new(fractal_explorer::output::OutputService::start());
     let _output_scope = output.attach_to_current_thread();

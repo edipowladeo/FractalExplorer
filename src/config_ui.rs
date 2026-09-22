@@ -158,14 +158,15 @@ pub fn run_window(
         renderer_closed,
     }));
     let app_state = Arc::clone(&state);
+    let window_title = format!("{} - Configuração", crate::app::window_title());
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("FractalExplorer - Configuração")
+            .with_title(window_title.clone())
             .with_inner_size([560.0, 520.0]),
         ..Default::default()
     };
     eframe::run_native(
-        "FractalExplorer - Configuração",
+        &window_title,
         options,
         Box::new(move |_creation_context| Ok(Box::new(ConfigWindow { state: app_state }))),
     )?;

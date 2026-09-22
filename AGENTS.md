@@ -2,11 +2,11 @@
 
 Estas instruções se aplicam a todo agente que atuar neste repositório.
 
-## Controle global de HIL
+## Controle global de HITL
 
-- [ ] HIL tests
+- [ ] HITL tests
 
-Este é o único checkbox de HIL do repositório e é controlado exclusivamente pelo usuário.
+Este é o único checkbox de HITL do repositório e é controlado exclusivamente pelo usuário.
 
 - Quando estiver marcado, o agente deve disparar a aplicação ao concluir uma alteração funcional nova e estável, para que o usuário faça a validação manual.
 - Uma alteração estável é aquela que concluiu RED, GREEN e REFACTOR, com os testes passando.

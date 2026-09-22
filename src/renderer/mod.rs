@@ -233,7 +233,7 @@ fn run_cpu_with_updates_and_shutdown(
         config.effective_deallocation_ratio(),
     );
     let mut window = Window::new(
-        "FractalExplorer - Mandelbrot",
+        crate::app::window_title(),
         config.width,
         config.height,
         WindowOptions {

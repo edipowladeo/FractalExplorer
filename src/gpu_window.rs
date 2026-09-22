@@ -1019,7 +1019,7 @@ impl ApplicationHandler for GpuWindowApp {
             .unwrap_or((800, 600));
         let window = match event_loop.create_window(
             WindowAttributes::default()
-                .with_title("FractalExplorer - GPU")
+                .with_title(crate::app::window_title())
                 .with_inner_size(LogicalSize::new(window_width, window_height)),
         ) {
             Ok(window) => Arc::new(window),
