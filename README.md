@@ -49,6 +49,25 @@ cargo clean
 
 O protótipo é acompanhado pela `T001` em [TASKS.md](TASKS.md) e permanece em `TODO` até que testes, refactor e verificação visual sejam concluídos.
 
+## Profiling com Tracy
+
+Este branch inclui o cliente `tracy-client` e as marcacoes de profiling tambem
+quando a aplicacao e compilada com `--release`. Portanto, um release deste
+branch possui overhead de profiling: as marcacoes de frame e de zonas geram
+algum custo de CPU e memoria, mesmo quando nenhum Tracy Profiler esta conectado.
+O custo exato depende da quantidade de zonas e deve ser medido no hardware
+alvo; este repositorio nao promete overhead zero.
+
+Use o branch `profiler` para capturas:
+
+```powershell
+cargo run --bin sprite-demo -- profiler
+```
+
+Para um binario de producao sem esse custo, use um branch/configuracao sem a
+dependencia Tracy e sem as marcacoes de profiling. O titulo `profiler` e apenas
+um rotulo opcional da janela e nao altera essa regra de compilacao.
+
 ## Dynamic configuration UI
 
 The optional `native-ui` feature opens an `egui/eframe` configuration window alongside the `minifb` renderer window:
