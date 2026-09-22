@@ -441,11 +441,11 @@ execução visual e a integração com o device Metal exigem HITL em macOS.
 - **Integração sem hardware:** fake runtime + fake target + mock device.
 - **Integração com hardware:** opt-in, separada, nunca necessária para o ciclo
   unitário RED/GREEN.
-- **HIL mínimo:** uma verificação por backend real cobrindo inicialização,
+- **HILT mínimo:** uma verificação por backend real cobrindo inicialização,
   renderização, resize, pan/zoom, configuração, overlays e encerramento.
-- **HIL adicional:** shaders, apresentação, stalls, perda de device/surface e
+- **HILT adicional:** shaders, apresentação, stalls, perda de device/surface e
   Metal real somente quando a alteração tocar esses limites.
-- **HIL:** somente quando o checkbox global for marcado pelo usuário. Enquanto
+- **HILT:** somente quando o checkbox global for marcado pelo usuário. Enquanto
   estiver desmarcado, a aplicação não será iniciada automaticamente.
 
 O objetivo é manter a maior parte da migração rápida, determinística e
