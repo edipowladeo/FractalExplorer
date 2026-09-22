@@ -70,8 +70,14 @@ Esse procedimento não depende da configuração de depuração do VS Code nem d
 
 ### Política de sincronização entre branches
 
-- `develop` é uma branch longa e compartilhada; não fazer rebase nem force-push
-  nela depois que commits forem publicados.
+- Regra de isolamento: **1 agente = 1 worktree = 1 branch**. Um agente não
+  deve trabalhar simultaneamente em mais de um worktree ou branch, e dois
+  agentes não devem compartilhar a mesma branch de trabalho.
+- A `develop` é mantida por um único agente neste fluxo. Outros agentes devem
+  criar uma branch própria a partir do estado atualizado e trabalhar em um
+  worktree próprio.
+- `develop` é uma branch longa, porém exclusiva do agente responsável por ela;
+  não fazer rebase nem force-push nela depois que commits forem publicados.
 - Para atualizar `develop` com `master`, usar merge explícito:
 
   ```powershell
