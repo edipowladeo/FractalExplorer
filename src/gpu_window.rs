@@ -12,6 +12,7 @@ use crate::render::{
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -31,6 +32,10 @@ fn surface_load_op(
     } else {
         wgpu::LoadOp::Clear(wgpu::Color::BLACK)
     }
+}
+
+fn surface_usage(supported: wgpu::TextureUsages) -> wgpu::TextureUsages {
+    wgpu::TextureUsages::RENDER_ATTACHMENT & supported
 }
 
 fn vertex_buffer_capacity(current: usize, required: usize) -> usize {
@@ -511,8 +516,9 @@ pub struct GpuWindowApp {
 }
 
 struct CompositionTexture {
-    texture: wgpu::Texture,
     view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+    present_vertex_buffer: wgpu::Buffer,
     width: u32,
     height: u32,
 }
@@ -596,13 +602,15 @@ impl GpuWindowApp {
     fn ensure_composition_texture(
         &mut self,
         device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
         format: wgpu::TextureFormat,
         width: u32,
         height: u32,
     ) {
-        let needs_recreation = self.composition_texture.as_ref().is_none_or(|texture| {
-            texture.width != width || texture.height != height
-        });
+        let needs_recreation = self
+            .composition_texture
+            .as_ref()
+            .is_none_or(|texture| texture.width != width || texture.height != height);
         if needs_recreation {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("persistent-composition"),
@@ -616,13 +624,40 @@ impl GpuWindowApp {
                 dimension: wgpu::TextureDimension::D2,
                 format,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::COPY_SRC,
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("composition-sampler"),
+                mag_filter: wgpu::FilterMode::Nearest,
+                min_filter: wgpu::FilterMode::Nearest,
+                ..Default::default()
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("composition-bind-group"),
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                ],
+            });
+            let present_vertex_buffer =
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("composition-present-quad"),
+                    contents: bytemuck::cast_slice(&crate::gpu::tile_quad_vertices()),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
             self.composition_texture = Some(CompositionTexture {
-                texture,
                 view,
+                bind_group,
+                present_vertex_buffer,
                 width,
                 height,
             });
@@ -974,7 +1009,7 @@ impl ApplicationHandler for GpuWindowApp {
         };
         let size = window.inner_size();
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
+            usage: surface_usage(capabilities.usages),
             format,
             color_space: wgpu::SurfaceColorSpace::Auto,
             width: size.width.max(1),
@@ -1047,12 +1082,18 @@ impl ApplicationHandler for GpuWindowApp {
                 if let (Some(context), Some((format, width, height))) =
                     (self.context.take(), composition_parameters)
                 {
+                    let layout = self
+                        .tile_bind_group_layout
+                        .take()
+                        .expect("tile bind group layout must exist");
                     self.ensure_composition_texture(
                         &context.device,
+                        &layout,
                         format,
                         width,
                         height,
                     );
+                    self.tile_bind_group_layout = Some(layout);
                     self.context = Some(context);
                 }
                 if let Some(state) = &mut self.state {
@@ -1168,25 +1209,32 @@ impl ApplicationHandler for GpuWindowApp {
                                 }
                             }
                         }
-                        encoder.copy_texture_to_texture(
-                            wgpu::TexelCopyTextureInfo {
-                                texture: &composition.texture,
-                                mip_level: 0,
-                                origin: wgpu::Origin3d::ZERO,
-                                aspect: wgpu::TextureAspect::All,
-                            },
-                            wgpu::TexelCopyTextureInfo {
-                                texture: &frame.texture,
-                                mip_level: 0,
-                                origin: wgpu::Origin3d::ZERO,
-                                aspect: wgpu::TextureAspect::All,
-                            },
-                            wgpu::Extent3d {
-                                width: composition.width,
-                                height: composition.height,
-                                depth_or_array_layers: 1,
-                            },
-                        );
+                        let surface_view = frame
+                            .texture
+                            .create_view(&wgpu::TextureViewDescriptor::default());
+                        {
+                            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("gpu-present-pass"),
+                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                    view: &surface_view,
+                                    depth_slice: None,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                })],
+                                depth_stencil_attachment: None,
+                                timestamp_writes: None,
+                                occlusion_query_set: None,
+                                multiview_mask: None,
+                            });
+                            let mut pass = _pass;
+                            pass.set_pipeline(pipeline);
+                            pass.set_bind_group(0, &composition.bind_group, &[]);
+                            pass.set_vertex_buffer(0, composition.present_vertex_buffer.slice(..));
+                            pass.draw(0..6, 0..1);
+                        }
                         let command_buffer = encoder.finish();
                         if let Some(state) = &mut self.state {
                             state.canvas.record_frame_event(
@@ -1434,6 +1482,13 @@ mod tests {
             super::surface_load_op(true, true),
             wgpu::LoadOp::Load
         ));
+    }
+
+    #[test]
+    fn surface_usage_does_not_request_unsupported_copy_destination() {
+        let supported = wgpu::TextureUsages::RENDER_ATTACHMENT;
+
+        assert_eq!(super::surface_usage(supported), supported);
     }
 
     #[test]
