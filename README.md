@@ -51,22 +51,27 @@ O protótipo é acompanhado pela `T001` em [TASKS.md](TASKS.md) e permanece em `
 
 ## Profiling com Tracy
 
-Este branch inclui o cliente `tracy-client` e as marcacoes de profiling tambem
-quando a aplicacao e compilada com `--release`. Portanto, um release deste
-branch possui overhead de profiling: as marcacoes de frame e de zonas geram
-algum custo de CPU e memoria, mesmo quando nenhum Tracy Profiler esta conectado.
-O custo exato depende da quantidade de zonas e deve ser medido no hardware
-alvo; este repositorio nao promete overhead zero.
-
-Use o branch `profiler` para capturas:
+Para executar a aplicacao com o Tracy Profiler:
 
 ```powershell
 cargo run --bin sprite-demo -- profiler
 ```
 
-Para um binario de producao sem esse custo, use um branch/configuracao sem a
-dependencia Tracy e sem as marcacoes de profiling. O titulo `profiler` e apenas
-um rotulo opcional da janela e nao altera essa regra de compilacao.
+O argumento `profiler` e apenas o rotulo exibido no titulo da janela. Depois que
+o Tracy Profiler estiver aberto, a aplicacao aparece para conexao e captura.
+
+### Overhead em release
+
+O Tracy nao garante overhead zero. As zonas, marcadores de frame e o cliente
+podem consumir CPU e memoria mesmo quando nenhum profiler esta conectado. O
+impacto depende da quantidade de instrumentacao e deve ser medido no hardware
+alvo.
+
+Nesta configuracao, a dependencia Tracy e compilada sempre; portanto,
+`cargo build --release` ainda produz um binario instrumentado. Para um release
+de producao sem esse custo, e necessario desabilitar a instrumentacao por uma
+feature de compilacao (ou remover a dependencia/marcacoes) antes de gerar o
+binario. Apenas nao abrir o Tracy Profiler nao elimina a garantia de overhead.
 
 ## Dynamic configuration UI
 
