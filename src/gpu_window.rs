@@ -328,6 +328,27 @@ impl GpuFrameMetrics {
     }
 }
 
+fn frame_tiles_from_batch(batch: &PreparedTileBatch) -> Vec<TileDraw> {
+    batch
+        .commands
+        .iter()
+        .enumerate()
+        .map(|(layer, command)| {
+            TileDraw::new(
+                ImageId::new(command.texture.tile as u64),
+                ImageRevision::new(command.texture.content_hash),
+                layer as u32,
+            )
+            .with_destination(Rect::new(
+                command.position.x,
+                command.position.y,
+                command.size.0,
+                command.size.1,
+            ))
+        })
+        .collect()
+}
+
 pub struct GpuAppState {
     pub canvas: crate::TiledInfiniteCanvas,
     pub orchestrator: crate::Orchestrator,
@@ -537,24 +558,7 @@ impl GpuAppState {
             &batch,
             preparation_started.elapsed(),
         ));
-        let frame_tiles = batch
-            .commands
-            .iter()
-            .enumerate()
-            .map(|(layer, command)| {
-                TileDraw::new(
-                    ImageId::new(command.texture.tile as u64),
-                    ImageRevision::new(command.texture.content_hash),
-                    layer as u32,
-                )
-                .with_destination(Rect::new(
-                    command.position.x,
-                    command.position.y,
-                    command.size.0,
-                    command.size.1,
-                ))
-            })
-            .collect();
+        let frame_tiles = frame_tiles_from_batch(&batch);
         self.prepared_image_updates = batch
             .uploads
             .iter()
@@ -1453,13 +1457,13 @@ impl ApplicationHandler for GpuWindowApp {
 mod tests {
     use super::{
         centered_bounds, format_gpu_frame_history, format_gpu_frame_overlay_header,
-        format_gpu_upload_stage, needs_batch_rebuild, next_vertex_buffer_slot, overlay_cache_key,
-        overlay_needs_refresh, select_present_mode, vertex_buffer_capacity,
-        vertex_buffer_needs_recreation, GpuFrameMetrics, PreparedTileBatch,
+        format_gpu_upload_stage, frame_tiles_from_batch, needs_batch_rebuild,
+        next_vertex_buffer_slot, overlay_cache_key, overlay_needs_refresh, select_present_mode,
+        vertex_buffer_capacity, vertex_buffer_needs_recreation, GpuFrameMetrics, PreparedTileBatch,
     };
     use crate::geometry::ScreenPoint;
     use crate::gpu::{TextureKey, TextureUpload, TileDrawCommand};
-    use crate::render::Viewport;
+    use crate::render::{ImageId, ImageRevision, Rect, Viewport};
     use std::time::Duration;
 
     #[test]
@@ -1491,6 +1495,41 @@ mod tests {
         assert_eq!(
             GpuFrameMetrics::from_batch(&batch, Duration::ZERO).draw_calls(),
             1
+        );
+    }
+
+    #[test]
+    fn prepared_batch_golden_data_preserves_image_identity_order_and_destination() {
+        let batch = PreparedTileBatch {
+            uploads: Vec::new(),
+            commands: vec![
+                TileDrawCommand {
+                    texture: TextureKey {
+                        tile: 17,
+                        content_hash: 101,
+                    },
+                    position: ScreenPoint::new(4, 6),
+                    size: (20, 10),
+                },
+                TileDrawCommand {
+                    texture: TextureKey {
+                        tile: 23,
+                        content_hash: 202,
+                    },
+                    position: ScreenPoint::new(31, 9),
+                    size: (8, 12),
+                },
+            ],
+        };
+
+        assert_eq!(
+            frame_tiles_from_batch(&batch),
+            vec![
+                crate::render::TileDraw::new(ImageId::new(17), ImageRevision::new(101), 0)
+                    .with_destination(Rect::new(4, 6, 20, 10)),
+                crate::render::TileDraw::new(ImageId::new(23), ImageRevision::new(202), 1)
+                    .with_destination(Rect::new(31, 9, 8, 12)),
+            ]
         );
     }
 
