@@ -76,13 +76,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         render_plan,
     );
     if config.renderer.backend_kind()? == fractal_explorer::config::RendererBackend::Gpu {
-        fractal_explorer::gpu_window::run_window_with_state(Some(
-            fractal_explorer::gpu_window::GpuAppState::new(
-                canvas,
-                orchestrator,
-                config.renderer.clone(),
-            ),
-        ))?;
+        let (renderer_updates, renderer_commands, renderer_closed) =
+            fractal_explorer::gpu_window::runtime_channels();
+        let renderer_state = fractal_explorer::gpu_window::GpuAppState::new(
+            canvas,
+            orchestrator,
+            config.renderer.clone(),
+        );
+        let renderer_closed_for_thread = std::sync::Arc::clone(&renderer_closed);
+        let renderer_thread = std::thread::spawn(move || {
+            fractal_explorer::gpu_window::run_window_with_state_and_updates(
+                Some(renderer_state),
+                renderer_commands,
+                renderer_closed_for_thread,
+            )
+        });
+        fractal_explorer::config_ui::run_window(&mut config, renderer_updates, renderer_closed)?;
+        renderer_thread
+            .join()
+            .map_err(|_| "GPU renderer thread panicked")??;
         return Ok(());
     }
     #[cfg(feature = "native-ui")]

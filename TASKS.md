@@ -69,9 +69,14 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   configuração e encerramento passam pela mesma normalização de eventos. O
   runtime GPU agora drena atualizações de configuração por canal e sinaliza o
   encerramento ao Config UI, ambos sem acesso à janela nos testes. O passo não
-  foi concluído. A próxima integração — conectar o canal ao `main`/`eframe` e
-  validar resize, configuração, overlays e shutdown numa janela GPU real —
-  requer validação HILT.
+  foi concluído. O canal agora é criado por `gpu_window::runtime_channels`,
+  conectado ao `main` e consumido por `GpuWindowApp`; o sinal de encerramento
+  também é compartilhado com a Config UI. RED/GREEN: o teste
+  `gpu_window::tests::runtime_channels_connect_config_updates_and_shutdown_signal`
+  passou, `cargo check --bin sprite-demo` passou e `cargo test --lib` passou com
+  168 testes; `cargo fmt --all` e `git diff --check` também passaram. O próximo
+  gate — validar resize, configuração, overlays e shutdown numa janela GPU
+  real — requer validação HILT.
 - **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
 
 ### T026 — Investigar e melhorar a precisão para zoom profundo

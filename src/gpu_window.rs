@@ -1913,10 +1913,33 @@ mod tests {
         assert_eq!(centered_bounds(800, 600, 1.0), (0, 0, 799, 599));
         assert_eq!(centered_bounds(800, 600, 0.7), (120, 90, 679, 509));
     }
+
+    #[test]
+    fn runtime_channels_connect_config_updates_and_shutdown_signal() {
+        let (sender, receiver, renderer_closed) = super::runtime_channels();
+        let config = crate::config::RendererConfig::default();
+        sender.send(config.clone()).unwrap();
+
+        assert_eq!(receiver.recv().unwrap(), config);
+        assert!(!renderer_closed.load(std::sync::atomic::Ordering::Acquire));
+        renderer_closed.store(true, std::sync::atomic::Ordering::Release);
+        assert!(renderer_closed.load(std::sync::atomic::Ordering::Acquire));
+    }
 }
 
 pub fn run_window() -> Result<(), winit::error::EventLoopError> {
     run_window_with_state(None)
+}
+
+/// Creates the channels shared by the renderer window and the configuration UI.
+pub fn runtime_channels() -> (
+    std::sync::mpsc::Sender<crate::config::RendererConfig>,
+    std::sync::mpsc::Receiver<crate::config::RendererConfig>,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let renderer_closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    (sender, receiver, renderer_closed)
 }
 
 pub fn run_window_with_state(
@@ -1924,4 +1947,17 @@ pub fn run_window_with_state(
 ) -> Result<(), winit::error::EventLoopError> {
     let event_loop = EventLoop::new()?;
     event_loop.run_app(&mut GpuWindowApp::with_state(state))
+}
+
+pub fn run_window_with_state_and_updates(
+    state: Option<GpuAppState>,
+    receiver: std::sync::mpsc::Receiver<crate::config::RendererConfig>,
+    renderer_closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), winit::error::EventLoopError> {
+    let event_loop = EventLoop::new()?;
+    event_loop.run_app(&mut GpuWindowApp::with_state_and_config_updates(
+        state,
+        receiver,
+        renderer_closed,
+    ))
 }
