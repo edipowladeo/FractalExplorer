@@ -1537,6 +1537,10 @@ impl TiledInfiniteCanvas {
         self.last_finished_frame_timing
     }
 
+    pub fn current_frame_number(&self) -> u64 {
+        self.frame_number
+    }
+
     /// Parameters supplied at canvas creation, before any navigation command.
     pub fn initial_state(&self) -> CanvasInitialState {
         CanvasInitialState {
