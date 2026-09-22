@@ -265,6 +265,9 @@ fn run_cpu_with_updates_and_shutdown(
         config.height as u32,
     ));
     cpu_target.set_clear_color([0x10, 0x18, 0x20, 0xff]);
+    let mut app_controller = crate::app::DefaultApplicationController::new(
+        crate::render::Viewport::new(config.width as u32, config.height as u32),
+    );
     let mut window = Window::new(
         "FractalExplorer - Mandelbrot",
         config.width,
@@ -311,12 +314,17 @@ fn run_cpu_with_updates_and_shutdown(
         // `get_size` changes while the resize gesture is in progress, not only when it ends.
         let window_size = window.get_size();
         if surface.update_window_size(window_size) {
+            let viewport = crate::render::Viewport::new(
+                surface.screen_size.width as u32,
+                surface.screen_size.height as u32,
+            );
+            <crate::app::DefaultApplicationController as crate::app::ApplicationController>::handle_event(
+                &mut app_controller,
+                crate::app::AppEvent::Resized(viewport),
+            );
             <crate::render::cpu::CpuRenderTarget as crate::render::RenderTarget>::resize(
                 &mut cpu_target,
-                crate::render::Viewport::new(
-                    surface.screen_size.width as u32,
-                    surface.screen_size.height as u32,
-                ),
+                viewport,
             )
             .map_err(|error| {
                 minifb::Error::WindowCreate(format!("CPU resize failed: {error:?}"))
@@ -472,6 +480,12 @@ fn run_cpu_with_updates_and_shutdown(
             ),
             image_updates,
         );
+        app_controller.publish_frame(prepared_frame);
+        let prepared_frame =
+            <crate::app::DefaultApplicationController as crate::app::ApplicationController>::prepare_frame(
+                &mut app_controller,
+            )
+            .map_err(|error| minifb::Error::WindowCreate(format!("CPU frame failed: {error:?}")))?;
         let started = Instant::now();
         <crate::render::cpu::CpuRenderTarget as crate::render::RenderTarget>::update_images(
             &mut cpu_target,

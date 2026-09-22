@@ -64,7 +64,8 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   passou após encapsular frame e updates, com 2 testes do controlador. O
   `publish_frame` agora recebe o snapshot do runtime GPU e o invalida em
   resize, também coberto por RED/GREEN. O controlador ainda precisa receber o
-  canvas/scheduler e produzir os tiles e overlays reais, portanto não foi
+  canvas/scheduler e produzir os tiles e overlays reais; o loop CPU agora
+  também publica e consome o snapshot pelo controlador. O passo não foi
   concluído nem exige validação HILT neste ponto.
 - **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
 
