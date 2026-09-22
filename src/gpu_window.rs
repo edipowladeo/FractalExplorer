@@ -1154,6 +1154,13 @@ impl ApplicationHandler for GpuWindowApp {
                             .state
                             .as_ref()
                             .is_some_and(|state| state.config.preserve_previous_frame);
+                        let composition_started = Instant::now();
+                        if let Some(state) = &mut self.state {
+                            state.canvas.record_frame_event(
+                                crate::orchestrator::FrameEventKind::GpuCompositionPassStarted,
+                                "passe de composicao GPU iniciado",
+                            );
+                        }
                         {
                             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                                 label: Some("gpu-clear-pass"),
@@ -1209,6 +1216,23 @@ impl ApplicationHandler for GpuWindowApp {
                                 }
                             }
                         }
+                        if let Some(state) = &mut self.state {
+                            state.canvas.record_frame_event(
+                                crate::orchestrator::FrameEventKind::GpuCompositionPassFinished,
+                                format_gpu_upload_stage(
+                                    "passe de composicao GPU concluido",
+                                    composition_started.elapsed(),
+                                    "codificacao do render pass",
+                                ),
+                            );
+                        }
+                        let present_pass_started = Instant::now();
+                        if let Some(state) = &mut self.state {
+                            state.canvas.record_frame_event(
+                                crate::orchestrator::FrameEventKind::GpuSurfacePresentPassStarted,
+                                "passe de apresentacao da superficie GPU iniciado",
+                            );
+                        }
                         let surface_view = frame
                             .texture
                             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -1234,6 +1258,16 @@ impl ApplicationHandler for GpuWindowApp {
                             pass.set_bind_group(0, &composition.bind_group, &[]);
                             pass.set_vertex_buffer(0, composition.present_vertex_buffer.slice(..));
                             pass.draw(0..6, 0..1);
+                        }
+                        if let Some(state) = &mut self.state {
+                            state.canvas.record_frame_event(
+                                crate::orchestrator::FrameEventKind::GpuSurfacePresentPassFinished,
+                                format_gpu_upload_stage(
+                                    "passe de apresentacao da superficie GPU concluido",
+                                    present_pass_started.elapsed(),
+                                    "codificacao do render pass",
+                                ),
+                            );
                         }
                         let command_buffer = encoder.finish();
                         if let Some(state) = &mut self.state {
