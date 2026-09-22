@@ -1422,6 +1422,7 @@ impl ApplicationHandler for GpuWindowApp {
             (state.prepared_batch.take(), state.prepared_frame.clone())
         });
         if let Some((Some(batch), Some(frame))) = prepared {
+            self.app_controller.publish_frame(frame.clone());
             if let Some(state) = &mut self.state {
                 state.canvas.record_frame_event(
                     crate::orchestrator::FrameEventKind::GpuBatchPreparationFinished,
