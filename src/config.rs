@@ -170,6 +170,12 @@ impl Default for RendererDebugConfig {
     }
 }
 
+impl RendererDebugConfig {
+    pub fn overlays_enabled(&self) -> bool {
+        self.text_overlay_global
+    }
+}
+
 impl RendererConfig {
     pub fn backend_kind(&self) -> Result<RendererBackend, String> {
         RendererBackend::parse(&self.backend)
@@ -319,6 +325,18 @@ mod tests {
             config.renderer.starting_point_coordinates().unwrap(),
             crate::geometry::ComplexPoint::new(-0.743643887037151, 0.131825904205330)
         );
+    }
+
+    #[test]
+    fn global_overlay_flag_is_the_master_overlay_switch() {
+        let mut debug = super::RendererDebugConfig::default();
+        debug.text_overlay_global = false;
+        debug.text_overlay_frames = true;
+        debug.show_allocation_envelope = true;
+        assert!(!debug.overlays_enabled());
+
+        debug.text_overlay_global = true;
+        assert!(debug.overlays_enabled());
     }
 
     #[test]
