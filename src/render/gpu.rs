@@ -216,4 +216,61 @@ mod tests {
 
         assert_eq!(target.device().resized, vec![viewport]);
     }
+
+    #[test]
+    fn moving_an_image_reuses_its_texture_and_only_changes_draw_coordinates() {
+        let viewport = Viewport::new(8, 4);
+        let mut target = GpuRenderTarget::new(MockDevice::default(), viewport);
+        let update = ImageUpdate::new(
+            ImageId::new(4),
+            ImageRevision::new(1),
+            2,
+            1,
+            vec![10, 20, 30, 255, 40, 50, 60, 255],
+        )
+        .unwrap();
+        target.update_images(&[update.clone()]).unwrap();
+        let first = RenderFrame::new(1, viewport).with_tile(
+            TileDraw::new(ImageId::new(4), ImageRevision::new(1), 0)
+                .with_destination(Rect::new(1, 1, 2, 1)),
+        );
+        target.render(&first).unwrap();
+
+        target.update_images(&[update]).unwrap();
+        let moved = RenderFrame::new(2, viewport).with_tile(
+            TileDraw::new(ImageId::new(4), ImageRevision::new(1), 0)
+                .with_destination(Rect::new(5, 2, 2, 1)),
+        );
+        target.render(&moved).unwrap();
+
+        let submissions = &target.device().submitted;
+        assert_eq!(submissions.len(), 3);
+        let Command::WriteTexture { texture, .. } = submissions[0].commands()[0] else {
+            panic!("first submission must upload the image")
+        };
+        assert!(submissions[1]
+            .commands()
+            .iter()
+            .all(|command| !matches!(command, Command::WriteTexture { .. })));
+        let Command::DrawTexture {
+            texture: first_texture,
+            x: 1,
+            y: 1,
+            ..
+        } = submissions[1].commands()[0]
+        else {
+            panic!("first frame must draw at its initial destination")
+        };
+        let Command::DrawTexture {
+            texture: moved_texture,
+            x: 5,
+            y: 2,
+            ..
+        } = submissions[2].commands()[0]
+        else {
+            panic!("moved frame must update only the draw destination")
+        };
+        assert_eq!(texture, first_texture);
+        assert_eq!(texture, moved_texture);
+    }
 }
