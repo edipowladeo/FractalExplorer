@@ -1,5 +1,6 @@
 use crate::input::InputEvent;
 use crate::render::{FrameBuilder, PreparedFrame, RenderError, Viewport};
+use crate::{Orchestrator, TiledInfiniteCanvas};
 
 use std::sync::OnceLock;
 
@@ -65,6 +66,40 @@ pub trait ApplicationController {
     fn take_input_events(&mut self) -> Vec<InputEvent>;
 }
 
+pub fn prepare_canvas_common(
+    canvas: &mut TiledInfiniteCanvas,
+    orchestrator: &Orchestrator,
+    allocation_bounds: (i32, i32, i32, i32),
+    deallocation_bounds: (i32, i32, i32, i32),
+) {
+    canvas.begin_frame();
+    canvas.record_frame_event(
+        crate::orchestrator::FrameEventKind::ConfigurationProcessed,
+        "configuracao processada",
+    );
+    canvas.record_frame_event(
+        crate::orchestrator::FrameEventKind::SurfacePrepared,
+        "superficie preparada",
+    );
+    canvas.trim_outside_allocation(deallocation_bounds);
+    canvas.record_frame_event(
+        crate::orchestrator::FrameEventKind::OutsideAllocationTrimmed,
+        "tiles fora da alocacao removidos",
+    );
+    canvas.ensure_screen_coverage(allocation_bounds);
+    canvas.record_frame_event(
+        crate::orchestrator::FrameEventKind::ScreenCoverageCompleted,
+        "cobertura da tela concluida",
+    );
+    for layer in canvas.layers() {
+        orchestrator.render_layer(layer);
+    }
+    canvas.record_frame_event(
+        crate::orchestrator::FrameEventKind::LayerWorkScheduled,
+        "trabalho das camadas agendado",
+    );
+}
+
 pub struct DefaultApplicationController {
     viewport: Viewport,
     closed: bool,
@@ -95,6 +130,31 @@ impl DefaultApplicationController {
     pub fn publish_frame(&mut self, frame: PreparedFrame) {
         self.viewport = frame.frame().viewport();
         self.published_frame = Some(frame);
+    }
+
+    pub fn publish_and_prepare_frame(
+        &mut self,
+        frame: PreparedFrame,
+    ) -> Result<PreparedFrame, RenderError> {
+        self.publish_frame(frame);
+        self.prepare_frame()
+    }
+
+    pub fn prepare_canvas(
+        &mut self,
+        canvas: &mut TiledInfiniteCanvas,
+        orchestrator: &Orchestrator,
+        allocation_bounds: (i32, i32, i32, i32),
+        deallocation_bounds: (i32, i32, i32, i32),
+    ) {
+        prepare_canvas_common(canvas, orchestrator, allocation_bounds, deallocation_bounds);
+    }
+
+    pub fn begin_tile_composition(&mut self, canvas: &mut TiledInfiniteCanvas) {
+        canvas.record_frame_event(
+            crate::orchestrator::FrameEventKind::TileCompositionStarted,
+            "composicao de tiles iniciada",
+        );
     }
 }
 
@@ -216,5 +276,19 @@ mod tests {
         let prepared = controller.prepare_frame().unwrap();
 
         assert_eq!(prepared, published);
+    }
+
+    #[test]
+    fn controller_publishes_and_prepares_a_frame_as_one_runtime_boundary() {
+        let mut controller = DefaultApplicationController::new(Viewport::new(320, 200));
+        let frame = PreparedFrame::new(
+            crate::render::RenderFrame::new(12, Viewport::new(640, 400)),
+            Vec::new(),
+        );
+
+        let prepared = controller.publish_and_prepare_frame(frame.clone()).unwrap();
+
+        assert_eq!(prepared, frame);
+        assert_eq!(controller.viewport(), Viewport::new(640, 400));
     }
 }
