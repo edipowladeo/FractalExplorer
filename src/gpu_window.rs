@@ -1121,12 +1121,14 @@ impl ApplicationHandler for GpuWindowApp {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        let mut render_requested = false;
         if matches!(&event, WindowEvent::CloseRequested) {
             signal_renderer_closed(self.renderer_closed.as_ref());
         }
         let app_event = app_event_from_window_event(&event);
         if let Some(app_event) = app_event {
             let actions = reduce_effects(&self.app_controller.handle_event(app_event));
+            render_requested = actions.render;
             if actions.exit {
                 event_loop.exit();
                 return;
@@ -1168,7 +1170,7 @@ impl ApplicationHandler for GpuWindowApp {
                 }
                 self.configure_surface(size.width, size.height)
             }
-            WindowEvent::RedrawRequested => {
+            WindowEvent::RedrawRequested if render_requested => {
                 let preserve_previous_frame = self
                     .state
                     .as_ref()
