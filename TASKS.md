@@ -202,6 +202,12 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   o teste `gpu_target_forwards_resize_to_the_graphics_device` passou. A
   renderização concreta de comandos `DrawTexture`/`Present` no adaptador WGPU e
   a integração do target ao runtime ainda estão pendentes.
+- Outro RED/GREEN começou a fechar a gramática de submissão: uploads devem vir
+  antes dos draws, `Present` deve ser final e draws precisam de apresentação.
+  `validates_upload_draw_present_order_for_gpu_render_targets` passou após a
+  validação da sequência no adaptador. Isso ainda não executa desenho real:
+  `WgpuGraphicsDevice::submit` continua rejeitando draws/apresentação até a
+  migração do backend e do runtime.
 - **Diagnóstico de frames lentos:** adicionados eventos separados para o tempo
   entre a finalização de um frame e o próximo ciclo do event loop
   (`GpuEventLoopWait`) e para a latência entre `request_redraw` e
