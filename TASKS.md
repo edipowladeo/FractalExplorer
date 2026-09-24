@@ -163,6 +163,14 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   como `cargo test --lib` (187 testes), `cargo check --bin sprite-demo`,
   `cargo fmt --all -- --check` e `git diff --check`. A apresentação efetiva e
   os tipos WGPU restantes no runtime seguem pendentes, sem mudança visual.
+  A superfície agora também encapsula configuração, resize, aquisição e
+  apresentação do frame; `GpuWindowApp` usa resultados normalizados de
+  aquisição e não guarda `SurfaceConfiguration`. RED/GREEN preservou os 187
+  testes; `cargo check --bin sprite-demo`, `cargo fmt --all -- --check` e
+  `git diff --check` passaram. O usuário confirmou o HITL desta integração
+  (janela GPU, resize, interação/overlays e fechamento). Permanecem acessos
+  diretos a pipeline, buffers, encoder e render pass no runtime; Passo 5 segue
+  em andamento até completar o confinamento.
 - **Diagnóstico de frames lentos:** adicionados eventos separados para o tempo
   entre a finalização de um frame e o próximo ciclo do event loop
   (`GpuEventLoopWait`) e para a latência entre `request_redraw` e

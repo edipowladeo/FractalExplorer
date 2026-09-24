@@ -129,9 +129,72 @@ pub fn tile_vertices_for_commands(
 pub struct WgpuPipeline(pub wgpu::RenderPipeline);
 
 pub struct WgpuSurface<'window> {
-    pub surface: wgpu::Surface<'window>,
-    pub format: wgpu::TextureFormat,
-    pub present_mode: wgpu::PresentMode,
+    surface: wgpu::Surface<'window>,
+    configuration: wgpu::SurfaceConfiguration,
+}
+
+pub enum WgpuSurfaceAcquire {
+    Ready(WgpuSurfaceFrame),
+    Suboptimal(WgpuSurfaceFrame),
+    Timeout,
+    Occluded,
+    Outdated,
+    Lost,
+    Validation,
+}
+
+pub struct WgpuSurfaceFrame(wgpu::SurfaceTexture);
+
+impl WgpuSurfaceFrame {
+    pub fn create_view(&self) -> wgpu::TextureView {
+        self.0
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default())
+    }
+
+    pub fn present(self, context: &WgpuContext) {
+        context.queue.present(self.0);
+    }
+}
+
+impl WgpuSurface<'_> {
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.configuration.format
+    }
+
+    pub fn present_mode(&self) -> wgpu::PresentMode {
+        self.configuration.present_mode
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        (self.configuration.width, self.configuration.height)
+    }
+
+    pub fn configure(&self, context: &WgpuContext) {
+        self.surface.configure(&context.device, &self.configuration);
+    }
+
+    pub fn resize(&mut self, context: &WgpuContext, width: u32, height: u32) {
+        self.configuration.width = width.max(1);
+        self.configuration.height = height.max(1);
+        self.configure(context);
+    }
+
+    pub fn acquire(&self) -> WgpuSurfaceAcquire {
+        match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame) => {
+                WgpuSurfaceAcquire::Ready(WgpuSurfaceFrame(frame))
+            }
+            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                WgpuSurfaceAcquire::Suboptimal(WgpuSurfaceFrame(frame))
+            }
+            wgpu::CurrentSurfaceTexture::Timeout => WgpuSurfaceAcquire::Timeout,
+            wgpu::CurrentSurfaceTexture::Occluded => WgpuSurfaceAcquire::Occluded,
+            wgpu::CurrentSurfaceTexture::Outdated => WgpuSurfaceAcquire::Outdated,
+            wgpu::CurrentSurfaceTexture::Lost => WgpuSurfaceAcquire::Lost,
+            wgpu::CurrentSurfaceTexture::Validation => WgpuSurfaceAcquire::Validation,
+        }
+    }
 }
 
 pub fn select_present_mode(modes: &[wgpu::PresentMode]) -> Option<wgpu::PresentMode> {
@@ -184,10 +247,12 @@ impl WgpuContext {
         })
     }
 
-    pub fn create_surface<'window>(
+    pub fn create_surface(
         &self,
-        window: &'window winit::window::Window,
-    ) -> Result<WgpuSurface<'window>, String> {
+        window: std::sync::Arc<winit::window::Window>,
+        width: u32,
+        height: u32,
+    ) -> Result<WgpuSurface<'static>, String> {
         let surface = self
             .instance
             .create_surface(window)
@@ -198,14 +263,28 @@ impl WgpuContext {
             .first()
             .copied()
             .ok_or_else(|| "GPU surface has no supported formats".to_string())?;
+        let present_mode = select_present_mode(&capabilities.present_modes)
+            .ok_or_else(|| "GPU surface has no supported present modes".to_string())?;
+        let alpha_mode = capabilities
+            .alpha_modes
+            .first()
+            .copied()
+            .ok_or_else(|| "GPU surface has no supported alpha modes".to_string())?;
+        let configuration = wgpu::SurfaceConfiguration {
+            usage: surface_usage(capabilities.usages),
+            format,
+            color_space: wgpu::SurfaceColorSpace::Auto,
+            width: width.max(1),
+            height: height.max(1),
+            present_mode,
+            alpha_mode,
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        surface.configure(&self.device, &configuration);
         Ok(WgpuSurface {
             surface,
-            format,
-            present_mode: capabilities
-                .present_modes
-                .first()
-                .copied()
-                .unwrap_or(wgpu::PresentMode::Fifo),
+            configuration,
         })
     }
 }
