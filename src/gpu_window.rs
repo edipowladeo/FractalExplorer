@@ -4,11 +4,14 @@ use crate::app::{
 };
 use crate::gpu::{
     debug_overlay_upload, debug_overlay_upload_with_rectangles, texture_keys_for_commands,
-    tile_commands_for_frame, tile_vertices_for_commands, upload_tile_texture, write_tile_texture,
-    GpuContext, GpuTextureStore, GpuTileTexture, PreparedTileBatch, TextureCache, TileDrawCommand,
+    tile_commands_for_frame, PreparedTileBatch, TextureCache, TileDrawCommand,
 };
 use crate::input::{InputEvent, ZoomDirection};
-use crate::render::graphics::wgpu::{create_tile_pipeline, WgpuPipeline};
+use crate::render::graphics::wgpu::{
+    create_tile_pipeline, tile_quad_vertices, tile_vertices_for_commands, upload_tile_texture,
+    write_tile_texture, GpuTextureStore, GpuTileTexture, TileVertex, WgpuContext as GpuContext,
+    WgpuPipeline,
+};
 use crate::render::{ImageId, ImageRevision, ImageUpdate, PreparedFrame, Viewport};
 #[cfg(test)]
 use crate::render::{Rect, TileDraw};
@@ -125,7 +128,7 @@ impl VertexBufferRing {
         {
             self.buffers[self.active_slot] = Some(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
-                size: (capacity * std::mem::size_of::<crate::gpu::TileVertex>()) as u64,
+                size: (capacity * std::mem::size_of::<TileVertex>()) as u64,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }));
@@ -745,7 +748,7 @@ impl GpuWindowApp {
             let present_vertex_buffer =
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("composition-present-quad"),
-                    contents: bytemuck::cast_slice(&crate::gpu::tile_quad_vertices()),
+                    contents: bytemuck::cast_slice(&tile_quad_vertices()),
                     usage: wgpu::BufferUsages::VERTEX,
                 });
             self.composition_texture = Some(CompositionTexture {
