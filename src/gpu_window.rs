@@ -8,9 +8,9 @@ use crate::gpu::{
 };
 use crate::input::{InputEvent, ZoomDirection};
 use crate::render::graphics::wgpu::{
-    create_tile_pipeline, tile_quad_vertices, tile_vertices_for_commands, upload_tile_texture,
-    write_tile_texture, GpuTextureStore, GpuTileTexture, TileVertex, WgpuContext as GpuContext,
-    WgpuPipeline, WgpuSurface, WgpuSurfaceAcquire,
+    create_tile_pipeline, surface_load_op, tile_quad_vertices, tile_vertices_for_commands,
+    upload_tile_texture, write_tile_texture, GpuTextureStore, GpuTileTexture, TileVertex,
+    WgpuContext as GpuContext, WgpuPipeline, WgpuSurface, WgpuSurfaceAcquire,
 };
 use crate::render::{ImageId, ImageRevision, ImageUpdate, PreparedFrame, Viewport};
 #[cfg(test)]
@@ -27,17 +27,6 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 fn needs_batch_rebuild(previous: (u32, u32), next: (u32, u32)) -> bool {
     previous != next
-}
-
-fn surface_load_op(
-    preserve_previous_frame: bool,
-    surface_initialized: bool,
-) -> wgpu::LoadOp<wgpu::Color> {
-    if preserve_previous_frame && surface_initialized {
-        wgpu::LoadOp::Load
-    } else {
-        wgpu::LoadOp::Clear(wgpu::Color::BLACK)
-    }
 }
 
 fn uses_persistent_composition(preserve_previous_frame: bool) -> bool {
@@ -1699,22 +1688,6 @@ mod tests {
         assert_eq!(next_vertex_buffer_slot(1, 3), 2);
         assert_eq!(next_vertex_buffer_slot(2, 3), 0);
         assert_eq!(next_vertex_buffer_slot(0, 0), 0);
-    }
-
-    #[test]
-    fn surface_load_op_preserves_previous_pixels_only_after_initialization() {
-        assert!(matches!(
-            super::surface_load_op(false, false),
-            wgpu::LoadOp::Clear(_)
-        ));
-        assert!(matches!(
-            super::surface_load_op(true, false),
-            wgpu::LoadOp::Clear(_)
-        ));
-        assert!(matches!(
-            super::surface_load_op(true, true),
-            wgpu::LoadOp::Load
-        ));
     }
 
     #[test]
