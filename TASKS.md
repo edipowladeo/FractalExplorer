@@ -98,6 +98,13 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   `app::tests::reduces_controller_effects_to_runtime_actions` e a suíte passou
   com 172 testes. Ainda falta extrair o ciclo de redraw e o encerramento
   coordenado; a validação da janela real permanece como HILT após essa etapa.
+- **Diagnóstico de frames lentos:** adicionados eventos separados para o tempo
+  entre a finalização de um frame e o próximo ciclo do event loop
+  (`GpuEventLoopWait`) e para a latência entre `request_redraw` e
+  `RedrawRequested` (`GpuRedrawLatency`). RED/GREEN cobriu os formatadores
+  desses tempos; `cargo fmt --all`, `git diff --check` e `cargo test --lib`
+  passaram com 173 testes. Um dump agora consegue distinguir espera fora do
+  renderer de custo de aquisição, composição, submissão e apresentação GPU.
 - **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
 
 ### T026 — Investigar e melhorar a precisão para zoom profundo

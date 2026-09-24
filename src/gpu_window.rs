@@ -290,6 +290,19 @@ fn format_gpu_upload_stage(label: &str, elapsed: Duration, detail: &str) -> Stri
     )
 }
 
+fn format_gpu_event_loop_wait(elapsed: Duration) -> String {
+    format_gpu_upload_stage("espera do event loop GPU", elapsed, "fora do renderer")
+}
+
+fn format_gpu_redraw_latency(elapsed: Duration) -> String {
+    format_gpu_upload_stage(
+        "latencia entre request_redraw e RedrawRequested",
+        elapsed,
+        "event loop",
+    )
+    .replace(" (event loop)", "")
+}
+
 impl GpuFrameMetrics {
     pub(crate) fn from_batch(batch: &PreparedTileBatch, prepare_duration: Duration) -> Self {
         Self {
@@ -632,6 +645,8 @@ pub struct GpuWindowApp {
     tile_commands: Vec<crate::gpu::TileDrawCommand>,
     surface_initialized: bool,
     composition_texture: Option<CompositionTexture>,
+    last_frame_finished_at: Option<Instant>,
+    last_redraw_requested_at: Option<Instant>,
 }
 
 struct CompositionTexture {
@@ -680,6 +695,8 @@ impl GpuWindowApp {
             tile_commands: Vec::new(),
             surface_initialized: false,
             composition_texture: None,
+            last_frame_finished_at: None,
+            last_redraw_requested_at: None,
         }
     }
 
@@ -695,6 +712,8 @@ impl GpuWindowApp {
         self.envelope_vertex_ring = VertexBufferRing::new(ring_size);
         self.surface_initialized = false;
         self.composition_texture = None;
+        self.last_frame_finished_at = None;
+        self.last_redraw_requested_at = None;
     }
 
     pub fn with_state_and_config_updates(
@@ -1265,6 +1284,12 @@ impl ApplicationHandler for GpuWindowApp {
                         crate::orchestrator::FrameEventKind::GpuRedrawReceived,
                         "evento RedrawRequested recebido",
                     );
+                    if let Some(requested_at) = self.last_redraw_requested_at.take() {
+                        state.canvas.record_frame_event(
+                            crate::orchestrator::FrameEventKind::GpuRedrawLatency,
+                            format_gpu_redraw_latency(requested_at.elapsed()),
+                        );
+                    }
                 }
                 if let (Some(context), Some(surface), Some(pipeline)) =
                     (&self.context, &self.surface, &self.pipeline)
@@ -1487,6 +1512,7 @@ impl ApplicationHandler for GpuWindowApp {
                             );
                             state.canvas.record_frame_presentation_finished();
                             state.canvas.finish_frame();
+                            self.last_frame_finished_at = Some(Instant::now());
                         }
                     }
                 }
@@ -1497,8 +1523,18 @@ impl ApplicationHandler for GpuWindowApp {
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         self.apply_pending_config_updates();
+        let event_loop_wait = self
+            .last_frame_finished_at
+            .take()
+            .map(|finished_at| finished_at.elapsed());
         let prepared = self.state.as_mut().map(|state| {
             state.prepare_visible_batch();
+            if let Some(elapsed) = event_loop_wait {
+                state.canvas.record_frame_event(
+                    crate::orchestrator::FrameEventKind::GpuEventLoopWait,
+                    format_gpu_event_loop_wait(elapsed),
+                );
+            }
             (state.prepared_batch.take(), state.prepared_frame.clone())
         });
         if let Some((Some(batch), Some(frame))) = prepared {
@@ -1522,6 +1558,7 @@ impl ApplicationHandler for GpuWindowApp {
             }
         }
         if let Some(window) = &self.window {
+            self.last_redraw_requested_at = Some(Instant::now());
             if let Some(state) = &mut self.state {
                 state.canvas.record_frame_event(
                     crate::orchestrator::FrameEventKind::GpuRedrawRequested,
@@ -1547,11 +1584,11 @@ fn app_event_from_window_event(event: &WindowEvent) -> Option<AppEvent> {
 #[cfg(test)]
 mod tests {
     use super::{
-        app_event_from_window_event, centered_bounds, format_gpu_frame_history,
-        format_gpu_frame_overlay_header, format_gpu_upload_stage, frame_tiles_from_batch,
-        needs_batch_rebuild, next_vertex_buffer_slot, overlay_cache_key, overlay_needs_refresh,
-        select_present_mode, vertex_buffer_capacity, vertex_buffer_needs_recreation,
-        GpuFrameMetrics, PreparedTileBatch,
+        app_event_from_window_event, centered_bounds, format_gpu_event_loop_wait,
+        format_gpu_frame_history, format_gpu_frame_overlay_header, format_gpu_redraw_latency,
+        format_gpu_upload_stage, frame_tiles_from_batch, needs_batch_rebuild,
+        next_vertex_buffer_slot, overlay_cache_key, overlay_needs_refresh, select_present_mode,
+        vertex_buffer_capacity, vertex_buffer_needs_recreation, GpuFrameMetrics, PreparedTileBatch,
     };
     use crate::geometry::ScreenPoint;
     use crate::gpu::{TextureKey, TextureUpload, TileDrawCommand};
@@ -1559,6 +1596,18 @@ mod tests {
     use std::time::Duration;
     use winit::dpi::PhysicalSize;
     use winit::event::WindowEvent;
+
+    #[test]
+    fn formats_event_loop_wait_and_redraw_latency_separately() {
+        assert_eq!(
+            format_gpu_event_loop_wait(Duration::from_millis(6019)),
+            "espera do event loop GPU: 6019.000 ms (fora do renderer)"
+        );
+        assert_eq!(
+            format_gpu_redraw_latency(Duration::from_micros(570)),
+            "latencia entre request_redraw e RedrawRequested: 0.570 ms"
+        );
+    }
 
     #[test]
     fn translates_window_lifecycle_events_to_application_events() {
