@@ -237,13 +237,13 @@ pub fn create_tile_pipeline(
         .device
         .create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("tile-vertex-shader"),
-            source: wgpu::ShaderSource::Wgsl(crate::gpu::TILE_VERTEX_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(TILE_VERTEX_SHADER.into()),
         });
     let fragment = context
         .device
         .create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("tile-fragment-shader"),
-            source: wgpu::ShaderSource::Wgsl(crate::gpu::TILE_FRAGMENT_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(TILE_FRAGMENT_SHADER.into()),
         });
     let pipeline = context
         .device
@@ -254,7 +254,7 @@ pub fn create_tile_pipeline(
                 module: &vertex,
                 entry_point: Some("main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(crate::gpu::TILE_VERTEX_LAYOUT)],
+                buffers: &[Some(TILE_VERTEX_LAYOUT)],
             },
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
@@ -329,7 +329,7 @@ impl GraphicsDevice for WgpuGraphicsDevice<'_> {
         descriptor: TextureDescriptor,
     ) -> Result<TextureHandle, DeviceError> {
         let format = match descriptor.format {
-            TextureFormat::Rgba8 => crate::gpu::TILE_TEXTURE_FORMAT,
+            TextureFormat::Rgba8 => TILE_TEXTURE_FORMAT,
         };
         if descriptor.width == 0 || descriptor.height == 0 {
             return Err(DeviceError::InvalidResource);
