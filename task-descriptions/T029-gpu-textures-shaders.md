@@ -249,6 +249,14 @@ Enquanto a migração estiver em curso, CPU e GPU devem continuar selecionáveis
   camadas, tiles progressivos, overlays, input, resize, atualização de config e
   encerramento.
 - Registrar golden data do `PreparedTileBatch` atual sem depender de `wgpu`.
+- Para overlays e envelopes, a posicao, origem, ancoragem e ordem observadas no
+  renderer CPU sao a referencia normativa. Uma diferenca de posicao no GPU e
+  uma divergencia de composicao a corrigir nos passos de migracao/conformidade;
+  nao deve ser aceita como uma convencao visual especifica do backend.
+- **Conformidade de overlays:** com a mesma configuracao e viewport, o GPU deve
+  usar as posicoes do CPU para overlays de texto, camadas, fila, workers e
+  envelope. Diferencas de posicao, ancoragem ou ordem sao falhas, ainda que os
+  pixels dos tiles estejam corretos.
 - Documentar quais diferenças CPU/GPU são toleradas e quais são bugs.
 
 **Saída:** uma suíte capaz de detectar nova divergência antes da extração.
