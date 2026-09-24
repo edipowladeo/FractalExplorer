@@ -104,7 +104,9 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   `RedrawRequested` (`GpuRedrawLatency`). RED/GREEN cobriu os formatadores
   desses tempos; `cargo fmt --all`, `git diff --check` e `cargo test --lib`
   passaram com 173 testes. Um dump agora consegue distinguir espera fora do
-  renderer de custo de aquisição, composição, submissão e apresentação GPU.
+  renderer de custo de aquisição, composição, submissão e apresentação GPU. A
+  espera é registrada no frame anterior, antes do próximo `begin_frame`, para
+  não misturar a preparação CPU do frame seguinte nessa medição.
 - **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
 
 ### T026 — Investigar e melhorar a precisão para zoom profundo
