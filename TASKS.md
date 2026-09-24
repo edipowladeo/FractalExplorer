@@ -78,7 +78,8 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   semantic layer, queue, and worker overlay data. The adapters still rasterize
   those overlays. RED/GREEN: frame, input, and overlay-switch tests; cargo test
   --lib passed (180 tests), cargo check --bin sprite-demo, cargo fmt --all
-  -- --check, and git diff --check passed. Visual HILT remains pending.
+  -- --check, and git diff --check passed. Visual HILT was confirmed by the
+  user before continuing.
 - Registro anterior do passo 3: `ApplicationController::prepare_frame` passou a
   retornar `PreparedFrame`, alinhando a API comum ao snapshot usado por CPU e
   GPU. RED confirmou que o controlador ainda retornava `RenderFrame`; GREEN
@@ -119,6 +120,13 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   `app::tests::reduces_controller_effects_to_runtime_actions` e a suíte passou
   com 172 testes. Ainda falta extrair o ciclo de redraw e o encerramento
   coordenado; a validação da janela real permanece como HILT após essa etapa.
+- **Passo 4 — efeito de redraw:** RED confirmou que `AppEffect::Render` era
+  descartado por `reduce_effects`; GREEN adicionou a ação `render` e fez o
+  adaptador executar o caminho GPU de `RedrawRequested` somente quando o
+  controlador solicita renderização. `cargo test --lib` passou com 181 testes,
+  `cargo check --bin sprite-demo`, `cargo fmt --all -- --check` e
+  `git diff --check` passaram. Passo 4 segue em andamento; a janela precisa de
+  HILT para confirmar redraw, resize e encerramento no runtime real.
 - **Diagnóstico de frames lentos:** adicionados eventos separados para o tempo
   entre a finalização de um frame e o próximo ciclo do event loop
   (`GpuEventLoopWait`) e para a latência entre `request_redraw` e

@@ -47,6 +47,7 @@ pub enum AppEffect {
 pub struct AppActions {
     pub reconfigure: bool,
     pub request_redraw: bool,
+    pub render: bool,
     pub exit: bool,
 }
 
@@ -56,7 +57,7 @@ pub fn reduce_effects(effects: &[AppEffect]) -> AppActions {
         match effect {
             AppEffect::Reconfigure => actions.reconfigure = true,
             AppEffect::RequestRedraw => actions.request_redraw = true,
-            AppEffect::Render => {}
+            AppEffect::Render => actions.render = true,
             AppEffect::Exit => actions.exit = true,
         }
     }
@@ -394,9 +395,15 @@ mod tests {
             super::AppActions {
                 reconfigure: true,
                 request_redraw: true,
+                render: true,
                 exit: true,
             }
         );
+    }
+
+    #[test]
+    fn render_effect_is_preserved_for_the_window_runtime() {
+        assert!(reduce_effects(&[AppEffect::Render]).render);
     }
 
     #[test]
