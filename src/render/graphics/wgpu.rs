@@ -134,6 +134,17 @@ pub struct WgpuSurface<'window> {
     pub present_mode: wgpu::PresentMode,
 }
 
+pub fn select_present_mode(modes: &[wgpu::PresentMode]) -> Option<wgpu::PresentMode> {
+    [wgpu::PresentMode::AutoNoVsync, wgpu::PresentMode::Immediate]
+        .into_iter()
+        .find(|preferred| modes.contains(preferred))
+        .or_else(|| modes.first().copied())
+}
+
+pub fn surface_usage(supported: wgpu::TextureUsages) -> wgpu::TextureUsages {
+    wgpu::TextureUsages::RENDER_ATTACHMENT & supported
+}
+
 /// Owns the selected adapter, device, queue, and instance for the `wgpu` API.
 pub struct WgpuContext {
     pub instance: wgpu::Instance,
@@ -569,8 +580,36 @@ fn validate_commands(commands: &CommandList) -> Result<(), DeviceError> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_commands;
+    use super::{select_present_mode, surface_usage, validate_commands};
     use crate::render::device::{CommandList, DeviceError, TextureHandle};
+
+    #[test]
+    fn surface_policy_prefers_non_vsync_modes_and_falls_back_to_supported_modes() {
+        assert_eq!(
+            select_present_mode(&[
+                wgpu::PresentMode::Fifo,
+                wgpu::PresentMode::Immediate,
+                wgpu::PresentMode::AutoNoVsync,
+            ]),
+            Some(wgpu::PresentMode::AutoNoVsync)
+        );
+        assert_eq!(
+            select_present_mode(&[wgpu::PresentMode::Fifo]),
+            Some(wgpu::PresentMode::Fifo)
+        );
+        assert_eq!(select_present_mode(&[]), None);
+    }
+
+    #[test]
+    fn surface_policy_requests_only_render_attachment_usage() {
+        let supported = wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC;
+        assert_eq!(
+            surface_usage(supported),
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+        );
+    }
 
     #[test]
     fn rejects_draw_and_present_until_the_render_target_owns_presentation() {
