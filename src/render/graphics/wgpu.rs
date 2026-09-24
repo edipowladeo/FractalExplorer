@@ -126,6 +126,103 @@ pub fn tile_vertices_for_commands(
         .collect()
 }
 
+pub const GPU_VERTEX_BUFFER_RING_SIZE: usize = 3;
+
+fn vertex_buffer_capacity(current: usize, required: usize) -> usize {
+    if required <= current {
+        return current;
+    }
+    let mut capacity = current.max(1);
+    while capacity < required {
+        capacity = capacity.saturating_mul(2);
+        if capacity == usize::MAX {
+            return required;
+        }
+    }
+    capacity
+}
+
+fn vertex_buffer_needs_recreation(current_capacity: usize, required_vertices: usize) -> bool {
+    required_vertices > current_capacity
+}
+
+fn next_vertex_buffer_slot(current: usize, slot_count: usize) -> usize {
+    (current + 1) % slot_count.max(1)
+}
+
+pub struct WgpuVertexBufferRing {
+    buffers: Vec<Option<wgpu::Buffer>>,
+    capacities: Vec<usize>,
+    active_slot: usize,
+}
+
+impl WgpuVertexBufferRing {
+    pub fn new(slot_count: usize) -> Self {
+        let slot_count = slot_count.max(1);
+        Self {
+            buffers: (0..slot_count).map(|_| None).collect(),
+            capacities: vec![0; slot_count],
+            active_slot: 0,
+        }
+    }
+
+    pub fn begin_frame(&mut self) {
+        self.active_slot = next_vertex_buffer_slot(self.active_slot, self.buffers.len());
+    }
+
+    pub fn reset(&mut self) {
+        for buffer in &mut self.buffers {
+            *buffer = None;
+        }
+        self.capacities.fill(0);
+        self.active_slot = 0;
+    }
+
+    pub fn active_buffer(&self) -> Option<&wgpu::Buffer> {
+        self.buffers[self.active_slot].as_ref()
+    }
+
+    pub fn active_slot(&self) -> usize {
+        self.active_slot
+    }
+
+    pub fn slot_count(&self) -> usize {
+        self.buffers.len()
+    }
+
+    pub fn ensure_buffer(
+        &mut self,
+        context: &WgpuContext,
+        label: &'static str,
+        required_vertices: usize,
+    ) -> bool {
+        if required_vertices == 0 {
+            return false;
+        }
+        let current_capacity = self.capacities[self.active_slot];
+        let capacity = vertex_buffer_capacity(current_capacity, required_vertices);
+        if self.buffers[self.active_slot].is_none()
+            || vertex_buffer_needs_recreation(current_capacity, required_vertices)
+        {
+            self.buffers[self.active_slot] =
+                Some(context.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(label),
+                    size: (capacity * std::mem::size_of::<TileVertex>()) as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+            self.capacities[self.active_slot] = capacity;
+        }
+        true
+    }
+
+    pub fn write_active(&self, context: &WgpuContext, bytes: &[u8]) {
+        if let Some(buffer) = self.active_buffer() {
+            context.queue.write_buffer(buffer, 0, bytes);
+        }
+    }
+}
+
 pub struct WgpuPipeline(pub wgpu::RenderPipeline);
 
 pub struct WgpuTextureLayout(wgpu::BindGroupLayout);
@@ -767,7 +864,10 @@ fn validate_commands(commands: &CommandList) -> Result<(), DeviceError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{select_present_mode, surface_load_op, surface_usage, validate_commands};
+    use super::{
+        next_vertex_buffer_slot, select_present_mode, surface_load_op, surface_usage,
+        validate_commands, vertex_buffer_capacity, vertex_buffer_needs_recreation,
+    };
     use crate::render::device::{CommandList, DeviceError, TextureHandle};
 
     #[test]
@@ -809,6 +909,28 @@ mod tests {
             wgpu::LoadOp::Clear(_)
         ));
         assert!(matches!(surface_load_op(true, true), wgpu::LoadOp::Load));
+    }
+
+    #[test]
+    fn vertex_buffer_capacity_grows_only_when_required_vertices_do_not_fit() {
+        assert_eq!(vertex_buffer_capacity(96, 48), 96);
+        assert_eq!(vertex_buffer_capacity(96, 97), 192);
+        assert_eq!(vertex_buffer_capacity(0, 1), 1);
+    }
+
+    #[test]
+    fn vertex_buffer_recreation_is_needed_only_after_capacity_is_exceeded() {
+        assert!(!vertex_buffer_needs_recreation(96, 96));
+        assert!(!vertex_buffer_needs_recreation(96, 48));
+        assert!(vertex_buffer_needs_recreation(96, 97));
+    }
+
+    #[test]
+    fn vertex_buffer_ring_rotates_without_reusing_the_current_slot() {
+        assert_eq!(next_vertex_buffer_slot(0, 3), 1);
+        assert_eq!(next_vertex_buffer_slot(1, 3), 2);
+        assert_eq!(next_vertex_buffer_slot(2, 3), 0);
+        assert_eq!(next_vertex_buffer_slot(0, 0), 0);
     }
 
     #[test]
