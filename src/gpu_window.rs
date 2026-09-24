@@ -1440,8 +1440,16 @@ impl ApplicationHandler for GpuWindowApp {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.apply_pending_config_updates();
+        let actions = reduce_effects(&self.app_controller.handle_event(AppEvent::AboutToWait));
+        if actions.exit {
+            event_loop.exit();
+            return;
+        }
+        if !actions.prepare_frame {
+            return;
+        }
         let event_loop_wait = self
             .last_frame_finished_at
             .take()
@@ -1490,15 +1498,17 @@ impl ApplicationHandler for GpuWindowApp {
                 );
             }
         }
-        if let Some(window) = &self.window {
-            self.last_redraw_requested_at = Some(Instant::now());
-            if let Some(state) = &mut self.state {
-                state.canvas.record_frame_event(
-                    crate::orchestrator::FrameEventKind::GpuRedrawRequested,
-                    "request_redraw GPU disparado",
-                );
+        if actions.request_redraw {
+            if let Some(window) = &self.window {
+                self.last_redraw_requested_at = Some(Instant::now());
+                if let Some(state) = &mut self.state {
+                    state.canvas.record_frame_event(
+                        crate::orchestrator::FrameEventKind::GpuRedrawRequested,
+                        "request_redraw GPU disparado",
+                    );
+                }
+                window.request_redraw();
             }
-            window.request_redraw();
         }
     }
 }
