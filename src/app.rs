@@ -28,6 +28,7 @@ pub fn window_title() -> &'static str {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppEvent {
+    AboutToWait,
     Resized(Viewport),
     Input(InputEvent),
     ConfigurationChanged,
@@ -38,6 +39,7 @@ pub enum AppEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppEffect {
     Reconfigure,
+    PrepareFrame,
     RequestRedraw,
     Render,
     Exit,
@@ -46,6 +48,7 @@ pub enum AppEffect {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AppActions {
     pub reconfigure: bool,
+    pub prepare_frame: bool,
     pub request_redraw: bool,
     pub render: bool,
     pub exit: bool,
@@ -56,6 +59,7 @@ pub fn reduce_effects(effects: &[AppEffect]) -> AppActions {
     for effect in effects {
         match effect {
             AppEffect::Reconfigure => actions.reconfigure = true,
+            AppEffect::PrepareFrame => actions.prepare_frame = true,
             AppEffect::RequestRedraw => actions.request_redraw = true,
             AppEffect::Render => actions.render = true,
             AppEffect::Exit => actions.exit = true,
@@ -335,6 +339,7 @@ impl ApplicationController for DefaultApplicationController {
             return Vec::new();
         }
         match event {
+            AppEvent::AboutToWait => vec![AppEffect::PrepareFrame, AppEffect::RequestRedraw],
             AppEvent::Resized(viewport) => {
                 self.viewport = viewport;
                 self.published_frame = None;
@@ -388,12 +393,14 @@ mod tests {
         assert_eq!(
             reduce_effects(&[
                 AppEffect::Reconfigure,
+                AppEffect::PrepareFrame,
                 AppEffect::RequestRedraw,
                 AppEffect::Render,
                 AppEffect::Exit,
             ]),
             super::AppActions {
                 reconfigure: true,
+                prepare_frame: true,
                 request_redraw: true,
                 render: true,
                 exit: true,
@@ -409,6 +416,19 @@ mod tests {
     #[test]
     fn controller_normalizes_resize_redraw_and_close_events() {
         let mut controller = DefaultApplicationController::new(Viewport::new(800, 600));
+
+        assert_eq!(
+            controller.handle_event(AppEvent::AboutToWait),
+            vec![AppEffect::PrepareFrame, AppEffect::RequestRedraw]
+        );
+        assert_eq!(
+            reduce_effects(&controller.handle_event(AppEvent::AboutToWait)),
+            super::AppActions {
+                prepare_frame: true,
+                request_redraw: true,
+                ..super::AppActions::default()
+            }
+        );
 
         assert_eq!(
             controller.handle_event(AppEvent::Resized(Viewport::new(1024, 768))),
@@ -438,6 +458,7 @@ mod tests {
             vec![AppEffect::Exit]
         );
         assert!(controller.is_closed());
+        assert!(controller.handle_event(AppEvent::AboutToWait).is_empty());
     }
 
     #[test]

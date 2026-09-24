@@ -120,13 +120,18 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   `app::tests::reduces_controller_effects_to_runtime_actions` e a suíte passou
   com 172 testes. Ainda falta extrair o ciclo de redraw e o encerramento
   coordenado; a validação da janela real permanece como HILT após essa etapa.
-- **Passo 4 — efeito de redraw:** RED confirmou que `AppEffect::Render` era
-  descartado por `reduce_effects`; GREEN adicionou a ação `render` e fez o
-  adaptador executar o caminho GPU de `RedrawRequested` somente quando o
-  controlador solicita renderização. `cargo test --lib` passou com 181 testes,
+- **Passo 4 — ciclo de redraw:** RED confirmou que `AppEffect::Render` era
+  descartado por `reduce_effects`; GREEN preservou a ação e condicionou o
+  caminho GPU de `RedrawRequested` à decisão do controlador. O callback
+  `about_to_wait` agora também é representado por `AppEvent::AboutToWait`, com
+  ações explícitas `PrepareFrame` e `RequestRedraw`; após `CloseRequested`, o
+  controlador não agenda outro frame, evitando a preparação tardia que podia
+  falhar com `InvalidFrame("application is closed")`. RED/GREEN cobriu a
+  sequência do controlador. `cargo test --lib` passou com 181 testes,
   `cargo check --bin sprite-demo`, `cargo fmt --all -- --check` e
-  `git diff --check` passaram. Passo 4 segue em andamento; a janela precisa de
-  HILT para confirmar redraw, resize e encerramento no runtime real.
+  `git diff --check` passaram. HILT confirmou redraw, resize e fechamento sem
+  panic; Passo 4 segue em andamento por ainda faltar separar o runtime do
+  caminho de composição GPU.
 - **Diagnóstico de frames lentos:** adicionados eventos separados para o tempo
   entre a finalização de um frame e o próximo ciclo do event loop
   (`GpuEventLoopWait`) e para a latência entre `request_redraw` e
