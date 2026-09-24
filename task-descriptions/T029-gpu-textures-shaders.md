@@ -307,14 +307,21 @@ nenhum desses casos deve depender de uma janela real.
 
 ### Passo 4 — Normalizar o runtime de janela
 
-- Transformar `GpuWindowApp` em adaptador `WinitRuntime` fino.
+- Usar `GpuWindowApp` como adaptador de ciclo de vida `winit`, encaminhando
+  callbacks normalizados ao `ApplicationController`.
 - Encaminhar `window_event`, `about_to_wait` e redraw ao controlador.
-- Restaurar a Config UI pelo canal comum e shutdown coordenado.
+- Preservar o canal comum de configuração e o sinal coordenado de shutdown.
+- A integração visual da Config UI no runtime GPU permanece na T035 do backlog;
+  este passo não deve abrir um segundo `EventLoop`.
 - Manter `MinifbRuntime` apenas como adaptador legado enquanto o target CPU
   precisar dele; preferir posteriormente um único runtime `winit` para ambos.
+- A composição e os recursos `wgpu` continuam específicos do backend e migram
+  para o destino GPU nos Passos 5–6; o adaptador de janela não deve duplicar a
+  preparação lógica comum.
 
-**Teste RED principal:** fake runtime cobre resize contínuo, redraw, fechamento
-da janela de renderer e fechamento da Config UI sem conhecer CPU/GPU.
+**Teste RED principal:** fake runtime cobre resize contínuo, input,
+configuração, redraw e fechamento do renderer; o sinal de shutdown da Config UI
+é verificado sem abrir uma janela real.
 
 HITL fica reservado para confirmar que o adaptador traduz corretamente os
 eventos reais da janela, especialmente resize durante o arrasto, redraw e

@@ -1540,6 +1540,7 @@ mod tests {
         signal_renderer_closed, vertex_buffer_capacity, vertex_buffer_needs_recreation,
         GpuFrameMetrics, PreparedTileBatch,
     };
+    use crate::app::ApplicationController;
     use crate::geometry::ScreenPoint;
     use crate::gpu::{TextureKey, TextureUpload, TileDrawCommand};
     use crate::render::{ImageId, ImageRevision, Rect, Viewport};
@@ -1555,6 +1556,23 @@ mod tests {
         signal_renderer_closed(Some(&closed));
 
         assert!(closed.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn fake_runtime_close_signals_config_ui_and_exits_controller() {
+        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut controller = crate::app::DefaultApplicationController::new(Viewport::new(320, 200));
+        let event = WindowEvent::CloseRequested;
+
+        signal_renderer_closed(Some(&closed));
+        let app_event = app_event_from_window_event(&event).unwrap();
+        let actions = crate::app::reduce_effects(&controller.handle_event(app_event));
+
+        assert!(closed.load(std::sync::atomic::Ordering::Acquire));
+        assert!(actions.exit);
+        assert!(controller
+            .handle_event(crate::app::AppEvent::AboutToWait)
+            .is_empty());
     }
 
     #[test]
