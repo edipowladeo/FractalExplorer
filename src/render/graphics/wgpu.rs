@@ -208,6 +208,17 @@ pub fn surface_usage(supported: wgpu::TextureUsages) -> wgpu::TextureUsages {
     wgpu::TextureUsages::RENDER_ATTACHMENT & supported
 }
 
+pub fn surface_load_op(
+    preserve_previous_frame: bool,
+    surface_initialized: bool,
+) -> wgpu::LoadOp<wgpu::Color> {
+    if preserve_previous_frame && surface_initialized {
+        wgpu::LoadOp::Load
+    } else {
+        wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+    }
+}
+
 /// Owns the selected adapter, device, queue, and instance for the `wgpu` API.
 pub struct WgpuContext {
     pub instance: wgpu::Instance,
@@ -659,7 +670,7 @@ fn validate_commands(commands: &CommandList) -> Result<(), DeviceError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{select_present_mode, surface_usage, validate_commands};
+    use super::{select_present_mode, surface_load_op, surface_usage, validate_commands};
     use crate::render::device::{CommandList, DeviceError, TextureHandle};
 
     #[test]
@@ -688,6 +699,19 @@ mod tests {
             surface_usage(supported),
             wgpu::TextureUsages::RENDER_ATTACHMENT
         );
+    }
+
+    #[test]
+    fn surface_load_policy_preserves_only_an_initialized_frame() {
+        assert!(matches!(
+            surface_load_op(false, false),
+            wgpu::LoadOp::Clear(_)
+        ));
+        assert!(matches!(
+            surface_load_op(true, false),
+            wgpu::LoadOp::Clear(_)
+        ));
+        assert!(matches!(surface_load_op(true, true), wgpu::LoadOp::Load));
     }
 
     #[test]
