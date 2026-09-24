@@ -17,6 +17,22 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## TODO
 
+### T029 — checkpoint atual do passo 6
+
+- O `GpuWindowApp` agora compartilha contexto/superfície WGPU com
+  `WgpuGraphicsDevice` e submete `PreparedFrame` via `RenderTargetSession`;
+  tiles, envelope e texto usam imagens/overlays do contrato comum. O código do
+  caminho antigo ainda existe, mas não é selecionado após a inicialização do
+  destino; sua remoção pertence ao passo 7.
+- O cache do `GpuRenderTarget` descarta imagens que saíram do frame; falhas de
+  criação/submissão mantêm o cache anterior consistente. Cobertura de overlay
+  inclui `reduced_viewport` mesmo com overlays globais desligados.
+- Verificações: `cargo test --lib -- --test-threads=1` (196 passaram),
+  `cargo check --bin sprite-demo`, `cargo fmt -- --check` e `git diff --check`.
+- Validação visual HITL não foi executada conforme instrução do usuário. O
+  passo 6 segue em andamento: instrumentação detalhada no adaptador e demais
+  critérios do plano ainda precisam ser fechados; não marcar T029 como DONE.
+
 ### T029 — Renderização modular com destinos plugáveis
 
 - **Objetivo:** transformar o spike GPU validado em apenas mais um destino de
