@@ -107,7 +107,8 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   integração ser migrada para um runtime único. Essa integração foi movida para
   o backlog como T035; criar outro event loop em thread secundária teria a
   mesma restrição de plataforma.
-- **Passo 4 em andamento:** a tradução dos eventos de ciclo de vida do `winit`
+- **Passo 4 — adaptador de ciclo de vida concluído no escopo T029:** a tradução
+  dos eventos de ciclo de vida do `winit`
   (`resize`, `redraw` e fechamento) foi extraída para
   `app_event_from_window_event`, deixando o adaptador GPU encaminhar eventos ao
   `ApplicationController` por uma fronteira pura e testável. RED confirmou a
@@ -118,8 +119,8 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   agora resize, input e configuração encaminham `RequestRedraw` ao adaptador,
   em vez de descartar o efeito. RED/GREEN cobriram
   `app::tests::reduces_controller_effects_to_runtime_actions` e a suíte passou
-  com 172 testes. Ainda falta extrair o ciclo de redraw e o encerramento
-  coordenado; a validação da janela real permanece como HILT após essa etapa.
+  com 172 testes. Registro intermediário: o ciclo de redraw e o encerramento
+  foram concluídos e validados nas atualizações abaixo.
 - **Passo 4 — ciclo de redraw:** RED confirmou que `AppEffect::Render` era
   descartado por `reduce_effects`; GREEN preservou a ação e condicionou o
   caminho GPU de `RedrawRequested` à decisão do controlador. O callback
@@ -127,11 +128,14 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   ações explícitas `PrepareFrame` e `RequestRedraw`; após `CloseRequested`, o
   controlador não agenda outro frame, evitando a preparação tardia que podia
   falhar com `InvalidFrame("application is closed")`. RED/GREEN cobriu a
-  sequência do controlador. `cargo test --lib` passou com 181 testes,
+  sequência do controlador. `cargo test --lib` passou com 183 testes,
   `cargo check --bin sprite-demo`, `cargo fmt --all -- --check` e
-  `git diff --check` passaram. HILT confirmou redraw, resize e fechamento sem
-  panic; Passo 4 segue em andamento por ainda faltar separar o runtime do
-  caminho de composição GPU.
+  `git diff --check` passaram. O teste fake de runtime cobre resize contínuo,
+  input, configuração, redraw, fechamento e o sinal de shutdown compartilhado,
+  sem janela real.
+  HILT confirmou redraw, resize e fechamento sem panic. A integração visual da
+  Config UI permanece explicitamente na T035 do backlog; composição `wgpu`
+  migra nos Passos 5–6.
 - **Diagnóstico de frames lentos:** adicionados eventos separados para o tempo
   entre a finalização de um frame e o próximo ciclo do event loop
   (`GpuEventLoopWait`) e para a latência entre `request_redraw` e
