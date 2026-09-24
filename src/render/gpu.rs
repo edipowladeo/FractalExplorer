@@ -45,6 +45,9 @@ impl<D: GraphicsDevice> RenderTarget for GpuRenderTarget<D> {
     }
 
     fn resize(&mut self, viewport: Viewport) -> Result<(), RenderError> {
+        self.device
+            .resize(viewport)
+            .map_err(|_| RenderError::BackendUnavailable("GPU resize failed"))?;
         self.viewport = viewport;
         Ok(())
     }
@@ -124,6 +127,7 @@ mod tests {
     struct MockDevice {
         next: u64,
         submitted: Vec<CommandList>,
+        resized: Vec<Viewport>,
     }
 
     impl GraphicsDevice for MockDevice {
@@ -145,6 +149,11 @@ mod tests {
 
         fn submit(&mut self, commands: CommandList) -> Result<(), DeviceError> {
             self.submitted.push(commands);
+            Ok(())
+        }
+
+        fn resize(&mut self, viewport: Viewport) -> Result<(), DeviceError> {
+            self.resized.push(viewport);
             Ok(())
         }
 
@@ -196,5 +205,15 @@ mod tests {
 
         assert!(target.render(&frame).is_err());
         assert!(target.device().submitted.is_empty());
+    }
+
+    #[test]
+    fn gpu_target_forwards_resize_to_the_graphics_device() {
+        let mut target = GpuRenderTarget::new(MockDevice::default(), Viewport::new(2, 1));
+        let viewport = Viewport::new(640, 480);
+
+        target.resize(viewport).unwrap();
+
+        assert_eq!(target.device().resized, vec![viewport]);
     }
 }

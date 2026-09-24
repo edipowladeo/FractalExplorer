@@ -138,6 +138,10 @@ impl CommandList {
 }
 
 pub trait GraphicsDevice: Send {
+    fn resize(&mut self, _viewport: crate::render::Viewport) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
     fn create_buffer(&mut self, descriptor: BufferDescriptor) -> Result<BufferHandle, DeviceError>;
     fn create_texture(
         &mut self,

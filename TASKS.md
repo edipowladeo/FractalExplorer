@@ -195,6 +195,13 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   concluído. O Passo 6 é o próximo: conectar a renderização efetiva do GPU aos
   contratos `GpuRenderTarget`/`GraphicsDevice`; o adaptador ainda rejeita
   `DrawTexture`/`Present` até essa migração.
+- **Passo 6 em andamento:** RED identificou que `GpuRenderTarget::resize`
+  alterava somente o viewport lógico e não notificava o `GraphicsDevice`.
+  GREEN adicionou `GraphicsDevice::resize` com implementação padrão sem efeito
+  e fez o target propagar o viewport ao backend antes de atualizar seu estado;
+  o teste `gpu_target_forwards_resize_to_the_graphics_device` passou. A
+  renderização concreta de comandos `DrawTexture`/`Present` no adaptador WGPU e
+  a integração do target ao runtime ainda estão pendentes.
 - **Diagnóstico de frames lentos:** adicionados eventos separados para o tempo
   entre a finalização de um frame e o próximo ciclo do event loop
   (`GpuEventLoopWait`) e para a latência entre `request_redraw` e
