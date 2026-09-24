@@ -152,7 +152,11 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   `gpu.rs` agora mantém somente reexports de compatibilidade para vértices,
   shaders e recursos de textura, sem duplicar suas implementações. O runtime
   ainda contém acessos `wgpu` diretos; a migração e o confinamento completo
-  seguem pendentes.
+  seguem pendentes. O adaptador também deixou de consultar constantes de
+  shader/layout/formato pelo módulo legado. A suíte foi repetida após esse
+  refactor: `cargo test --lib` (187 testes), `cargo check --bin sprite-demo`,
+  `cargo fmt --all -- --check`, busca de dependências legadas e
+  `git diff --check` passaram.
 - **Diagnóstico de frames lentos:** adicionados eventos separados para o tempo
   entre a finalização de um frame e o próximo ciclo do event loop
   (`GpuEventLoopWait`) e para a latência entre `request_redraw` e
