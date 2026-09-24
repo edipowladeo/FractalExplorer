@@ -82,8 +82,9 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   GREEN: o entrypoint GPU voltou a executar o event loop na thread principal;
   `cargo test --lib` passou com 170 testes e `cargo check --bin sprite-demo`
   passou. A Config UI não é aberta simultaneamente pelo entrypoint GPU até a
-  integração ser migrada para um runtime único, pois criar outro event loop em
-  thread secundária teria a mesma restrição de plataforma.
+  integração ser migrada para um runtime único. Essa integração foi movida para
+  o backlog como T035; criar outro event loop em thread secundária teria a
+  mesma restrição de plataforma.
 - **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
 
 ### T026 — Investigar e melhorar a precisão para zoom profundo
@@ -140,6 +141,15 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   mas o push para `origin/multiprecisao` foi recusado pela política do ambiente.
 
 ## BACKLOG
+
+### T035 — Integrar Config UI e renderer GPU em runtime único
+
+- Resolver a limitação documentada em
+  [T035-gpu-config-ui-runtime.md](task-descriptions/T035-gpu-config-ui-runtime.md).
+- Manter `winit::EventLoop` na thread principal e permitir configuração ao vivo
+  no modo GPU sem abrir um segundo event loop em thread secundária.
+- Promover para `TODO` somente quando a implementação for explicitamente
+  priorizada.
 
 ### T030 - Filtrar tiles totalmente sobrepostos na composicao
 
