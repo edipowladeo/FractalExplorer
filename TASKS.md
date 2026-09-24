@@ -171,6 +171,10 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   (janela GPU, resize, interação/overlays e fechamento). Permanecem acessos
   diretos a pipeline, buffers, encoder e render pass no runtime; Passo 5 segue
   em andamento até completar o confinamento.
+  A política `Load`/`Clear` da superfície e seu teste de caracterização também
+  foram movidos para o adaptador, mantendo a preservação de pixels anterior
+  somente após inicialização. `cargo test --lib render::graphics::wgpu::tests`
+  passou (4 testes); `cargo fmt --all -- --check` e `git diff --check` passaram.
 - **Diagnóstico de frames lentos:** adicionados eventos separados para o tempo
   entre a finalização de um frame e o próximo ciclo do event loop
   (`GpuEventLoopWait`) e para a latência entre `request_redraw` e
