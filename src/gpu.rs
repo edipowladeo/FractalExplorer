@@ -2,10 +2,7 @@
 
 use crate::config::GpuBackend;
 use crate::geometry::ScreenPoint;
-use crate::render::device::{
-    BufferDescriptor, BufferHandle, BufferUsage, Command, CommandList, DeviceError, GraphicsDevice,
-    TextureDescriptor, TextureFormat, TextureHandle,
-};
+use crate::render::graphics::wgpu::WgpuSurface;
 use crate::render::{ImageUpdate, RenderFrame};
 use crate::{Sprite, TileSprite};
 use std::collections::HashMap;
@@ -254,7 +251,7 @@ impl GpuContext {
     pub fn create_surface<'window>(
         &self,
         window: &'window winit::window::Window,
-    ) -> Result<GpuSurface<'window>, String> {
+    ) -> Result<WgpuSurface<'window>, String> {
         let surface = self
             .instance
             .create_surface(window)
@@ -265,7 +262,7 @@ impl GpuContext {
             .first()
             .copied()
             .ok_or_else(|| "GPU surface has no supported formats".to_string())?;
-        Ok(GpuSurface {
+        Ok(WgpuSurface {
             surface,
             format,
             present_mode: capabilities
@@ -274,146 +271,6 @@ impl GpuContext {
                 .copied()
                 .unwrap_or(wgpu::PresentMode::Fifo),
         })
-    }
-}
-
-pub struct GpuSurface<'window> {
-    pub surface: wgpu::Surface<'window>,
-    pub format: wgpu::TextureFormat,
-    pub present_mode: wgpu::PresentMode,
-}
-
-pub struct WgpuGraphicsDevice<'a> {
-    device: &'a wgpu::Device,
-    queue: &'a wgpu::Queue,
-    next_handle: u64,
-    buffers: HashMap<BufferHandle, wgpu::Buffer>,
-    textures: HashMap<TextureHandle, wgpu::Texture>,
-}
-
-impl<'a> WgpuGraphicsDevice<'a> {
-    pub fn new(device: &'a wgpu::Device, queue: &'a wgpu::Queue) -> Self {
-        Self {
-            device,
-            queue,
-            next_handle: 0,
-            buffers: HashMap::new(),
-            textures: HashMap::new(),
-        }
-    }
-
-    fn next_handle(&mut self) -> u64 {
-        let handle = self.next_handle;
-        self.next_handle = self.next_handle.wrapping_add(1);
-        handle
-    }
-}
-
-impl GraphicsDevice for WgpuGraphicsDevice<'_> {
-    fn create_buffer(&mut self, descriptor: BufferDescriptor) -> Result<BufferHandle, DeviceError> {
-        let usage = match descriptor.usage {
-            BufferUsage::Vertex => wgpu::BufferUsages::VERTEX,
-            BufferUsage::Index => wgpu::BufferUsages::INDEX,
-            BufferUsage::Uniform => wgpu::BufferUsages::UNIFORM,
-        } | wgpu::BufferUsages::COPY_DST;
-        let handle = BufferHandle::new(self.next_handle());
-        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("abstract-render-buffer"),
-            size: descriptor.size.max(1) as u64,
-            usage,
-            mapped_at_creation: false,
-        });
-        self.buffers.insert(handle, buffer);
-        Ok(handle)
-    }
-
-    fn create_texture(
-        &mut self,
-        descriptor: TextureDescriptor,
-    ) -> Result<TextureHandle, DeviceError> {
-        let format = match descriptor.format {
-            TextureFormat::Rgba8 => TILE_TEXTURE_FORMAT,
-        };
-        if descriptor.width == 0 || descriptor.height == 0 {
-            return Err(DeviceError::InvalidResource);
-        }
-        let handle = TextureHandle::new(self.next_handle());
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("abstract-render-texture"),
-            size: wgpu::Extent3d {
-                width: descriptor.width,
-                height: descriptor.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        self.textures.insert(handle, texture);
-        Ok(handle)
-    }
-
-    fn submit(&mut self, commands: CommandList) -> Result<(), DeviceError> {
-        for command in commands.commands() {
-            match command {
-                Command::WriteBuffer {
-                    buffer,
-                    offset,
-                    bytes,
-                } => {
-                    let buffer = self
-                        .buffers
-                        .get(buffer)
-                        .ok_or(DeviceError::InvalidResource)?;
-                    self.queue.write_buffer(buffer, *offset as u64, bytes);
-                }
-                Command::WriteTexture {
-                    texture,
-                    width,
-                    height,
-                    bytes,
-                } => {
-                    let texture = self
-                        .textures
-                        .get(texture)
-                        .ok_or(DeviceError::InvalidResource)?;
-                    self.queue.write_texture(
-                        wgpu::TexelCopyTextureInfo {
-                            texture,
-                            mip_level: 0,
-                            origin: wgpu::Origin3d::ZERO,
-                            aspect: wgpu::TextureAspect::All,
-                        },
-                        bytes,
-                        wgpu::TexelCopyBufferLayout {
-                            offset: 0,
-                            bytes_per_row: Some(4 * width),
-                            rows_per_image: Some(*height),
-                        },
-                        wgpu::Extent3d {
-                            width: *width,
-                            height: *height,
-                            depth_or_array_layers: 1,
-                        },
-                    );
-                }
-                // Draw/present commands are consumed by the window render
-                // pass. This resource adapter only owns uploads and handles.
-                Command::DrawTexture { .. } | Command::Present => {}
-            }
-        }
-        Ok(())
-    }
-
-    fn destroy_buffer(&mut self, buffer: BufferHandle) {
-        self.buffers.remove(&buffer);
-    }
-
-    fn destroy_texture(&mut self, texture: TextureHandle) {
-        self.textures.remove(&texture);
     }
 }
 
@@ -551,82 +408,6 @@ pub fn prepare_tile_batch(
 
 pub const TILE_VERTEX_SHADER: &str = include_str!("../shaders/tile.vert.wgsl");
 pub const TILE_FRAGMENT_SHADER: &str = include_str!("../shaders/tile.frag.wgsl");
-
-pub fn create_tile_pipeline(
-    context: &GpuContext,
-    format: wgpu::TextureFormat,
-) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
-    let layout = context
-        .device
-        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("tile-texture-layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-    let pipeline_layout = context
-        .device
-        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("tile-pipeline-layout"),
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
-        });
-    let vertex = context
-        .device
-        .create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("tile-vertex-shader"),
-            source: wgpu::ShaderSource::Wgsl(TILE_VERTEX_SHADER.into()),
-        });
-    let fragment = context
-        .device
-        .create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("tile-fragment-shader"),
-            source: wgpu::ShaderSource::Wgsl(TILE_FRAGMENT_SHADER.into()),
-        });
-    let pipeline = context
-        .device
-        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("tile-render-pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &vertex,
-                entry_point: Some("main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(TILE_VERTEX_LAYOUT)],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &fragment,
-                entry_point: Some("main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
-    (pipeline, layout)
-}
 
 pub struct GpuTileTexture {
     pub texture: wgpu::Texture,
@@ -791,6 +572,16 @@ mod tests {
     use super::*;
     use crate::geometry::ComplexPoint;
     use crate::Tile;
+
+    #[test]
+    fn wgpu_device_and_pipeline_are_exported_from_the_graphics_adapter() {
+        let _adapter_type =
+            std::marker::PhantomData::<crate::render::graphics::wgpu::WgpuGraphicsDevice<'static>>;
+        let _pipeline_type =
+            std::marker::PhantomData::<crate::render::graphics::wgpu::WgpuPipeline>;
+        let _surface_type =
+            std::marker::PhantomData::<crate::render::graphics::wgpu::WgpuSurface<'static>>;
+    }
 
     #[test]
     fn uploads_a_new_sprite_only_once_and_emits_rgba_pixels() {
