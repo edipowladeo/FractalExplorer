@@ -1002,6 +1002,8 @@ pub(crate) enum FrameEventKind {
     GpuBatchOverlayUpload,
     GpuBatchEnvelopeUpload,
     GpuRedrawRequested,
+    GpuEventLoopWait,
+    GpuRedrawLatency,
     GpuRedrawReceived,
     GpuCommandEncodingFinished,
     GpuCompositionPassStarted,
