@@ -148,9 +148,11 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   Os testes de contrato e cache foram migrados do `RecordingDevice` local para
   esse mock compartilhado.
   `cargo test --lib` passou com 187 testes; `cargo check --bin sprite-demo`,
-  `cargo fmt --all -- --check` e `git diff --check` passaram. Ainda restam
-  definições de compatibilidade no módulo `gpu.rs` e o runtime contém acessos
-  `wgpu` diretos; a migração e o confinamento completo seguem pendentes.
+  `cargo fmt --all -- --check` e `git diff --check` passaram. O módulo legado
+  `gpu.rs` agora mantém somente reexports de compatibilidade para vértices,
+  shaders e recursos de textura, sem duplicar suas implementações. O runtime
+  ainda contém acessos `wgpu` diretos; a migração e o confinamento completo
+  seguem pendentes.
 - **Diagnóstico de frames lentos:** adicionados eventos separados para o tempo
   entre a finalização de um frame e o próximo ciclo do event loop
   (`GpuEventLoopWait`) e para a latência entre `request_redraw` e
