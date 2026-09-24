@@ -249,6 +249,17 @@ impl TextureResourceCache {
             }
         }
     }
+
+    pub fn retain_only<D: GraphicsDevice>(&mut self, device: &mut D, images: &[ImageId]) {
+        let retained: std::collections::HashSet<_> = images.iter().copied().collect();
+        let stale: Vec<_> = self
+            .textures
+            .keys()
+            .filter(|image| !retained.contains(image))
+            .copied()
+            .collect();
+        self.evict(device, &stale);
+    }
 }
 
 #[cfg(test)]
