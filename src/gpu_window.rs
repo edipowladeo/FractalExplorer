@@ -8,9 +8,9 @@ use crate::gpu::{
 };
 use crate::input::{InputEvent, ZoomDirection};
 use crate::render::graphics::wgpu::{
-    create_tile_pipeline, tile_quad_vertices, tile_vertices_for_commands, upload_tile_texture,
-    write_tile_texture, GpuTextureStore, GpuTileTexture, TileVertex, WgpuContext as GpuContext,
-    WgpuPipeline,
+    create_tile_pipeline, select_present_mode, surface_usage, tile_quad_vertices,
+    tile_vertices_for_commands, upload_tile_texture, write_tile_texture, GpuTextureStore,
+    GpuTileTexture, TileVertex, WgpuContext as GpuContext, WgpuPipeline,
 };
 use crate::render::{ImageId, ImageRevision, ImageUpdate, PreparedFrame, Viewport};
 #[cfg(test)]
@@ -38,10 +38,6 @@ fn surface_load_op(
     } else {
         wgpu::LoadOp::Clear(wgpu::Color::BLACK)
     }
-}
-
-fn surface_usage(supported: wgpu::TextureUsages) -> wgpu::TextureUsages {
-    wgpu::TextureUsages::RENDER_ATTACHMENT & supported
 }
 
 fn uses_persistent_composition(preserve_previous_frame: bool) -> bool {
@@ -184,13 +180,6 @@ fn format_gpu_overlay_text(state: &GpuAppState, visible_tiles: usize) -> String 
     }
 
     lines.join("\n")
-}
-
-fn select_present_mode(modes: &[wgpu::PresentMode]) -> Option<wgpu::PresentMode> {
-    [wgpu::PresentMode::AutoNoVsync, wgpu::PresentMode::Immediate]
-        .into_iter()
-        .find(|preferred| modes.contains(preferred))
-        .or_else(|| modes.first().copied())
 }
 
 fn centered_bounds(width: usize, height: usize, ratio: f64) -> (i32, i32, i32, i32) {
@@ -1539,9 +1528,8 @@ mod tests {
         app_event_from_window_event, centered_bounds, format_gpu_event_loop_wait,
         format_gpu_frame_history, format_gpu_frame_overlay_header, format_gpu_redraw_latency,
         format_gpu_upload_stage, frame_tiles_from_batch, needs_batch_rebuild,
-        next_vertex_buffer_slot, overlay_cache_key, overlay_needs_refresh, select_present_mode,
-        signal_renderer_closed, vertex_buffer_capacity, vertex_buffer_needs_recreation,
-        GpuFrameMetrics, PreparedTileBatch,
+        next_vertex_buffer_slot, overlay_cache_key, overlay_needs_refresh, signal_renderer_closed,
+        vertex_buffer_capacity, vertex_buffer_needs_recreation, GpuFrameMetrics, PreparedTileBatch,
     };
     use crate::app::ApplicationController;
     use crate::geometry::ScreenPoint;
@@ -1788,13 +1776,6 @@ mod tests {
     }
 
     #[test]
-    fn surface_usage_does_not_request_unsupported_copy_destination() {
-        let supported = wgpu::TextureUsages::RENDER_ATTACHMENT;
-
-        assert_eq!(super::surface_usage(supported), supported);
-    }
-
-    #[test]
     fn persistent_composition_is_used_only_when_frame_preservation_is_enabled() {
         assert!(super::uses_persistent_composition(true));
         assert!(!super::uses_persistent_composition(false));
@@ -1979,22 +1960,6 @@ mod tests {
         assert!(text.contains("Frame #1, tiles:84"));
         assert!(text.contains("Camada 0:"));
         assert!(text.contains("Worker 0:"));
-    }
-
-    #[test]
-    fn selects_a_non_vsync_present_mode_when_the_adapter_supports_one() {
-        assert_eq!(
-            select_present_mode(&[wgpu::PresentMode::Fifo, wgpu::PresentMode::AutoNoVsync,]),
-            Some(wgpu::PresentMode::AutoNoVsync)
-        );
-        assert_eq!(
-            select_present_mode(&[wgpu::PresentMode::Fifo, wgpu::PresentMode::Immediate]),
-            Some(wgpu::PresentMode::Immediate)
-        );
-        assert_eq!(
-            select_present_mode(&[wgpu::PresentMode::Fifo]),
-            Some(wgpu::PresentMode::Fifo)
-        );
     }
 
     #[test]
