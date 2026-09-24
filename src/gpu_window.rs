@@ -9,9 +9,9 @@ use crate::gpu::{
 use crate::input::{InputEvent, ZoomDirection};
 use crate::render::graphics::wgpu::{
     create_composition_texture, create_tile_pipeline, surface_load_op, tile_vertices_for_commands,
-    upload_tile_texture, write_tile_texture, GpuTextureStore, GpuTileTexture, TileVertex,
+    upload_tile_texture, write_tile_texture, GpuTextureStore, GpuTileTexture,
     WgpuCompositionTexture, WgpuContext as GpuContext, WgpuPipeline, WgpuSurface,
-    WgpuSurfaceAcquire, WgpuTextureLayout,
+    WgpuSurfaceAcquire, WgpuTextureLayout, WgpuVertexBufferRing, GPU_VERTEX_BUFFER_RING_SIZE,
 };
 use crate::render::{ImageId, ImageRevision, ImageUpdate, PreparedFrame, Viewport};
 #[cfg(test)]
@@ -31,96 +31,6 @@ fn needs_batch_rebuild(previous: (u32, u32), next: (u32, u32)) -> bool {
 
 fn uses_persistent_composition(preserve_previous_frame: bool) -> bool {
     preserve_previous_frame
-}
-
-fn vertex_buffer_capacity(current: usize, required: usize) -> usize {
-    if required <= current {
-        return current;
-    }
-    let mut capacity = current.max(1);
-    while capacity < required {
-        capacity = capacity.saturating_mul(2);
-        if capacity == usize::MAX {
-            return required;
-        }
-    }
-    capacity
-}
-
-fn vertex_buffer_needs_recreation(current_capacity: usize, required_vertices: usize) -> bool {
-    required_vertices > current_capacity
-}
-
-const GPU_VERTEX_BUFFER_RING_SIZE: usize = 3;
-
-fn next_vertex_buffer_slot(current: usize, slot_count: usize) -> usize {
-    (current + 1) % slot_count.max(1)
-}
-
-struct VertexBufferRing {
-    buffers: Vec<Option<wgpu::Buffer>>,
-    capacities: Vec<usize>,
-    active_slot: usize,
-}
-
-impl VertexBufferRing {
-    fn new(slot_count: usize) -> Self {
-        let slot_count = slot_count.max(1);
-        Self {
-            buffers: (0..slot_count).map(|_| None).collect(),
-            capacities: vec![0; slot_count],
-            active_slot: 0,
-        }
-    }
-
-    fn begin_frame(&mut self) {
-        self.active_slot = next_vertex_buffer_slot(self.active_slot, self.buffers.len());
-    }
-
-    fn reset(&mut self) {
-        for buffer in &mut self.buffers {
-            *buffer = None;
-        }
-        self.capacities.fill(0);
-        self.active_slot = 0;
-    }
-
-    fn active_buffer(&self) -> Option<&wgpu::Buffer> {
-        self.buffers[self.active_slot].as_ref()
-    }
-
-    fn active_slot(&self) -> usize {
-        self.active_slot
-    }
-
-    fn slot_count(&self) -> usize {
-        self.buffers.len()
-    }
-
-    fn ensure_buffer(
-        &mut self,
-        device: &wgpu::Device,
-        label: &'static str,
-        required_vertices: usize,
-    ) -> Option<&wgpu::Buffer> {
-        if required_vertices == 0 {
-            return None;
-        }
-        let current_capacity = self.capacities[self.active_slot];
-        let capacity = vertex_buffer_capacity(current_capacity, required_vertices);
-        if self.buffers[self.active_slot].is_none()
-            || vertex_buffer_needs_recreation(current_capacity, required_vertices)
-        {
-            self.buffers[self.active_slot] = Some(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size: (capacity * std::mem::size_of::<TileVertex>()) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-            self.capacities[self.active_slot] = capacity;
-        }
-        self.active_buffer()
-    }
 }
 
 const GPU_FRAME_HISTORY_CAPACITY: usize = 8;
@@ -531,12 +441,12 @@ pub struct GpuWindowApp {
     surface: Option<WgpuSurface<'static>>,
     pipeline: Option<WgpuPipeline>,
     tile_bind_group_layout: Option<WgpuTextureLayout>,
-    tile_vertex_ring: VertexBufferRing,
-    overlay_vertex_ring: VertexBufferRing,
+    tile_vertex_ring: WgpuVertexBufferRing,
+    overlay_vertex_ring: WgpuVertexBufferRing,
     overlay_texture: Option<GpuTileTexture>,
     overlay_cache_key: Option<OverlayCacheKey>,
     overlay_command: Option<TileDrawCommand>,
-    envelope_vertex_ring: VertexBufferRing,
+    envelope_vertex_ring: WgpuVertexBufferRing,
     envelope_texture: Option<GpuTileTexture>,
     envelope_command: Option<TileDrawCommand>,
     envelope_cache_key: Option<EnvelopeCacheKey>,
@@ -572,12 +482,12 @@ impl GpuWindowApp {
             surface: None,
             pipeline: None,
             tile_bind_group_layout: None,
-            tile_vertex_ring: VertexBufferRing::new(ring_size),
-            overlay_vertex_ring: VertexBufferRing::new(ring_size),
+            tile_vertex_ring: WgpuVertexBufferRing::new(ring_size),
+            overlay_vertex_ring: WgpuVertexBufferRing::new(ring_size),
             overlay_texture: None,
             overlay_cache_key: None,
             overlay_command: None,
-            envelope_vertex_ring: VertexBufferRing::new(ring_size),
+            envelope_vertex_ring: WgpuVertexBufferRing::new(ring_size),
             envelope_texture: None,
             envelope_command: None,
             envelope_cache_key: None,
@@ -597,9 +507,9 @@ impl GpuWindowApp {
             state.config.height as u32,
         ));
         self.state = Some(state);
-        self.tile_vertex_ring = VertexBufferRing::new(ring_size);
-        self.overlay_vertex_ring = VertexBufferRing::new(ring_size);
-        self.envelope_vertex_ring = VertexBufferRing::new(ring_size);
+        self.tile_vertex_ring = WgpuVertexBufferRing::new(ring_size);
+        self.overlay_vertex_ring = WgpuVertexBufferRing::new(ring_size);
+        self.envelope_vertex_ring = WgpuVertexBufferRing::new(ring_size);
         self.surface_initialized = false;
         self.composition_texture = None;
         self.last_frame_finished_at = None;
@@ -761,16 +671,12 @@ impl GpuWindowApp {
         if let (Some(context), Some(surface)) = (&self.context, &self.surface) {
             let (width, height) = surface.size();
             let vertices = tile_vertices_for_commands(&frame_commands, width, height);
-            if !vertices.is_empty() {
-                if let Some(buffer) = self.tile_vertex_ring.ensure_buffer(
-                    &context.device,
-                    "tile-batch-vertices",
-                    vertices.len(),
-                ) {
-                    context
-                        .queue
-                        .write_buffer(buffer, 0, bytemuck::cast_slice(&vertices));
-                }
+            if self
+                .tile_vertex_ring
+                .ensure_buffer(context, "tile-batch-vertices", vertices.len())
+            {
+                self.tile_vertex_ring
+                    .write_active(context, bytemuck::cast_slice(&vertices));
             }
         }
         self.record_gpu_upload_stage(
@@ -834,14 +740,13 @@ impl GpuWindowApp {
                     size: (upload.width, upload.height),
                 };
                 let vertices = tile_vertices_for_commands(&[command], width, height);
-                if let Some(buffer) = self.overlay_vertex_ring.ensure_buffer(
-                    &context.device,
+                if self.overlay_vertex_ring.ensure_buffer(
+                    context,
                     "gpu-debug-overlay-vertices",
                     vertices.len(),
                 ) {
-                    context
-                        .queue
-                        .write_buffer(buffer, 0, bytemuck::cast_slice(&vertices));
+                    self.overlay_vertex_ring
+                        .write_active(context, bytemuck::cast_slice(&vertices));
                 }
                 self.overlay_command = Some(command);
             }
@@ -892,14 +797,13 @@ impl GpuWindowApp {
                 }
                 if let Some(command) = self.envelope_command {
                     let vertices = tile_vertices_for_commands(&[command], width, height);
-                    if let Some(buffer) = self.envelope_vertex_ring.ensure_buffer(
-                        &context.device,
+                    if self.envelope_vertex_ring.ensure_buffer(
+                        context,
                         "gpu-allocation-envelope-vertices",
                         vertices.len(),
                     ) {
-                        context
-                            .queue
-                            .write_buffer(buffer, 0, bytemuck::cast_slice(&vertices));
+                        self.envelope_vertex_ring
+                            .write_active(context, bytemuck::cast_slice(&vertices));
                     }
                 }
             }
@@ -1401,9 +1305,8 @@ mod tests {
     use super::{
         app_event_from_window_event, centered_bounds, format_gpu_event_loop_wait,
         format_gpu_frame_history, format_gpu_frame_overlay_header, format_gpu_redraw_latency,
-        format_gpu_upload_stage, frame_tiles_from_batch, needs_batch_rebuild,
-        next_vertex_buffer_slot, overlay_cache_key, overlay_needs_refresh, signal_renderer_closed,
-        vertex_buffer_capacity, vertex_buffer_needs_recreation, GpuFrameMetrics, PreparedTileBatch,
+        format_gpu_upload_stage, frame_tiles_from_batch, needs_batch_rebuild, overlay_cache_key,
+        overlay_needs_refresh, signal_renderer_closed, GpuFrameMetrics, PreparedTileBatch,
     };
     use crate::app::ApplicationController;
     use crate::geometry::ScreenPoint;
@@ -1609,28 +1512,6 @@ mod tests {
     fn resize_invalidates_vertices_only_when_surface_dimensions_change() {
         assert!(!needs_batch_rebuild((800, 600), (800, 600)));
         assert!(needs_batch_rebuild((800, 600), (1024, 768)));
-    }
-
-    #[test]
-    fn vertex_buffer_capacity_grows_only_when_required_vertices_do_not_fit() {
-        assert_eq!(vertex_buffer_capacity(96, 48), 96);
-        assert_eq!(vertex_buffer_capacity(96, 97), 192);
-        assert_eq!(vertex_buffer_capacity(0, 1), 1);
-    }
-
-    #[test]
-    fn vertex_buffer_recreation_is_needed_only_after_capacity_is_exceeded() {
-        assert!(!vertex_buffer_needs_recreation(96, 96));
-        assert!(!vertex_buffer_needs_recreation(96, 48));
-        assert!(vertex_buffer_needs_recreation(96, 97));
-    }
-
-    #[test]
-    fn vertex_buffer_ring_rotates_slots_without_reusing_the_current_slot() {
-        assert_eq!(next_vertex_buffer_slot(0, 3), 1);
-        assert_eq!(next_vertex_buffer_slot(1, 3), 2);
-        assert_eq!(next_vertex_buffer_slot(2, 3), 0);
-        assert_eq!(next_vertex_buffer_slot(0, 0), 0);
     }
 
     #[test]

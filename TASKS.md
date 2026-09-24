@@ -182,6 +182,12 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   `cargo check --bin sprite-demo`, `cargo fmt --all -- --check` e
   `git diff --check` passaram. O caminho de render pass continua legado e
   pendente, sem mudança funcional pretendida.
+  O ring de buffers de vértices também foi movido para o adaptador: rotação,
+  crescimento de capacidade, criação e escrita ficam em `WgpuVertexBufferRing`;
+  os testes de capacidade e slots acompanham a implementação. `cargo test --lib`
+  passou (187 testes), `cargo check --bin sprite-demo`, formatação e
+  `git diff --check` passaram. O runtime ainda acessa buffers durante o render
+  pass; essa fronteira permanece pendente.
 - **Diagnóstico de frames lentos:** adicionados eventos separados para o tempo
   entre a finalização de um frame e o próximo ciclo do event loop
   (`GpuEventLoopWait`) e para a latência entre `request_redraw` e
