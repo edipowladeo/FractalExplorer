@@ -77,7 +77,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.orchestrator.workers,
         render_plan,
     );
-    if config.renderer.backend_kind()? == fractal_explorer::config::RendererBackend::Gpu {
+    let renderer_factory =
+        fractal_explorer::renderer::RendererFactory::from_config(&config.renderer)?;
+    if renderer_factory.is_gpu() {
         let (_renderer_updates, renderer_commands, renderer_closed) =
             fractal_explorer::gpu_window::runtime_channels();
         let renderer_state = fractal_explorer::gpu_window::GpuAppState::new(

@@ -411,9 +411,15 @@ impl RenderTargetPipeline {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CpuRenderTargetFactory;
 
+impl CpuRenderTargetFactory {
+    pub fn create_cpu_target(&self, viewport: Viewport) -> cpu::CpuRenderTarget {
+        cpu::CpuRenderTarget::new(viewport)
+    }
+}
+
 impl RenderTargetFactory for CpuRenderTargetFactory {
     fn create(&self, viewport: Viewport) -> Result<Box<dyn RenderTarget>, RenderError> {
-        Ok(Box::new(cpu::CpuRenderTarget::new(viewport)))
+        Ok(Box::new(self.create_cpu_target(viewport)))
     }
 }
 
