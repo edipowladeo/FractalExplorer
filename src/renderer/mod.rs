@@ -1,4 +1,4 @@
-use crate::config::{RendererBackend, RendererConfig};
+use crate::config::RendererConfig;
 use crate::geometry::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
 use crate::orchestrator::CanvasNavigationEvent;
 use crate::output::OutputService;
@@ -12,6 +12,47 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 const FRAME_HISTORY_CAPACITY: usize = 30;
+
+/// Selects the platform runtime and exposes the render-target factory that it
+/// can currently construct. Backend selection belongs here, at the adapter
+/// boundary, instead of being repeated by the application entrypoint.
+pub enum RendererFactory {
+    Cpu(crate::render::CpuRenderTargetFactory),
+    Gpu,
+}
+
+impl RendererFactory {
+    pub fn from_config(config: &RendererConfig) -> Result<Self, String> {
+        match config.backend.as_str() {
+            "cpu" => Ok(Self::Cpu(crate::render::CpuRenderTargetFactory)),
+            "gpu" => Ok(Self::Gpu),
+            other => Err(format!("backend de renderer desconhecido: {other}")),
+        }
+    }
+
+    pub fn is_gpu(&self) -> bool {
+        matches!(self, Self::Gpu)
+    }
+
+    pub fn target_factory(&self) -> Option<&dyn crate::render::RenderTargetFactory> {
+        match self {
+            Self::Cpu(factory) => Some(factory),
+            Self::Gpu => None,
+        }
+    }
+
+    fn create_cpu_target(
+        &self,
+        viewport: crate::render::Viewport,
+    ) -> Result<crate::render::cpu::CpuRenderTarget, crate::render::RenderError> {
+        match self {
+            Self::Cpu(factory) => Ok(factory.create_cpu_target(viewport)),
+            Self::Gpu => Err(crate::render::RenderError::BackendUnavailable(
+                "GPU runtime does not expose the CPU target",
+            )),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 struct FrameHistoryEntry {
@@ -227,19 +268,19 @@ pub fn run_with_updates_and_shutdown(
     output: &OutputService,
     renderer_closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), minifb::Error> {
-    match initial_config
-        .backend_kind()
-        .map_err(minifb::Error::WindowCreate)?
-    {
-        RendererBackend::Cpu => run_cpu_with_updates_and_shutdown(
+    let factory =
+        RendererFactory::from_config(initial_config).map_err(minifb::Error::WindowCreate)?;
+    match factory {
+        RendererFactory::Cpu(_) => run_cpu_with_updates_and_shutdown(
             canvas,
             orchestrator,
             initial_config,
             receiver,
             output,
             renderer_closed,
+            &factory,
         ),
-        RendererBackend::Gpu => Err(minifb::Error::WindowCreate(
+        RendererFactory::Gpu => Err(minifb::Error::WindowCreate(
             "backend GPU selecionado, mas o loop wgpu ainda nao foi conectado".to_string(),
         )),
     }
@@ -252,6 +293,7 @@ fn run_cpu_with_updates_and_shutdown(
     receiver: Receiver<RendererConfig>,
     output: &OutputService,
     renderer_closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    factory: &RendererFactory,
 ) -> Result<(), minifb::Error> {
     let mut config = initial_config.clone();
     let mut surface = RenderSurface::new(
@@ -260,10 +302,12 @@ fn run_cpu_with_updates_and_shutdown(
         config.effective_allocation_ratio(),
         config.effective_deallocation_ratio(),
     );
-    let mut cpu_target = crate::render::cpu::CpuRenderTarget::new(crate::render::Viewport::new(
-        config.width as u32,
-        config.height as u32,
-    ));
+    let mut cpu_target = factory
+        .create_cpu_target(crate::render::Viewport::new(
+            config.width as u32,
+            config.height as u32,
+        ))
+        .map_err(|error| minifb::Error::WindowCreate(format!("CPU target failed: {error:?}")))?;
     cpu_target.set_clear_color([0x10, 0x18, 0x20, 0xff]);
     let mut app_controller = crate::app::DefaultApplicationController::new(
         crate::render::Viewport::new(config.width as u32, config.height as u32),
@@ -1090,12 +1134,32 @@ mod tests {
         format_copied_coordinates, format_frame_history_line, format_layer_overlay,
         format_worker_queue_line, format_worker_status_line, has_live_window_size,
         inverted_rainbow_color, middle_click_coordinate_report, pastelize_color, prepared_cpu_tile,
-        rainbow_color, sprite_from_tile, FrameTimingRing, Palette, RenderSurface, ScreenRect,
+        rainbow_color, sprite_from_tile, FrameTimingRing, Palette, RenderSurface, RendererFactory,
+        ScreenRect,
     };
     use crate::geometry::{ComplexPoint, ScreenPoint, ScreenSize};
     use crate::render::{ImageId, ImageRevision, Rect};
     use crate::{Mandelbrot, Orchestrator, Tile, TiledInfiniteCanvas};
     use std::time::Duration;
+
+    #[test]
+    fn renderer_factory_selects_cpu_target_without_exposing_backend_to_main() {
+        let config = crate::config::RendererConfig::default();
+        let factory = RendererFactory::from_config(&config).expect("default backend is valid");
+
+        assert!(!factory.is_gpu());
+        assert!(factory.target_factory().is_some());
+    }
+
+    #[test]
+    fn renderer_factory_selects_gpu_runtime_without_a_cpu_target() {
+        let mut config = crate::config::RendererConfig::default();
+        config.backend = "gpu".to_string();
+        let factory = RendererFactory::from_config(&config).expect("GPU backend is valid");
+
+        assert!(factory.is_gpu());
+        assert!(factory.target_factory().is_none());
+    }
 
     #[test]
     fn converts_tile_iterations_to_a_sprite() {

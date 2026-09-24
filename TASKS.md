@@ -50,14 +50,23 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   de preparação CPU ausente; GREEN passou após a implementação e a migração.
   `cargo fmt`, `git diff --check` e `cargo test --lib` passaram com 162 testes.
   Não foi necessária validação HILT.
-- **Passo 2 em andamento:** o `RenderTargetPipeline` agora centraliza a
+- **Passo 2 concluído:** o `RenderTargetPipeline` agora centraliza a
   sequência de resize, uploads, render, eviction e recovery, coberta por fake
   determinística. O `CpuRenderTarget` passou a preservar a semântica de
   framebuffer anterior, cor de fundo e o loop CPU já usa resize/update/render
   pelo contrato comum. RED/GREEN cobriram a preservação de pixels; `cargo fmt`,
-  `git diff --check` e `cargo test --lib` passaram com 164 testes. Ainda falta
-  remover a seleção direta de backend do `main` e fechar o fallback pela
-  factory; não foi necessária validação HILT até aqui.
+  `git diff --check` e `cargo test --lib` passaram com 164 testes. Não foi
+  necessária validação HILT até aqui.
+- **Fechamento do passo 2:** `RendererFactory` passou a concentrar a seleção
+  CPU/GPU, o `main` consulta a factory em vez de comparar o enum de backend e
+  o runner CPU recebe a construção do `CpuRenderTarget` pela factory. A
+  factory CPU também é a implementação usada pelo contrato
+  `RenderTargetFactory`, mantendo o fallback legado no mesmo ponto de
+  composição. RED/GREEN: os testes de seleção CPU/GPU passaram; REFACTOR:
+  `CpuRenderTargetFactory::create_cpu_target` eliminou a construção duplicada.
+  `cargo fmt --all -- --check`, `git diff --check` e `cargo test --lib`
+  passaram com 176 testes. A alteração não muda comportamento visual nem
+  exige validação HILT.
 - **Passo 3 em andamento:** `ApplicationController::prepare_frame` passou a
   retornar `PreparedFrame`, alinhando a API comum ao snapshot usado por CPU e
   GPU. RED confirmou que o controlador ainda retornava `RenderFrame`; GREEN
