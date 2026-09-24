@@ -1203,9 +1203,7 @@ impl ApplicationHandler for GpuWindowApp {
         event: WindowEvent,
     ) {
         if matches!(&event, WindowEvent::CloseRequested) {
-            if let Some(renderer_closed) = &self.renderer_closed {
-                renderer_closed.store(true, std::sync::atomic::Ordering::Release);
-            }
+            signal_renderer_closed(self.renderer_closed.as_ref());
         }
         let app_event = app_event_from_window_event(&event);
         if let Some(app_event) = app_event {
@@ -1581,6 +1579,12 @@ fn app_event_from_window_event(event: &WindowEvent) -> Option<AppEvent> {
     }
 }
 
+fn signal_renderer_closed(renderer_closed: Option<&Arc<std::sync::atomic::AtomicBool>>) {
+    if let Some(renderer_closed) = renderer_closed {
+        renderer_closed.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1588,14 +1592,25 @@ mod tests {
         format_gpu_frame_history, format_gpu_frame_overlay_header, format_gpu_redraw_latency,
         format_gpu_upload_stage, frame_tiles_from_batch, needs_batch_rebuild,
         next_vertex_buffer_slot, overlay_cache_key, overlay_needs_refresh, select_present_mode,
-        vertex_buffer_capacity, vertex_buffer_needs_recreation, GpuFrameMetrics, PreparedTileBatch,
+        signal_renderer_closed, vertex_buffer_capacity, vertex_buffer_needs_recreation,
+        GpuFrameMetrics, PreparedTileBatch,
     };
     use crate::geometry::ScreenPoint;
     use crate::gpu::{TextureKey, TextureUpload, TileDrawCommand};
     use crate::render::{ImageId, ImageRevision, Rect, Viewport};
+    use std::sync::Arc;
     use std::time::Duration;
     use winit::dpi::PhysicalSize;
     use winit::event::WindowEvent;
+
+    #[test]
+    fn signals_renderer_closed_without_requiring_a_window() {
+        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        signal_renderer_closed(Some(&closed));
+
+        assert!(closed.load(std::sync::atomic::Ordering::Acquire));
+    }
 
     #[test]
     fn formats_event_loop_wait_and_redraw_latency_separately() {
