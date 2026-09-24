@@ -143,6 +143,8 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   uploads e a ordem de desenho/apresentação. Como o adaptador de recursos ainda
   não codifica render pass, agora rejeita `DrawTexture`/`Present` em vez de
   ignorá-los; o suporte de apresentação será fechado na migração do Passo 6.
+  Os testes de contrato e cache foram migrados do `RecordingDevice` local para
+  esse mock compartilhado.
   `cargo test --lib` passou com 187 testes; `cargo check --bin sprite-demo`,
   `cargo fmt --all -- --check` e `git diff --check` passaram. Ainda falta
   completar e confinar todos os tipos `wgpu` ao adaptador.
