@@ -1014,11 +1014,22 @@ pub fn write_tile_texture(context: &WgpuContext, texture: &wgpu::Texture, upload
 }
 
 fn validate_commands(commands: &CommandList) -> Result<(), DeviceError> {
-    if commands
-        .commands()
-        .iter()
-        .any(|command| matches!(command, Command::DrawTexture { .. } | Command::Present))
-    {
+    let mut drawing_started = false;
+    let mut presented = false;
+    for command in commands.commands() {
+        if presented {
+            return Err(DeviceError::UnsupportedCommand);
+        }
+        match command {
+            Command::WriteBuffer { .. } | Command::WriteTexture { .. } if drawing_started => {
+                return Err(DeviceError::UnsupportedCommand);
+            }
+            Command::DrawTexture { .. } => drawing_started = true,
+            Command::Present => presented = true,
+            Command::WriteBuffer { .. } | Command::WriteTexture { .. } => {}
+        }
+    }
+    if drawing_started && !presented {
         return Err(DeviceError::UnsupportedCommand);
     }
     Ok(())
@@ -1096,17 +1107,31 @@ mod tests {
     }
 
     #[test]
-    fn rejects_draw_and_present_until_the_render_target_owns_presentation() {
+    fn validates_upload_draw_present_order_for_gpu_render_targets() {
         let mut uploads = CommandList::default();
         uploads.write_texture(TextureHandle::new(1), 1, 1, vec![0, 0, 0, 255]);
         assert_eq!(validate_commands(&uploads), Ok(()));
 
         let mut commands = CommandList::default();
+        commands.write_texture(TextureHandle::new(1), 1, 1, vec![0, 0, 0, 255]);
         commands.draw_texture(TextureHandle::new(1), 0, 0, 1, 1, 1.0);
         commands.present();
+        assert_eq!(validate_commands(&commands), Ok(()));
 
+        let mut writes_after_draw = CommandList::default();
+        writes_after_draw.draw_texture(TextureHandle::new(1), 0, 0, 1, 1, 1.0);
+        writes_after_draw.write_texture(TextureHandle::new(1), 1, 1, vec![0, 0, 0, 255]);
+        writes_after_draw.present();
         assert_eq!(
-            validate_commands(&commands),
+            validate_commands(&writes_after_draw),
+            Err(DeviceError::UnsupportedCommand)
+        );
+
+        let mut draws_after_present = CommandList::default();
+        draws_after_present.present();
+        draws_after_present.draw_texture(TextureHandle::new(1), 0, 0, 1, 1, 1.0);
+        assert_eq!(
+            validate_commands(&draws_after_present),
             Err(DeviceError::UnsupportedCommand)
         );
     }
