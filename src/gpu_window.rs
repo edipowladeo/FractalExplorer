@@ -8,9 +8,9 @@ use crate::gpu::{
 };
 use crate::input::{InputEvent, ZoomDirection};
 use crate::render::graphics::wgpu::{
-    create_tile_pipeline, select_present_mode, surface_usage, tile_quad_vertices,
-    tile_vertices_for_commands, upload_tile_texture, write_tile_texture, GpuTextureStore,
-    GpuTileTexture, TileVertex, WgpuContext as GpuContext, WgpuPipeline,
+    create_tile_pipeline, tile_quad_vertices, tile_vertices_for_commands, upload_tile_texture,
+    write_tile_texture, GpuTextureStore, GpuTileTexture, TileVertex, WgpuContext as GpuContext,
+    WgpuPipeline, WgpuSurface, WgpuSurfaceAcquire,
 };
 use crate::render::{ImageId, ImageRevision, ImageUpdate, PreparedFrame, Viewport};
 #[cfg(test)]
@@ -539,8 +539,7 @@ pub struct GpuWindowApp {
     renderer_closed: Option<Arc<std::sync::atomic::AtomicBool>>,
     context: Option<GpuContext>,
     window: Option<Arc<Window>>,
-    surface: Option<wgpu::Surface<'static>>,
-    surface_config: Option<wgpu::SurfaceConfiguration>,
+    surface: Option<WgpuSurface<'static>>,
     pipeline: Option<WgpuPipeline>,
     tile_bind_group_layout: Option<wgpu::BindGroupLayout>,
     tile_vertex_ring: VertexBufferRing,
@@ -590,7 +589,6 @@ impl GpuWindowApp {
             context: None,
             window: None,
             surface: None,
-            surface_config: None,
             pipeline: None,
             tile_bind_group_layout: None,
             tile_vertex_ring: VertexBufferRing::new(ring_size),
@@ -663,17 +661,12 @@ impl GpuWindowApp {
     }
 
     fn configure_surface(&mut self, width: u32, height: u32) {
-        let (Some(context), Some(surface)) = (&self.context, &self.surface) else {
+        let (Some(context), Some(surface)) = (&self.context, &mut self.surface) else {
             return;
         };
-        let Some(config) = self.surface_config.as_mut() else {
-            return;
-        };
-        let previous = (config.width, config.height);
-        config.width = width.max(1);
-        config.height = height.max(1);
-        surface.configure(&context.device, config);
-        if needs_batch_rebuild(previous, (config.width, config.height)) {
+        let previous = surface.size();
+        surface.resize(context, width, height);
+        if needs_batch_rebuild(previous, surface.size()) {
             self.surface_initialized = false;
             self.composition_texture = None;
             self.tile_vertex_ring.reset();
@@ -830,12 +823,9 @@ impl GpuWindowApp {
         self.overlay_vertex_ring.begin_frame();
         self.envelope_vertex_ring.begin_frame();
         let vertex_upload_started = Instant::now();
-        if let (Some(context), Some(surface_config)) = (&self.context, &self.surface_config) {
-            let vertices = tile_vertices_for_commands(
-                &frame_commands,
-                surface_config.width,
-                surface_config.height,
-            );
+        if let (Some(context), Some(surface)) = (&self.context, &self.surface) {
+            let (width, height) = surface.size();
+            let vertices = tile_vertices_for_commands(&frame_commands, width, height);
             if !vertices.is_empty() {
                 if let Some(buffer) = self.tile_vertex_ring.ensure_buffer(
                     &context.device,
@@ -884,11 +874,10 @@ impl GpuWindowApp {
             let line_count = text.lines().count().max(1);
             let upload = debug_overlay_upload(&text, 240, line_count as u32 * 16);
             let key = upload.key;
-            if let (Some(context), Some(layout), Some(surface_config)) = (
-                &self.context,
-                &self.tile_bind_group_layout,
-                &self.surface_config,
-            ) {
+            if let (Some(context), Some(layout), Some(surface)) =
+                (&self.context, &self.tile_bind_group_layout, &self.surface)
+            {
+                let (width, height) = surface.size();
                 let cache_key = overlay_cache_key(&upload);
                 if overlay_needs_refresh(self.overlay_cache_key, cache_key) {
                     if let Some(texture) = self.overlay_texture.as_ref().filter(|texture| {
@@ -902,18 +891,14 @@ impl GpuWindowApp {
                 }
                 let position = crate::geometry::ScreenPoint::new(
                     8,
-                    surface_config.height.saturating_sub(upload.height + 8) as i32,
+                    height.saturating_sub(upload.height + 8) as i32,
                 );
                 let command = TileDrawCommand {
                     texture: key,
                     position,
                     size: (upload.width, upload.height),
                 };
-                let vertices = tile_vertices_for_commands(
-                    &[command],
-                    surface_config.width,
-                    surface_config.height,
-                );
+                let vertices = tile_vertices_for_commands(&[command], width, height);
                 if let Some(buffer) = self.overlay_vertex_ring.ensure_buffer(
                     &context.device,
                     "gpu-debug-overlay-vertices",
@@ -941,15 +926,16 @@ impl GpuWindowApp {
         }
         if show_envelope {
             let envelope_started = Instant::now();
-            if let (Some(context), Some(layout), Some(surface_config), Some(state)) = (
+            if let (Some(context), Some(layout), Some(surface), Some(state)) = (
                 &self.context,
                 &self.tile_bind_group_layout,
-                &self.surface_config,
+                &self.surface,
                 &self.state,
             ) {
+                let (width, height) = surface.size();
                 let cache_key = EnvelopeCacheKey {
-                    width: surface_config.width,
-                    height: surface_config.height,
+                    width,
+                    height,
                     allocation: state.allocation_bounds,
                     deallocation: state.deallocation_bounds,
                 };
@@ -958,12 +944,8 @@ impl GpuWindowApp {
                         (state.allocation_bounds, [255, 0, 0, 255]),
                         (state.deallocation_bounds, [255, 255, 0, 255]),
                     ];
-                    let upload = debug_overlay_upload_with_rectangles(
-                        "",
-                        surface_config.width,
-                        surface_config.height,
-                        &rectangles,
-                    );
+                    let upload =
+                        debug_overlay_upload_with_rectangles("", width, height, &rectangles);
                     let key = upload.key;
                     self.envelope_texture = Some(upload_tile_texture(context, layout, &upload));
                     self.envelope_cache_key = Some(cache_key);
@@ -974,11 +956,7 @@ impl GpuWindowApp {
                     });
                 }
                 if let Some(command) = self.envelope_command {
-                    let vertices = tile_vertices_for_commands(
-                        &[command],
-                        surface_config.width,
-                        surface_config.height,
-                    );
+                    let vertices = tile_vertices_for_commands(&[command], width, height);
                     if let Some(buffer) = self.envelope_vertex_ring.ensure_buffer(
                         &context.device,
                         "gpu-allocation-envelope-vertices",
@@ -1051,7 +1029,8 @@ impl ApplicationHandler for GpuWindowApp {
                 return;
             }
         };
-        let surface = match context.instance.create_surface(Arc::clone(&window)) {
+        let size = window.inner_size();
+        let surface = match context.create_surface(Arc::clone(&window), size.width, size.height) {
             Ok(surface) => surface,
             Err(error) => {
                 crate::print_local!("Falha ao criar superfície GPU: {error}");
@@ -1059,49 +1038,18 @@ impl ApplicationHandler for GpuWindowApp {
                 return;
             }
         };
-        let capabilities = surface.get_capabilities(&context.adapter);
         let adapter_info = context.adapter.get_info();
         crate::print_local!(
-            "GPU adapter: {:?} / {} ({:?}); modos de apresentacao: {:?}",
+            "GPU adapter: {:?} / {} ({:?}); modo de apresentacao: {:?}",
             adapter_info.backend,
             adapter_info.name,
             adapter_info.device_type,
-            capabilities.present_modes
+            surface.present_mode()
         );
-        let Some(format) = capabilities.formats.first().copied() else {
-            crate::print_local!("GPU não oferece formato de superfície compatível");
-            event_loop.exit();
-            return;
-        };
-        let Some(present_mode) = select_present_mode(&capabilities.present_modes) else {
-            crate::print_local!("GPU não oferece modo de apresentação compatível");
-            event_loop.exit();
-            return;
-        };
-        crate::print_local!("Modo de apresentacao GPU selecionado: {:?}", present_mode);
-        let Some(alpha_mode) = capabilities.alpha_modes.first().copied() else {
-            crate::print_local!("GPU não oferece modo alpha compatível");
-            event_loop.exit();
-            return;
-        };
-        let size = window.inner_size();
-        let config = wgpu::SurfaceConfiguration {
-            usage: surface_usage(capabilities.usages),
-            format,
-            color_space: wgpu::SurfaceColorSpace::Auto,
-            width: size.width.max(1),
-            height: size.height.max(1),
-            present_mode,
-            alpha_mode,
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(&context.device, &config);
-        let (pipeline, tile_bind_group_layout) = create_tile_pipeline(&context, format);
+        let (pipeline, tile_bind_group_layout) = create_tile_pipeline(&context, surface.format());
         self.context = Some(context);
         self.window = Some(window);
         self.surface = Some(surface);
-        self.surface_config = Some(config);
         self.pipeline = Some(pipeline);
         self.tile_bind_group_layout = Some(tile_bind_group_layout);
         self.texture_store = Some(GpuTextureStore::new());
@@ -1167,10 +1115,10 @@ impl ApplicationHandler for GpuWindowApp {
                     .state
                     .as_ref()
                     .is_some_and(|state| state.config.preserve_previous_frame);
-                let composition_parameters = self
-                    .surface_config
-                    .as_ref()
-                    .map(|config| (config.format, config.width, config.height));
+                let composition_parameters = self.surface.as_ref().map(|surface| {
+                    let (width, height) = surface.size();
+                    (surface.format(), width, height)
+                });
                 if let (Some(context), Some((format, width, height))) =
                     (self.context.take(), composition_parameters)
                 {
@@ -1211,25 +1159,21 @@ impl ApplicationHandler for GpuWindowApp {
                             "aquisicao da superficie GPU iniciada",
                         );
                     }
-                    let frame = match surface.get_current_texture() {
-                        wgpu::CurrentSurfaceTexture::Success(frame)
-                        | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-                        wgpu::CurrentSurfaceTexture::Timeout
-                        | wgpu::CurrentSurfaceTexture::Occluded => {
+                    let frame = match surface.acquire() {
+                        WgpuSurfaceAcquire::Ready(frame)
+                        | WgpuSurfaceAcquire::Suboptimal(frame) => frame,
+                        WgpuSurfaceAcquire::Timeout | WgpuSurfaceAcquire::Occluded => {
                             return;
                         }
-                        wgpu::CurrentSurfaceTexture::Outdated
-                        | wgpu::CurrentSurfaceTexture::Lost => {
-                            if let Some(config) = &self.surface_config {
-                                surface.configure(&context.device, config);
-                            }
+                        WgpuSurfaceAcquire::Outdated | WgpuSurfaceAcquire::Lost => {
+                            surface.configure(context);
                             self.surface_initialized = false;
                             self.tile_vertex_ring.reset();
                             self.overlay_vertex_ring.reset();
                             self.envelope_vertex_ring.reset();
                             return;
                         }
-                        wgpu::CurrentSurfaceTexture::Validation => {
+                        WgpuSurfaceAcquire::Validation => {
                             crate::print_local!("Falha de validação ao obter frame GPU");
                             return;
                         }
@@ -1250,9 +1194,7 @@ impl ApplicationHandler for GpuWindowApp {
                         } else {
                             None
                         };
-                        let surface_view = frame
-                            .texture
-                            .create_view(&wgpu::TextureViewDescriptor::default());
+                        let surface_view = frame.create_view();
                         let mut encoder = context.device.create_command_encoder(
                             &wgpu::CommandEncoderDescriptor {
                                 label: Some("gpu-clear"),
@@ -1406,7 +1348,7 @@ impl ApplicationHandler for GpuWindowApp {
                             );
                             state.canvas.record_frame_presentation_started();
                         }
-                        context.queue.present(frame);
+                        frame.present(context);
                         self.surface_initialized = true;
                         if let Some(state) = &mut self.state {
                             state.canvas.record_frame_event(
