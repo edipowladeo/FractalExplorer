@@ -190,21 +190,24 @@ impl TextureResourceCache {
                 continue;
             }
 
-            let handle = match self.textures.get(&update.image()) {
-                Some(cached) if cached.dimensions == dimensions => cached.handle,
-                Some(cached) => {
-                    device.destroy_texture(cached.handle);
+            let (handle, replaced_handle) = match self.textures.get(&update.image()) {
+                Some(cached) if cached.dimensions == dimensions => (cached.handle, None),
+                Some(cached) => (
                     device.create_texture(TextureDescriptor {
                         width: dimensions.0,
                         height: dimensions.1,
                         format: TextureFormat::Rgba8,
-                    })?
-                }
-                None => device.create_texture(TextureDescriptor {
-                    width: dimensions.0,
-                    height: dimensions.1,
-                    format: TextureFormat::Rgba8,
-                })?,
+                    })?,
+                    Some(cached.handle),
+                ),
+                None => (
+                    device.create_texture(TextureDescriptor {
+                        width: dimensions.0,
+                        height: dimensions.1,
+                        format: TextureFormat::Rgba8,
+                    })?,
+                    None,
+                ),
             };
             commands.write_texture(handle, dimensions.0, dimensions.1, update.rgba8().to_vec());
             self.textures.insert(
@@ -215,6 +218,9 @@ impl TextureResourceCache {
                     dimensions,
                 },
             );
+            if let Some(replaced_handle) = replaced_handle {
+                device.destroy_texture(replaced_handle);
+            }
             uploaded += 1;
         }
         if uploaded > 0 {
@@ -236,6 +242,7 @@ impl TextureResourceCache {
 #[derive(Debug, Default)]
 pub struct MockGraphicsDevice {
     next_handle: u64,
+    fail_next_texture_creation: bool,
     buffers: HashMap<BufferHandle, BufferDescriptor>,
     textures: HashMap<TextureHandle, TextureDescriptor>,
     submitted: Vec<CommandList>,
@@ -268,6 +275,9 @@ impl GraphicsDevice for MockGraphicsDevice {
         &mut self,
         descriptor: TextureDescriptor,
     ) -> Result<TextureHandle, DeviceError> {
+        if std::mem::take(&mut self.fail_next_texture_creation) {
+            return Err(DeviceError::InvalidResource);
+        }
         if descriptor.width == 0 || descriptor.height == 0 {
             return Err(DeviceError::InvalidResource);
         }
@@ -474,6 +484,40 @@ mod tests {
         assert_eq!(cache.upload_updates(&mut device, &[newer]).unwrap(), 1);
         assert_eq!(cache.handle(crate::render::ImageId::new(7)), handle);
         assert_eq!(device.submitted().len(), 2);
+    }
+
+    #[test]
+    fn texture_cache_keeps_old_texture_when_replacement_creation_fails() {
+        let image = crate::render::ImageId::new(18);
+        let mut device = MockGraphicsDevice::default();
+        let mut cache = TextureResourceCache::new();
+        let first = crate::render::ImageUpdate::new(
+            image,
+            crate::render::ImageRevision::new(1),
+            1,
+            1,
+            vec![1, 2, 3, 255],
+        )
+        .unwrap();
+        cache.upload_updates(&mut device, &[first]).unwrap();
+        let old_handle = cache.handle(image).unwrap();
+
+        device.fail_next_texture_creation = true;
+        let resized = crate::render::ImageUpdate::new(
+            image,
+            crate::render::ImageRevision::new(2),
+            2,
+            1,
+            vec![4, 5, 6, 255, 7, 8, 9, 255],
+        )
+        .unwrap();
+
+        assert_eq!(
+            cache.upload_updates(&mut device, &[resized]),
+            Err(DeviceError::InvalidResource)
+        );
+        assert_eq!(cache.handle(image), Some(old_handle));
+        assert!(device.textures.contains_key(&old_handle));
     }
 }
 use std::collections::HashMap;
