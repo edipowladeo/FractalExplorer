@@ -462,6 +462,68 @@ mod tests {
     }
 
     #[test]
+    fn fake_runtime_routes_resize_config_redraw_and_shutdown_in_order() {
+        let mut controller = DefaultApplicationController::new(Viewport::new(800, 600));
+        let input = InputEvent::Zoom {
+            direction: ZoomDirection::In,
+            cursor: ScreenPoint::new(12, 20),
+        };
+        let events = [
+            AppEvent::Resized(Viewport::new(900, 700)),
+            AppEvent::Resized(Viewport::new(1024, 768)),
+            AppEvent::Input(input),
+            AppEvent::ConfigurationChanged,
+            AppEvent::AboutToWait,
+            AppEvent::RedrawRequested,
+            AppEvent::CloseRequested,
+            AppEvent::AboutToWait,
+        ];
+        let actions: Vec<_> = events
+            .into_iter()
+            .map(|event| reduce_effects(&controller.handle_event(event)))
+            .collect();
+
+        assert_eq!(controller.viewport(), Viewport::new(1024, 768));
+        assert_eq!(controller.take_input_events(), vec![input]);
+        assert_eq!(
+            actions,
+            vec![
+                super::AppActions {
+                    request_redraw: true,
+                    ..super::AppActions::default()
+                },
+                super::AppActions {
+                    request_redraw: true,
+                    ..super::AppActions::default()
+                },
+                super::AppActions {
+                    request_redraw: true,
+                    ..super::AppActions::default()
+                },
+                super::AppActions {
+                    reconfigure: true,
+                    request_redraw: true,
+                    ..super::AppActions::default()
+                },
+                super::AppActions {
+                    prepare_frame: true,
+                    request_redraw: true,
+                    ..super::AppActions::default()
+                },
+                super::AppActions {
+                    render: true,
+                    ..super::AppActions::default()
+                },
+                super::AppActions {
+                    exit: true,
+                    ..super::AppActions::default()
+                },
+                super::AppActions::default(),
+            ]
+        );
+    }
+
+    #[test]
     fn controller_prepares_a_shared_frame_snapshot() {
         let mut controller = DefaultApplicationController::new(Viewport::new(320, 200));
         let published = PreparedFrame::new(
