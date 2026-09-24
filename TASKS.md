@@ -137,8 +137,10 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   Config UI permanece explicitamente na T035 do backlog; composição `wgpu`
   migra nos Passos 5–6.
 - **Passo 5 em andamento:** RED fixou o caminho do adaptador público e GREEN
-  moveu `WgpuGraphicsDevice` para `render::graphics::wgpu`, com wrappers
-  `WgpuPipeline`, `WgpuSurface`, `WgpuBuffer` e `WgpuTexture`. Foi criado um
+  moveu `WgpuContext`, `WgpuGraphicsDevice`, construção do pipeline, layout de
+  vértices, uploads e cache de texturas para `render::graphics::wgpu`, com
+  wrappers `WgpuPipeline`, `WgpuSurface`, `WgpuBuffer` e `WgpuTexture`. O
+  runtime GPU já consome esses wrappers para contexto, pipeline e texturas. Foi criado um
   `MockGraphicsDevice` de teste que valida ciclo de vida, dimensões/limites de
   uploads e a ordem de desenho/apresentação. Como o adaptador de recursos ainda
   não codifica render pass, agora rejeita `DrawTexture`/`Present` em vez de
@@ -146,8 +148,9 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   Os testes de contrato e cache foram migrados do `RecordingDevice` local para
   esse mock compartilhado.
   `cargo test --lib` passou com 187 testes; `cargo check --bin sprite-demo`,
-  `cargo fmt --all -- --check` e `git diff --check` passaram. Ainda falta
-  completar e confinar todos os tipos `wgpu` ao adaptador.
+  `cargo fmt --all -- --check` e `git diff --check` passaram. Ainda restam
+  definições de compatibilidade no módulo `gpu.rs` e o runtime contém acessos
+  `wgpu` diretos; a migração e o confinamento completo seguem pendentes.
 - **Diagnóstico de frames lentos:** adicionados eventos separados para o tempo
   entre a finalização de um frame e o próximo ciclo do event loop
   (`GpuEventLoopWait`) e para a latência entre `request_redraw` e

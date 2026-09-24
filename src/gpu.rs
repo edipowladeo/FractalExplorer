@@ -1,13 +1,13 @@
 //! Backend-independent GPU composition contracts.
 
-use crate::config::GpuBackend;
 use crate::geometry::ScreenPoint;
-use crate::render::graphics::wgpu::WgpuSurface;
 use crate::render::{ImageUpdate, RenderFrame};
 use crate::{Sprite, TileSprite};
 use std::collections::HashMap;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
+
+pub use crate::render::graphics::wgpu::WgpuContext as GpuContext;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -205,73 +205,6 @@ pub fn debug_overlay_upload_with_rectangles(
             .collect::<Vec<_>>(),
     );
     upload
-}
-
-/// Owns the device and queue used by the future window-backed renderer.
-/// Surface creation stays outside this context because it borrows a window.
-pub struct GpuContext {
-    pub instance: wgpu::Instance,
-    pub adapter: wgpu::Adapter,
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
-}
-
-impl GpuContext {
-    pub async fn initialize(gpu_backend: GpuBackend) -> Result<Self, String> {
-        let backends = match gpu_backend {
-            GpuBackend::Auto => wgpu::Backends::all(),
-            GpuBackend::Gl => wgpu::Backends::GL,
-        };
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends,
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions::default())
-            .await
-            .map_err(|error| format!("GPU adapter unavailable: {error}"))?;
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                // The renderer uses vertex/fragment shaders only.  The default
-                // WebGPU limits require compute support that legacy GL adapters
-                // may correctly report as unavailable.
-                required_limits: adapter.limits(),
-                ..Default::default()
-            })
-            .await
-            .map_err(|error| format!("GPU device unavailable: {error}"))?;
-        Ok(Self {
-            instance,
-            adapter,
-            device,
-            queue,
-        })
-    }
-
-    pub fn create_surface<'window>(
-        &self,
-        window: &'window winit::window::Window,
-    ) -> Result<WgpuSurface<'window>, String> {
-        let surface = self
-            .instance
-            .create_surface(window)
-            .map_err(|error| format!("GPU surface unavailable: {error}"))?;
-        let capabilities = surface.get_capabilities(&self.adapter);
-        let format = capabilities
-            .formats
-            .first()
-            .copied()
-            .ok_or_else(|| "GPU surface has no supported formats".to_string())?;
-        Ok(WgpuSurface {
-            surface,
-            format,
-            present_mode: capabilities
-                .present_modes
-                .first()
-                .copied()
-                .unwrap_or(wgpu::PresentMode::Fifo),
-        })
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -581,6 +514,7 @@ mod tests {
             std::marker::PhantomData::<crate::render::graphics::wgpu::WgpuPipeline>;
         let _surface_type =
             std::marker::PhantomData::<crate::render::graphics::wgpu::WgpuSurface<'static>>;
+        let _context_type = std::marker::PhantomData::<crate::render::graphics::wgpu::WgpuContext>;
     }
 
     #[test]
