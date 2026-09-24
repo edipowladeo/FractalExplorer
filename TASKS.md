@@ -85,6 +85,15 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   integração ser migrada para um runtime único. Essa integração foi movida para
   o backlog como T035; criar outro event loop em thread secundária teria a
   mesma restrição de plataforma.
+- **Passo 4 em andamento:** a tradução dos eventos de ciclo de vida do `winit`
+  (`resize`, `redraw` e fechamento) foi extraída para
+  `app_event_from_window_event`, deixando o adaptador GPU encaminhar eventos ao
+  `ApplicationController` por uma fronteira pura e testável. RED confirmou a
+  ausência do tradutor; GREEN passou com o teste
+  `gpu_window::tests::translates_window_lifecycle_events_to_application_events`.
+  `cargo fmt --all`, `git diff --check` e `cargo test --lib` passaram com 171
+  testes. Ainda falta extrair o ciclo de redraw e o encerramento coordenado;
+  a validação da janela real permanece como HILT após essa etapa.
 - **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
 
 ### T026 — Investigar e melhorar a precisão para zoom profundo
