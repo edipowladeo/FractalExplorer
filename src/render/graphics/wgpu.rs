@@ -128,6 +128,41 @@ pub fn tile_vertices_for_commands(
 
 pub struct WgpuPipeline(pub wgpu::RenderPipeline);
 
+pub struct WgpuTextureLayout(wgpu::BindGroupLayout);
+
+impl WgpuTextureLayout {
+    fn as_raw(&self) -> &wgpu::BindGroupLayout {
+        &self.0
+    }
+}
+
+pub struct WgpuCompositionTexture {
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+    present_vertex_buffer: wgpu::Buffer,
+    width: u32,
+    height: u32,
+}
+
+impl WgpuCompositionTexture {
+    pub fn view(&self) -> &wgpu::TextureView {
+        &self.view
+    }
+
+    pub fn bind_group(&self) -> &wgpu::BindGroup {
+        &self.bind_group
+    }
+
+    pub fn present_vertex_buffer(&self) -> &wgpu::Buffer {
+        &self.present_vertex_buffer
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+}
+
 pub struct WgpuSurface<'window> {
     surface: wgpu::Surface<'window>,
     configuration: wgpu::SurfaceConfiguration,
@@ -303,7 +338,7 @@ impl WgpuContext {
 pub fn create_tile_pipeline(
     context: &WgpuContext,
     format: wgpu::TextureFormat,
-) -> (WgpuPipeline, wgpu::BindGroupLayout) {
+) -> (WgpuPipeline, WgpuTextureLayout) {
     let layout = context
         .device
         .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -373,7 +408,69 @@ pub fn create_tile_pipeline(
             multiview_mask: None,
             cache: None,
         });
-    (WgpuPipeline(pipeline), layout)
+    (WgpuPipeline(pipeline), WgpuTextureLayout(layout))
+}
+
+pub fn create_composition_texture(
+    context: &WgpuContext,
+    layout: &WgpuTextureLayout,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+) -> WgpuCompositionTexture {
+    let texture = context.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("persistent-composition"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let sampler = context.device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("composition-sampler"),
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
+        ..Default::default()
+    });
+    let bind_group = context
+        .device
+        .create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("composition-bind-group"),
+            layout: layout.as_raw(),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+    let present_vertex_buffer =
+        context
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("composition-present-quad"),
+                contents: bytemuck::cast_slice(&tile_quad_vertices()),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+    WgpuCompositionTexture {
+        _texture: texture,
+        view,
+        bind_group,
+        present_vertex_buffer,
+        width,
+        height,
+    }
 }
 
 struct WgpuBuffer(wgpu::Buffer);
@@ -539,7 +636,7 @@ impl GpuTextureStore {
     pub fn upload(
         &mut self,
         context: &WgpuContext,
-        layout: &wgpu::BindGroupLayout,
+        layout: &WgpuTextureLayout,
         upload: TextureUpload,
     ) {
         let texture = upload_tile_texture(context, layout, &upload);
@@ -549,7 +646,7 @@ impl GpuTextureStore {
     pub fn upload_image_update(
         &mut self,
         context: &WgpuContext,
-        layout: &wgpu::BindGroupLayout,
+        layout: &WgpuTextureLayout,
         update: &ImageUpdate,
     ) {
         let (width, height) = update.dimensions();
@@ -584,7 +681,7 @@ impl GpuTextureStore {
 
 pub fn upload_tile_texture(
     context: &WgpuContext,
-    layout: &wgpu::BindGroupLayout,
+    layout: &WgpuTextureLayout,
     upload: &TextureUpload,
 ) -> GpuTileTexture {
     let texture = context.device.create_texture(&wgpu::TextureDescriptor {
@@ -613,7 +710,7 @@ pub fn upload_tile_texture(
         .device
         .create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("tile-bind-group"),
-            layout,
+            layout: layout.as_raw(),
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
