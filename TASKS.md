@@ -146,6 +146,19 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - Cobrir com testes a sobreposicao parcial, total, transparencia, camadas
   invertidas e a ausencia de tiles cobertos no batch final.
 
+### T031 - Reorganizar a documentacao do repositorio
+
+- Criar as pastas `docs/`, `skills/` e `plans/`.
+- Separar as instrucoes atualmente concentradas em `AGENTS.md` entre
+  documentacao geral em `docs/` e instrucoes operacionais reutilizaveis em
+  `skills/`.
+- Mover os planos de implementacao para `plans/`.
+- Garantir que todos os arquivos `.md` do repositorio fiquem em `docs/`,
+  `skills/` ou `plans/`, preservando links relativos e referencias usadas por
+  ferramentas e agentes.
+- Adicionar uma verificacao automatica que falhe quando um novo `.md` for
+  criado fora dessas pastas.
+
 ### T027 — Representar `delta` como expoente inteiro positivo
 
 - Fazer com que `delta` seja representado exclusivamente por um expoente inteiro positivo na camada, no tile e em todos os demais pontos em que essa informação for necessária.

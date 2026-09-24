@@ -932,9 +932,10 @@ impl GpuWindowApp {
                     || debug.text_overlay_queue
                     || debug.text_overlay_workers)
         });
-        let show_envelope = self.state.as_ref().is_some_and(|state| {
-            state.config.debug.overlays_enabled() && state.config.debug.show_allocation_envelope
-        });
+        let show_envelope = self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.config.debug.should_show_allocation_envelope());
         if show_text_overlay {
             let overlay_started = Instant::now();
             let text = self
@@ -1081,7 +1082,7 @@ impl ApplicationHandler for GpuWindowApp {
             .unwrap_or((800, 600));
         let window = match event_loop.create_window(
             WindowAttributes::default()
-                .with_title("FractalExplorer - GPU")
+                .with_title(crate::app::window_title())
                 .with_inner_size(LogicalSize::new(window_width, window_height)),
         ) {
             Ok(window) => Arc::new(window),

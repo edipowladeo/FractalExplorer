@@ -1,6 +1,27 @@
 use crate::input::InputEvent;
 use crate::render::{FrameBuilder, PreparedFrame, RenderError, Viewport};
 
+use std::sync::OnceLock;
+
+static WINDOW_TITLE: OnceLock<String> = OnceLock::new();
+
+pub fn title_with_suffix(suffix: Option<&str>) -> String {
+    suffix.filter(|value| !value.trim().is_empty()).map_or_else(
+        || "FractalExplorer".to_owned(),
+        |value| format!("FractalExplorer - {}", value.trim()),
+    )
+}
+
+pub fn initialize_window_title(suffix: Option<&str>) {
+    let _ = WINDOW_TITLE.set(title_with_suffix(suffix));
+}
+
+pub fn window_title() -> &'static str {
+    WINDOW_TITLE
+        .get_or_init(|| title_with_suffix(None))
+        .as_str()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppEvent {
     Resized(Viewport),

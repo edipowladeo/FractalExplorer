@@ -8,6 +8,7 @@ license = "MIT"
 [features]
 default = ["native-ui"]
 native-ui = ["dep:eframe"]
+tracy = ["dep:profiling", "dep:tracy-client", "dep:tracy-client-sys"]
 
 [dependencies]
 eframe = { version = "0.36.2", optional = true }
@@ -19,6 +20,10 @@ bytemuck = { version = "1.25", features = ["derive"] }
 arboard = "3"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+profiling = { version = "1.0.18", features = ["profile-with-tracy"], optional = true }
+# These versions speak the protocol implemented by Tracy Profiler v0.13.1.
+tracy-client = { version = "=0.18.4", optional = true }
+tracy-client-sys = { version = "=0.28.0", optional = true }
 
 [lib]
 name = "fractal_explorer"
