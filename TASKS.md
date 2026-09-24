@@ -175,6 +175,13 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   foram movidos para o adaptador, mantendo a preservação de pixels anterior
   somente após inicialização. `cargo test --lib render::graphics::wgpu::tests`
   passou (4 testes); `cargo fmt --all -- --check` e `git diff --check` passaram.
+  O layout de bind group agora é um wrapper do adaptador (`WgpuTextureLayout`)
+  e a textura persistente de composição (`WgpuCompositionTexture`) também é
+  criada nele; `gpu_window.rs` não declara mais esses handles WGPU nem cria
+  diretamente a textura de composição. `cargo test --lib` (187 testes),
+  `cargo check --bin sprite-demo`, `cargo fmt --all -- --check` e
+  `git diff --check` passaram. O caminho de render pass continua legado e
+  pendente, sem mudança funcional pretendida.
 - **Diagnóstico de frames lentos:** adicionados eventos separados para o tempo
   entre a finalização de um frame e o próximo ciclo do event loop
   (`GpuEventLoopWait`) e para a latência entre `request_redraw` e
