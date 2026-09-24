@@ -7,15 +7,17 @@ use crate::gpu::{
     tile_commands_for_frame, PreparedTileBatch, TextureCache, TextureUpload, TileDrawCommand,
 };
 use crate::input::{InputEvent, ZoomDirection};
+use crate::render::gpu::GpuRenderTarget;
 use crate::render::graphics::wgpu::{
     create_composition_texture, create_tile_pipeline, encode_frame, tile_vertices_for_commands,
     upload_tile_texture, write_tile_texture, GpuTextureStore, GpuTileTexture,
-    WgpuCompositionTexture, WgpuContext as GpuContext, WgpuFrameStage, WgpuPipeline, WgpuSurface,
-    WgpuSurfaceAcquire, WgpuSurfaceFormat, WgpuTextureLayout, WgpuVertexBufferRing,
-    GPU_VERTEX_BUFFER_RING_SIZE,
+    WgpuCompositionTexture, WgpuContext as GpuContext, WgpuFrameStage, WgpuGraphicsDevice,
+    WgpuPipeline, WgpuSurface, WgpuSurfaceAcquire, WgpuSurfaceFormat, WgpuTextureLayout,
+    WgpuVertexBufferRing, GPU_VERTEX_BUFFER_RING_SIZE,
 };
 use crate::render::{
-    ImageId, ImageRevision, ImageUpdate, OverlayPrimitive, PreparedFrame, Rect, TileDraw, Viewport,
+    ImageId, ImageRevision, ImageUpdate, OverlayPrimitive, PreparedFrame, Rect,
+    RenderTargetSession, TileDraw, Viewport,
 };
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -172,6 +174,17 @@ fn append_image_overlay(
     let mut updates = prepared.image_updates().to_vec();
     updates.push(update);
     Ok(PreparedFrame::new(frame, updates))
+}
+
+fn submit_prepared_frame<T: crate::render::RenderTarget>(
+    target: &mut RenderTargetSession<T>,
+    prepared: &PreparedFrame,
+) -> Result<crate::render::FrameOutcome, crate::render::RenderError> {
+    target.submit(
+        prepared.frame().viewport(),
+        prepared.image_updates(),
+        prepared.frame(),
+    )
 }
 
 impl GpuFrameMetrics {
@@ -514,9 +527,10 @@ pub struct GpuWindowApp {
     app_controller: DefaultApplicationController,
     config_updates: Option<std::sync::mpsc::Receiver<crate::config::RendererConfig>>,
     renderer_closed: Option<Arc<std::sync::atomic::AtomicBool>>,
-    context: Option<GpuContext>,
+    context: Option<Arc<GpuContext>>,
     window: Option<Arc<Window>>,
-    surface: Option<WgpuSurface<'static>>,
+    surface: Option<Arc<std::sync::Mutex<WgpuSurface<'static>>>>,
+    render_target: Option<RenderTargetSession<GpuRenderTarget<WgpuGraphicsDevice>>>,
     pipeline: Option<WgpuPipeline>,
     tile_bind_group_layout: Option<WgpuTextureLayout>,
     tile_vertex_ring: WgpuVertexBufferRing,
@@ -558,6 +572,7 @@ impl GpuWindowApp {
             context: None,
             window: None,
             surface: None,
+            render_target: None,
             pipeline: None,
             tile_bind_group_layout: None,
             tile_vertex_ring: WgpuVertexBufferRing::new(ring_size),
@@ -615,6 +630,13 @@ impl GpuWindowApp {
                     crate::print_local!("Aviso: configuraÃ§Ã£o GPU ignorada: {error}");
                     continue;
                 }
+                let preserve_previous_frame = state.config.preserve_previous_frame;
+                if let Some(target) = &mut self.render_target {
+                    target
+                        .target_mut()
+                        .device_mut()
+                        .set_preserve_previous_frame(preserve_previous_frame);
+                }
                 let actions = reduce_effects(
                     &self
                         .app_controller
@@ -630,7 +652,10 @@ impl GpuWindowApp {
     }
 
     fn configure_surface(&mut self, width: u32, height: u32) {
-        let (Some(context), Some(surface)) = (&self.context, &mut self.surface) else {
+        let (Some(context), Some(surface)) = (&self.context, &self.surface) else {
+            return;
+        };
+        let Ok(mut surface) = surface.lock() else {
             return;
         };
         let previous = surface.size();
@@ -645,6 +670,14 @@ impl GpuWindowApp {
             self.envelope_command = None;
             self.envelope_cache_key = None;
         }
+    }
+
+    fn surface_size(&self) -> Option<(u32, u32)> {
+        self.surface
+            .as_ref()?
+            .lock()
+            .ok()
+            .map(|surface| surface.size())
     }
 
     fn ensure_composition_texture(
@@ -757,8 +790,7 @@ impl GpuWindowApp {
         self.overlay_vertex_ring.begin_frame();
         self.envelope_vertex_ring.begin_frame();
         let vertex_upload_started = Instant::now();
-        if let (Some(context), Some(surface)) = (&self.context, &self.surface) {
-            let (width, height) = surface.size();
+        if let (Some(context), Some((width, height))) = (&self.context, self.surface_size()) {
             let vertices = tile_vertices_for_commands(&frame_commands, width, height);
             if self
                 .tile_vertex_ring
@@ -804,10 +836,11 @@ impl GpuWindowApp {
             let line_count = text.lines().count().max(1);
             let upload = debug_overlay_upload(&text, 240, line_count as u32 * 16);
             let key = upload.key;
-            if let (Some(context), Some(layout), Some(surface)) =
-                (&self.context, &self.tile_bind_group_layout, &self.surface)
-            {
-                let (width, height) = surface.size();
+            if let (Some(context), Some(layout), Some((width, height))) = (
+                &self.context,
+                &self.tile_bind_group_layout,
+                self.surface_size(),
+            ) {
                 let cache_key = overlay_cache_key(&upload);
                 if overlay_needs_refresh(self.overlay_cache_key, cache_key) {
                     if let Some(texture) = self.overlay_texture.as_ref().filter(|texture| {
@@ -855,13 +888,12 @@ impl GpuWindowApp {
         }
         if show_envelope {
             let envelope_started = Instant::now();
-            if let (Some(context), Some(layout), Some(surface), Some(state)) = (
+            if let (Some(context), Some(layout), Some((width, height)), Some(state)) = (
                 &self.context,
                 &self.tile_bind_group_layout,
-                &self.surface,
+                self.surface_size(),
                 &self.state,
             ) {
-                let (width, height) = surface.size();
                 let cache_key = EnvelopeCacheKey {
                     width,
                     height,
@@ -966,15 +998,44 @@ impl ApplicationHandler for GpuWindowApp {
                 return;
             }
         };
+        let context = Arc::new(context);
+        let surface = Arc::new(std::sync::Mutex::new(surface));
+        let Ok(surface_info) = surface.lock() else {
+            crate::print_local!("Falha ao acessar superfÃ­cie GPU");
+            event_loop.exit();
+            return;
+        };
         let (adapter_backend, adapter_name, adapter_device_type) = context.adapter_description();
         crate::print_local!(
             "GPU adapter: {:?} / {} ({:?}); modo de apresentacao: {:?}",
             adapter_backend,
             adapter_name,
             adapter_device_type,
-            surface.present_mode_description()
+            surface_info.present_mode_description()
         );
-        let (pipeline, tile_bind_group_layout) = create_tile_pipeline(&context, surface.format());
+        let (pipeline, tile_bind_group_layout) =
+            create_tile_pipeline(&context, surface_info.format());
+        let surface_size = surface_info.size();
+        drop(surface_info);
+        let mut graphics_device =
+            match WgpuGraphicsDevice::new(Arc::clone(&context), Arc::clone(&surface)) {
+                Ok(device) => device,
+                Err(error) => {
+                    crate::print_local!("Falha ao criar destino de renderizaÃ§Ã£o GPU: {error:?}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+        let preserve_previous_frame = self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.config.preserve_previous_frame);
+        graphics_device.set_preserve_previous_frame(preserve_previous_frame);
+        let viewport = Viewport::new(surface_size.0, surface_size.1);
+        self.render_target = Some(RenderTargetSession::new(
+            GpuRenderTarget::new(graphics_device, viewport),
+            viewport,
+        ));
         self.context = Some(context);
         self.window = Some(window);
         self.surface = Some(surface);
@@ -1039,13 +1100,83 @@ impl ApplicationHandler for GpuWindowApp {
                 self.configure_surface(size.width, size.height)
             }
             WindowEvent::RedrawRequested if render_requested => {
+                if self.render_target.is_some() {
+                    if let Some(state) = &mut self.state {
+                        state.canvas.record_frame_event(
+                            crate::orchestrator::FrameEventKind::GpuRedrawReceived,
+                            "evento RedrawRequested recebido",
+                        );
+                        if let Some(requested_at) = self.last_redraw_requested_at.take() {
+                            state.canvas.record_frame_event(
+                                crate::orchestrator::FrameEventKind::GpuRedrawLatency,
+                                format_gpu_redraw_latency(requested_at.elapsed()),
+                            );
+                        }
+                    }
+                    let Some(prepared) = self
+                        .state
+                        .as_ref()
+                        .and_then(|state| state.prepared_frame.as_ref())
+                        .cloned()
+                    else {
+                        return;
+                    };
+                    let submit_started = Instant::now();
+                    if let Some(state) = &mut self.state {
+                        state.canvas.record_frame_presentation_started();
+                        state.canvas.record_frame_event(
+                            crate::orchestrator::FrameEventKind::GpuPresentationStarted,
+                            "submissao do frame pelo destino GPU iniciada",
+                        );
+                    }
+                    let result = submit_prepared_frame(
+                        self.render_target
+                            .as_mut()
+                            .expect("common GPU target checked above"),
+                        &prepared,
+                    );
+                    match result {
+                        Ok(outcome) if outcome.was_submitted() => {
+                            if let Some(state) = &mut self.state {
+                                state.canvas.record_frame_event(
+                                    crate::orchestrator::FrameEventKind::GpuCommandsSubmitted,
+                                    "comandos do frame submetidos pelo destino GPU",
+                                );
+                                state.canvas.record_frame_event(
+                                    crate::orchestrator::FrameEventKind::OverlaysDrawn,
+                                    "overlays incluidos no frame comum",
+                                );
+                                state.canvas.record_frame_event(
+                                    crate::orchestrator::FrameEventKind::GpuPresentationFinished,
+                                    format_gpu_upload_stage(
+                                        "submissao/apresentacao pelo destino GPU concluida",
+                                        submit_started.elapsed(),
+                                        "inclui aquisicao, composicao e apresentacao",
+                                    ),
+                                );
+                                state.canvas.record_frame_presentation_finished();
+                                state.canvas.finish_frame();
+                            }
+                            self.last_frame_finished_at = Some(Instant::now());
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            crate::print_local!(
+                                "Falha ao submeter frame pelo destino GPU: {error:?}"
+                            );
+                        }
+                    }
+                    return;
+                }
                 let preserve_previous_frame = self
                     .state
                     .as_ref()
                     .is_some_and(|state| state.config.preserve_previous_frame);
-                let composition_parameters = self.surface.as_ref().map(|surface| {
-                    let (width, height) = surface.size();
-                    (surface.format(), width, height)
+                let composition_parameters = self.surface.as_ref().and_then(|surface| {
+                    surface.lock().ok().map(|surface| {
+                        let (width, height) = surface.size();
+                        (surface.format(), width, height)
+                    })
                 });
                 if let (Some(context), Some((format, width, height))) =
                     (self.context.take(), composition_parameters)
@@ -1075,6 +1206,9 @@ impl ApplicationHandler for GpuWindowApp {
                 if let (Some(context), Some(surface), Some(pipeline)) =
                     (&self.context, &self.surface, &self.pipeline)
                 {
+                    let Ok(surface) = surface.lock() else {
+                        return;
+                    };
                     if let Some(state) = &mut self.state {
                         state.canvas.record_frame_event(
                             crate::orchestrator::FrameEventKind::GpuSurfaceAcquireStarted,
@@ -1276,21 +1410,28 @@ impl ApplicationHandler for GpuWindowApp {
                 .publish_and_prepare_frame(frame)
                 .expect("GPU controller should prepare a published frame");
             if let Some(state) = &mut self.state {
+                state.prepared_frame = Some(frame.clone());
+            }
+            if let Some(state) = &mut self.state {
                 state.canvas.record_frame_event(
                     crate::orchestrator::FrameEventKind::GpuBatchPreparationFinished,
                     "preparacao do batch GPU concluida",
                 );
-                state.canvas.record_frame_event(
-                    crate::orchestrator::FrameEventKind::GpuBatchUploadStarted,
-                    "upload do batch GPU iniciado",
-                );
             }
-            self.upload_batch(batch, tile_commands_for_frame(frame.frame()));
-            if let Some(state) = &mut self.state {
-                state.canvas.record_frame_event(
-                    crate::orchestrator::FrameEventKind::GpuBatchUploadFinished,
-                    "upload do batch GPU concluido",
-                );
+            if self.render_target.is_none() {
+                if let Some(state) = &mut self.state {
+                    state.canvas.record_frame_event(
+                        crate::orchestrator::FrameEventKind::GpuBatchUploadStarted,
+                        "upload do batch GPU iniciado",
+                    );
+                }
+                self.upload_batch(batch, tile_commands_for_frame(frame.frame()));
+                if let Some(state) = &mut self.state {
+                    state.canvas.record_frame_event(
+                        crate::orchestrator::FrameEventKind::GpuBatchUploadFinished,
+                        "upload do batch GPU concluido",
+                    );
+                }
             }
         }
         if actions.request_redraw {
@@ -1341,6 +1482,71 @@ mod tests {
     use std::time::Duration;
     use winit::dpi::PhysicalSize;
     use winit::event::WindowEvent;
+
+    #[derive(Default)]
+    struct RecordingTarget(Vec<&'static str>);
+
+    impl crate::render::RenderTarget for RecordingTarget {
+        fn capabilities(&self) -> crate::render::RenderCapabilities {
+            crate::render::RenderCapabilities::default()
+        }
+
+        fn resize(&mut self, _viewport: Viewport) -> Result<(), crate::render::RenderError> {
+            self.0.push("resize");
+            Ok(())
+        }
+
+        fn update_images(
+            &mut self,
+            _updates: &[crate::render::ImageUpdate],
+        ) -> Result<(), crate::render::RenderError> {
+            self.0.push("upload");
+            Ok(())
+        }
+
+        fn render(
+            &mut self,
+            _frame: &crate::render::RenderFrame,
+        ) -> Result<crate::render::FrameOutcome, crate::render::RenderError> {
+            self.0.push("render");
+            Ok(crate::render::FrameOutcome::submitted())
+        }
+
+        fn evict_images(&mut self, _images: &[ImageId]) {}
+
+        fn recover(
+            &mut self,
+            _reason: crate::render::SurfaceFailure,
+        ) -> Result<(), crate::render::RenderError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn gpu_runtime_submits_prepared_frames_through_common_target_order() {
+        let initial_viewport = Viewport::new(2, 2);
+        let frame_viewport = Viewport::new(1, 1);
+        let image = ImageId::new(3);
+        let update = crate::render::ImageUpdate::new(
+            image,
+            ImageRevision::new(1),
+            1,
+            1,
+            vec![10, 20, 30, 255],
+        )
+        .unwrap();
+        let frame = crate::render::RenderFrame::new(1, frame_viewport).with_tile(
+            crate::render::TileDraw::new(image, ImageRevision::new(1), 0),
+        );
+        let prepared = crate::render::PreparedFrame::new(frame, vec![update]);
+        let mut session =
+            crate::render::RenderTargetSession::new(RecordingTarget::default(), initial_viewport);
+
+        let outcome = super::submit_prepared_frame(&mut session, &prepared).unwrap();
+
+        assert!(outcome.was_submitted());
+        assert_eq!(session.target().0, ["resize", "upload", "render"]);
+    }
 
     #[test]
     fn signals_renderer_closed_without_requiring_a_window() {

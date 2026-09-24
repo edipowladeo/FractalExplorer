@@ -68,6 +68,15 @@ impl<D: GraphicsDevice> RenderTarget for GpuRenderTarget<D> {
         }
 
         let mut commands = CommandList::default();
+        let images: Vec<_> = frame
+            .tiles()
+            .iter()
+            .map(|tile| tile.image())
+            .chain(frame.overlays().iter().map(|overlay| {
+                let super::OverlayPrimitive::Image(tile) = overlay;
+                tile.image()
+            }))
+            .collect();
         for tile in frame
             .tiles()
             .iter()
@@ -95,6 +104,7 @@ impl<D: GraphicsDevice> RenderTarget for GpuRenderTarget<D> {
         self.device
             .submit(commands)
             .map_err(|_| RenderError::BackendUnavailable("GPU command submission failed"))?;
+        self.textures.retain_only(&mut self.device, &images);
         Ok(FrameOutcome::submitted())
     }
 
@@ -205,6 +215,29 @@ mod tests {
 
         assert!(target.render(&frame).is_err());
         assert!(target.device().submitted.is_empty());
+    }
+
+    #[test]
+    fn gpu_target_evicts_images_after_they_leave_the_frame() {
+        let viewport = Viewport::new(2, 1);
+        let mut target = GpuRenderTarget::new(MockDevice::default(), viewport);
+        let visible = ImageId::new(21);
+        let stale = ImageId::new(22);
+        let updates = [
+            ImageUpdate::new(visible, ImageRevision::new(1), 1, 1, vec![1, 2, 3, 255]).unwrap(),
+            ImageUpdate::new(stale, ImageRevision::new(1), 1, 1, vec![4, 5, 6, 255]).unwrap(),
+        ];
+        target.update_images(&updates).unwrap();
+        let frame = RenderFrame::new(1, viewport).with_tile(TileDraw::new(
+            visible,
+            ImageRevision::new(1),
+            0,
+        ));
+
+        target.render(&frame).unwrap();
+
+        assert!(target.textures().handle(visible).is_some());
+        assert!(target.textures().handle(stale).is_none());
     }
 
     #[test]
