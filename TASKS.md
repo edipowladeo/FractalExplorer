@@ -92,8 +92,12 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   ausência do tradutor; GREEN passou com o teste
   `gpu_window::tests::translates_window_lifecycle_events_to_application_events`.
   `cargo fmt --all`, `git diff --check` e `cargo test --lib` passaram com 171
-  testes. Ainda falta extrair o ciclo de redraw e o encerramento coordenado;
-  a validação da janela real permanece como HILT após essa etapa.
+  testes. A redução de `AppEffect` para ações do runtime também foi extraída;
+  agora resize, input e configuração encaminham `RequestRedraw` ao adaptador,
+  em vez de descartar o efeito. RED/GREEN cobriram
+  `app::tests::reduces_controller_effects_to_runtime_actions` e a suíte passou
+  com 172 testes. Ainda falta extrair o ciclo de redraw e o encerramento
+  coordenado; a validação da janela real permanece como HILT após essa etapa.
 - **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
 
 ### T026 — Investigar e melhorar a precisão para zoom profundo
