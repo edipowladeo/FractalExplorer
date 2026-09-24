@@ -1527,14 +1527,14 @@ impl ApplicationHandler for GpuWindowApp {
             .last_frame_finished_at
             .take()
             .map(|finished_at| finished_at.elapsed());
+        if let (Some(state), Some(elapsed)) = (&mut self.state, event_loop_wait) {
+            state.canvas.record_frame_event(
+                crate::orchestrator::FrameEventKind::GpuEventLoopWait,
+                format_gpu_event_loop_wait(elapsed),
+            );
+        }
         let prepared = self.state.as_mut().map(|state| {
             state.prepare_visible_batch();
-            if let Some(elapsed) = event_loop_wait {
-                state.canvas.record_frame_event(
-                    crate::orchestrator::FrameEventKind::GpuEventLoopWait,
-                    format_gpu_event_loop_wait(elapsed),
-                );
-            }
             (state.prepared_batch.take(), state.prepared_frame.clone())
         });
         if let Some((Some(batch), Some(frame))) = prepared {
