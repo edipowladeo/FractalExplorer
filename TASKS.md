@@ -77,6 +77,13 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   168 testes; `cargo fmt --all` e `git diff --check` também passaram. O próximo
   gate — validar resize, configuração, overlays e shutdown numa janela GPU
   real — requer validação HILT.
+- **HILT e correção do runtime:** a validação manual reproduziu o panic do
+  `winit` quando o `EventLoop` era criado na thread GPU secundária no Windows.
+  GREEN: o entrypoint GPU voltou a executar o event loop na thread principal;
+  `cargo test --lib` passou com 170 testes e `cargo check --bin sprite-demo`
+  passou. A Config UI não é aberta simultaneamente pelo entrypoint GPU até a
+  integração ser migrada para um runtime único, pois criar outro event loop em
+  thread secundária teria a mesma restrição de plataforma.
 - **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
 
 ### T026 — Investigar e melhorar a precisão para zoom profundo
