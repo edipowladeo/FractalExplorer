@@ -205,9 +205,19 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - Outro RED/GREEN começou a fechar a gramática de submissão: uploads devem vir
   antes dos draws, `Present` deve ser final e draws precisam de apresentação.
   `validates_upload_draw_present_order_for_gpu_render_targets` passou após a
-  validação da sequência no adaptador. Isso ainda não executa desenho real:
-  `WgpuGraphicsDevice::submit` continua rejeitando draws/apresentação até a
-  migração do backend e do runtime.
+  validação da sequência no adaptador. O desenho efetivo foi implementado no
+  checkpoint seguinte; a integração do backend ao runtime continua pendente.
+- **Passo 6 — checkpoint do adaptador WGPU:** `WgpuGraphicsDevice` agora
+  executa uploads de buffers/texturas, desenha texturas com coordenadas,
+  dimensões e opacidade, apresenta o frame e propaga resize/configuração da
+  superfície. Os vértices usam ring persistente; a textura de composição
+  preserva o frame anterior quando solicitado. RED/GREEN cobriu opacidade,
+  reutilização da textura ao mover uma imagem, política de preservação e a
+  gramática upload→draw→present. `cargo test --lib` passou com 190 testes,
+  `cargo check --bin sprite-demo`, `cargo fmt -- --check` e `git diff --check`
+  passaram. **O passo 6 não está concluído:** ainda falta conectar o
+  `GpuRenderTarget` ao runtime comum e migrar overlays/instrumentação para esse
+  caminho; nenhuma validação visual foi feita neste checkpoint.
 - **Diagnóstico de frames lentos:** adicionados eventos separados para o tempo
   entre a finalização de um frame e o próximo ciclo do event loop
   (`GpuEventLoopWait`) e para a latência entre `request_redraw` e

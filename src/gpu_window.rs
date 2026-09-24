@@ -1568,8 +1568,19 @@ mod tests {
         );
 
         state.prepare_visible_batch();
-        std::thread::sleep(Duration::from_millis(50));
-        state.prepare_visible_batch();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !state
+            .prepared_frame
+            .as_ref()
+            .is_some_and(|prepared| !prepared.image_updates().is_empty())
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "worker did not publish the expected tile before the timeout"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+            state.prepare_visible_batch();
+        }
 
         assert!(state
             .prepared_batch

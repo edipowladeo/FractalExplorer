@@ -8,6 +8,7 @@ use crate::render::device::{
 };
 use crate::render::ImageUpdate;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use wgpu::util::DeviceExt;
 
@@ -16,6 +17,7 @@ use wgpu::util::DeviceExt;
 pub struct TileVertex {
     pub position: [f32; 2],
     pub uv: [f32; 2],
+    pub opacity: f32,
 }
 
 pub const TILE_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -33,6 +35,11 @@ pub const TILE_VERTEX_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBu
             format: wgpu::VertexFormat::Float32x2,
             offset: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
             shader_location: 1,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32,
+            offset: (2 * std::mem::size_of::<[f32; 2]>()) as wgpu::BufferAddress,
+            shader_location: 2,
         },
     ],
 };
@@ -55,26 +62,32 @@ pub fn tile_quad_vertices() -> [TileVertex; 6] {
         TileVertex {
             position: [-1.0, -1.0],
             uv: [0.0, 1.0],
+            opacity: 1.0,
         },
         TileVertex {
             position: [1.0, -1.0],
             uv: [1.0, 1.0],
+            opacity: 1.0,
         },
         TileVertex {
             position: [1.0, 1.0],
             uv: [1.0, 0.0],
+            opacity: 1.0,
         },
         TileVertex {
             position: [-1.0, -1.0],
             uv: [0.0, 1.0],
+            opacity: 1.0,
         },
         TileVertex {
             position: [1.0, 1.0],
             uv: [1.0, 0.0],
+            opacity: 1.0,
         },
         TileVertex {
             position: [-1.0, 1.0],
             uv: [0.0, 0.0],
+            opacity: 1.0,
         },
     ]
 }
@@ -92,26 +105,32 @@ pub fn tile_vertices_for_screen(
         TileVertex {
             position: [x0, y1],
             uv: [0.0, 1.0],
+            opacity: 1.0,
         },
         TileVertex {
             position: [x1, y1],
             uv: [1.0, 1.0],
+            opacity: 1.0,
         },
         TileVertex {
             position: [x1, y0],
             uv: [1.0, 0.0],
+            opacity: 1.0,
         },
         TileVertex {
             position: [x0, y1],
             uv: [0.0, 1.0],
+            opacity: 1.0,
         },
         TileVertex {
             position: [x1, y0],
             uv: [1.0, 0.0],
+            opacity: 1.0,
         },
         TileVertex {
             position: [x0, y0],
             uv: [0.0, 0.0],
+            opacity: 1.0,
         },
     ]
 }
@@ -732,52 +751,248 @@ pub fn encode_frame(
     }
 }
 
-struct WgpuBuffer(wgpu::Buffer);
+struct WgpuBuffer {
+    buffer: wgpu::Buffer,
+    size: usize,
+}
 
-struct WgpuTexture(wgpu::Texture);
+struct WgpuTexture {
+    _texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+    width: u32,
+    height: u32,
+}
 
 /// Owns concrete `wgpu` resources behind stable, backend-independent handles.
-pub struct WgpuGraphicsDevice<'a> {
-    device: &'a wgpu::Device,
-    queue: &'a wgpu::Queue,
+pub struct WgpuGraphicsDevice {
+    context: Arc<WgpuContext>,
+    surface: Arc<Mutex<WgpuSurface<'static>>>,
+    pipeline: WgpuPipeline,
+    texture_layout: WgpuTextureLayout,
     next_handle: u64,
     buffers: HashMap<BufferHandle, WgpuBuffer>,
     textures: HashMap<TextureHandle, WgpuTexture>,
+    vertex_ring: WgpuVertexBufferRing,
+    composition: Option<WgpuCompositionTexture>,
+    preserve_previous_frame: bool,
+    surface_initialized: bool,
 }
 
-impl<'a> WgpuGraphicsDevice<'a> {
-    pub fn new(device: &'a wgpu::Device, queue: &'a wgpu::Queue) -> Self {
-        Self {
-            device,
-            queue,
+impl WgpuGraphicsDevice {
+    pub fn new(
+        context: Arc<WgpuContext>,
+        surface: Arc<Mutex<WgpuSurface<'static>>>,
+    ) -> Result<Self, DeviceError> {
+        let format = surface
+            .lock()
+            .map_err(|_| DeviceError::InvalidResource)?
+            .format();
+        let (pipeline, texture_layout) = create_tile_pipeline(&context, format);
+        Ok(Self {
+            context,
+            surface,
+            pipeline,
+            texture_layout,
             next_handle: 0,
             buffers: HashMap::new(),
             textures: HashMap::new(),
+            vertex_ring: WgpuVertexBufferRing::new(GPU_VERTEX_BUFFER_RING_SIZE),
+            composition: None,
+            preserve_previous_frame: false,
+            surface_initialized: false,
+        })
+    }
+
+    pub fn set_preserve_previous_frame(&mut self, preserve: bool) {
+        self.preserve_previous_frame = preserve;
+        if !preserve {
+            self.composition = None;
+            self.surface_initialized = false;
         }
     }
 
-    fn next_handle(&mut self) -> u64 {
+    pub fn adapter_description(&self) -> (wgpu::Backend, String, wgpu::DeviceType) {
+        self.context.adapter_description()
+    }
+
+    pub fn surface_size(&self) -> Result<(u32, u32), DeviceError> {
+        self.surface
+            .lock()
+            .map(|surface| surface.size())
+            .map_err(|_| DeviceError::InvalidResource)
+    }
+
+    fn draw(&mut self, commands: &CommandList) -> Result<(), DeviceError> {
+        let draws = commands
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                Command::DrawTexture { texture, .. } => Some(*texture),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let surface = self
+            .surface
+            .lock()
+            .map_err(|_| DeviceError::InvalidResource)?;
+        let (screen_width, screen_height) = surface.size();
+        if self.preserve_previous_frame
+            && self
+                .composition
+                .as_ref()
+                .is_none_or(|texture| texture.size() != (screen_width, screen_height))
+        {
+            self.composition = Some(create_composition_texture(
+                &self.context,
+                &self.texture_layout,
+                surface.format(),
+                screen_width,
+                screen_height,
+            ));
+            self.surface_initialized = false;
+        }
+        let vertices = render_vertices_for_commands(commands, screen_width, screen_height);
+        self.vertex_ring.begin_frame();
+        if !vertices.is_empty()
+            && !self.vertex_ring.ensure_buffer(
+                &self.context,
+                "render-target-draw-vertices",
+                vertices.len(),
+            )
+        {
+            return Err(DeviceError::InvalidResource);
+        }
+        self.vertex_ring
+            .write_active(&self.context, bytemuck::cast_slice(&vertices));
+
+        let frame = match surface.acquire() {
+            WgpuSurfaceAcquire::Ready(frame) | WgpuSurfaceAcquire::Suboptimal(frame) => frame,
+            WgpuSurfaceAcquire::Outdated | WgpuSurfaceAcquire::Lost => {
+                surface.configure(&self.context);
+                match surface.acquire() {
+                    WgpuSurfaceAcquire::Ready(frame) | WgpuSurfaceAcquire::Suboptimal(frame) => {
+                        frame
+                    }
+                    _ => return Err(DeviceError::InvalidResource),
+                }
+            }
+            WgpuSurfaceAcquire::Timeout
+            | WgpuSurfaceAcquire::Occluded
+            | WgpuSurfaceAcquire::Validation => return Err(DeviceError::InvalidResource),
+        };
+        let view = frame.create_view();
+        let mut encoder =
+            self.context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("render-target-command-encoder"),
+                });
+        {
+            let target = self
+                .composition
+                .as_ref()
+                .map(WgpuCompositionTexture::view)
+                .unwrap_or(&view);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("render-target-composition-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: surface_load_op(
+                            self.preserve_previous_frame,
+                            self.surface_initialized,
+                        ),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.pipeline.0);
+            if let Some(vertex_buffer) = self.vertex_ring.active_buffer() {
+                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                for (index, texture) in draws.iter().enumerate() {
+                    let texture = self
+                        .textures
+                        .get(texture)
+                        .ok_or(DeviceError::InvalidResource)?;
+                    pass.set_bind_group(0, &texture.bind_group, &[]);
+                    let start = (index * 6) as u32;
+                    pass.draw(start..start + 6, 0..1);
+                }
+            }
+        }
+        if let Some(composition) = &self.composition {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("render-target-present-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.pipeline.0);
+            pass.set_bind_group(0, composition.bind_group(), &[]);
+            pass.set_vertex_buffer(0, composition.present_vertex_buffer().slice(..));
+            pass.draw(0..6, 0..1);
+        }
+        self.context.queue.submit(Some(encoder.finish()));
+        frame.present(&self.context);
+        self.surface_initialized = true;
+        Ok(())
+    }
+
+    fn new_handle(&mut self) -> u64 {
         let handle = self.next_handle;
         self.next_handle = self.next_handle.wrapping_add(1);
         handle
     }
 }
 
-impl GraphicsDevice for WgpuGraphicsDevice<'_> {
+impl GraphicsDevice for WgpuGraphicsDevice {
+    fn resize(&mut self, viewport: crate::render::Viewport) -> Result<(), DeviceError> {
+        self.surface
+            .lock()
+            .map_err(|_| DeviceError::InvalidResource)?
+            .resize(&self.context, viewport.width(), viewport.height());
+        self.vertex_ring.reset();
+        self.composition = None;
+        self.surface_initialized = false;
+        Ok(())
+    }
+
     fn create_buffer(&mut self, descriptor: BufferDescriptor) -> Result<BufferHandle, DeviceError> {
         let usage = match descriptor.usage {
             BufferUsage::Vertex => wgpu::BufferUsages::VERTEX,
             BufferUsage::Index => wgpu::BufferUsages::INDEX,
             BufferUsage::Uniform => wgpu::BufferUsages::UNIFORM,
         } | wgpu::BufferUsages::COPY_DST;
-        let handle = BufferHandle::new(self.next_handle());
-        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+        let handle = BufferHandle::new(self.new_handle());
+        let buffer = self.context.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("abstract-render-buffer"),
             size: descriptor.size.max(1) as u64,
             usage,
             mapped_at_creation: false,
         });
-        self.buffers.insert(handle, WgpuBuffer(buffer));
+        self.buffers.insert(
+            handle,
+            WgpuBuffer {
+                buffer,
+                size: descriptor.size.max(1),
+            },
+        );
         Ok(handle)
     }
 
@@ -785,28 +1000,66 @@ impl GraphicsDevice for WgpuGraphicsDevice<'_> {
         &mut self,
         descriptor: TextureDescriptor,
     ) -> Result<TextureHandle, DeviceError> {
-        let format = match descriptor.format {
-            TextureFormat::Rgba8 => TILE_TEXTURE_FORMAT,
-        };
         if descriptor.width == 0 || descriptor.height == 0 {
             return Err(DeviceError::InvalidResource);
         }
-        let handle = TextureHandle::new(self.next_handle());
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("abstract-render-texture"),
-            size: wgpu::Extent3d {
+        let format = match descriptor.format {
+            TextureFormat::Rgba8 => TILE_TEXTURE_FORMAT,
+        };
+        let texture = self
+            .context
+            .device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("abstract-render-texture"),
+                size: wgpu::Extent3d {
+                    width: descriptor.width,
+                    height: descriptor.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = self
+            .context
+            .device
+            .create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("abstract-render-sampler"),
+                mag_filter: wgpu::FilterMode::Nearest,
+                min_filter: wgpu::FilterMode::Nearest,
+                ..Default::default()
+            });
+        let bind_group = self
+            .context
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("abstract-render-bind-group"),
+                layout: self.texture_layout.as_raw(),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                ],
+            });
+        let handle = TextureHandle::new(self.new_handle());
+        self.textures.insert(
+            handle,
+            WgpuTexture {
+                _texture: texture,
+                bind_group,
                 width: descriptor.width,
                 height: descriptor.height,
-                depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        self.textures.insert(handle, WgpuTexture(texture));
+        );
         Ok(handle)
     }
 
@@ -823,7 +1076,12 @@ impl GraphicsDevice for WgpuGraphicsDevice<'_> {
                         .buffers
                         .get(buffer)
                         .ok_or(DeviceError::InvalidResource)?;
-                    self.queue.write_buffer(&buffer.0, *offset as u64, bytes);
+                    if offset
+                        .checked_add(bytes.len())
+                        .is_none_or(|end| end > buffer.size)
+                    {
+                        return Err(DeviceError::InvalidResource);
+                    }
                 }
                 Command::WriteTexture {
                     texture,
@@ -835,9 +1093,61 @@ impl GraphicsDevice for WgpuGraphicsDevice<'_> {
                         .textures
                         .get(texture)
                         .ok_or(DeviceError::InvalidResource)?;
-                    self.queue.write_texture(
+                    let expected_bytes = (*width as usize)
+                        .checked_mul(*height as usize)
+                        .and_then(|pixels| pixels.checked_mul(4));
+                    if (*width, *height) != (texture.width, texture.height)
+                        || expected_bytes != Some(bytes.len())
+                    {
+                        return Err(DeviceError::InvalidResource);
+                    }
+                }
+                Command::DrawTexture {
+                    texture,
+                    width,
+                    height,
+                    opacity_bits,
+                    ..
+                } => {
+                    if !self.textures.contains_key(texture)
+                        || *width == 0
+                        || *height == 0
+                        || !(0.0..=1.0).contains(&f32::from_bits(*opacity_bits))
+                    {
+                        return Err(DeviceError::InvalidResource);
+                    }
+                }
+                Command::Present => {}
+            }
+        }
+        for command in commands.commands() {
+            match command {
+                Command::WriteBuffer {
+                    buffer,
+                    offset,
+                    bytes,
+                } => {
+                    let buffer = self
+                        .buffers
+                        .get(buffer)
+                        .ok_or(DeviceError::InvalidResource)?;
+                    self.context
+                        .queue
+                        .write_buffer(&buffer.buffer, *offset as u64, bytes);
+                }
+                Command::WriteTexture {
+                    texture,
+                    width,
+                    height,
+                    bytes,
+                } => {
+                    let texture = self
+                        .textures
+                        .get(texture)
+                        .ok_or(DeviceError::InvalidResource)?;
+                    self.context.queue.write_texture(
                         wgpu::TexelCopyTextureInfo {
-                            texture: &texture.0,
+                            texture: &texture._texture,
                             mip_level: 0,
                             origin: wgpu::Origin3d::ZERO,
                             aspect: wgpu::TextureAspect::All,
@@ -855,10 +1165,16 @@ impl GraphicsDevice for WgpuGraphicsDevice<'_> {
                         },
                     );
                 }
-                Command::DrawTexture { .. } | Command::Present => {
-                    return Err(DeviceError::UnsupportedCommand);
-                }
+                Command::DrawTexture { .. } => {}
+                Command::Present => {}
             }
+        }
+        if commands
+            .commands()
+            .iter()
+            .any(|command| matches!(command, Command::Present))
+        {
+            self.draw(&commands)?;
         }
         Ok(())
     }
@@ -1035,11 +1351,55 @@ fn validate_commands(commands: &CommandList) -> Result<(), DeviceError> {
     Ok(())
 }
 
+fn render_vertices_for_commands(
+    commands: &CommandList,
+    screen_width: u32,
+    screen_height: u32,
+) -> Vec<TileVertex> {
+    let draws = commands
+        .commands()
+        .iter()
+        .filter_map(|command| match command {
+            Command::DrawTexture {
+                texture,
+                x,
+                y,
+                width,
+                height,
+                opacity_bits,
+            } => Some((
+                TileDrawCommand {
+                    texture: TextureKey {
+                        tile: texture.value() as usize,
+                        content_hash: 0,
+                    },
+                    position: crate::geometry::ScreenPoint::new(*x, *y),
+                    size: (*width, *height),
+                },
+                f32::from_bits(*opacity_bits),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let commands = draws
+        .iter()
+        .map(|(command, _)| *command)
+        .collect::<Vec<_>>();
+    let mut vertices = tile_vertices_for_commands(&commands, screen_width, screen_height);
+    for (quad, (_, opacity)) in vertices.chunks_exact_mut(6).zip(draws) {
+        for vertex in quad {
+            vertex.opacity = opacity;
+        }
+    }
+    vertices
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        next_vertex_buffer_slot, select_present_mode, surface_load_op, surface_usage,
-        validate_commands, vertex_buffer_capacity, vertex_buffer_needs_recreation,
+        next_vertex_buffer_slot, render_vertices_for_commands, select_present_mode,
+        surface_load_op, surface_usage, validate_commands, vertex_buffer_capacity,
+        vertex_buffer_needs_recreation,
     };
     use crate::render::device::{CommandList, DeviceError, TextureHandle};
 
@@ -1134,5 +1494,17 @@ mod tests {
             validate_commands(&draws_after_present),
             Err(DeviceError::UnsupportedCommand)
         );
+    }
+
+    #[test]
+    fn draw_vertices_preserve_command_opacity() {
+        let mut commands = CommandList::default();
+        commands.draw_texture(TextureHandle::new(7), 2, 3, 4, 5, 0.375);
+        commands.present();
+
+        let vertices = render_vertices_for_commands(&commands, 16, 16);
+
+        assert_eq!(vertices.len(), 6);
+        assert!(vertices.iter().all(|vertex| vertex.opacity == 0.375));
     }
 }

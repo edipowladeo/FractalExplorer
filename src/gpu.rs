@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn wgpu_device_and_pipeline_are_exported_from_the_graphics_adapter() {
         let _adapter_type =
-            std::marker::PhantomData::<crate::render::graphics::wgpu::WgpuGraphicsDevice<'static>>;
+            std::marker::PhantomData::<crate::render::graphics::wgpu::WgpuGraphicsDevice>;
         let _pipeline_type =
             std::marker::PhantomData::<crate::render::graphics::wgpu::WgpuPipeline>;
         let _surface_type =
@@ -337,7 +337,9 @@ mod tests {
     #[test]
     fn shaders_define_a_textured_tile_pipeline() {
         assert!(TILE_VERTEX_SHADER.contains("@vertex"));
+        assert!(TILE_VERTEX_SHADER.contains("@location(2) opacity"));
         assert!(TILE_FRAGMENT_SHADER.contains("textureSample"));
+        assert!(TILE_FRAGMENT_SHADER.contains("color.a * opacity"));
     }
 
     #[test]
@@ -352,10 +354,11 @@ mod tests {
 
     #[test]
     fn tile_vertex_layout_matches_shader_locations_and_stride() {
-        assert_eq!(TILE_VERTEX_LAYOUT.array_stride, 16);
-        assert_eq!(TILE_VERTEX_LAYOUT.attributes.len(), 2);
+        assert_eq!(TILE_VERTEX_LAYOUT.array_stride, 20);
+        assert_eq!(TILE_VERTEX_LAYOUT.attributes.len(), 3);
         assert_eq!(TILE_VERTEX_LAYOUT.attributes[0].shader_location, 0);
         assert_eq!(TILE_VERTEX_LAYOUT.attributes[1].shader_location, 1);
+        assert_eq!(TILE_VERTEX_LAYOUT.attributes[2].shader_location, 2);
         assert_eq!(
             TILE_VERTEX_LAYOUT.attributes[0].format,
             wgpu::VertexFormat::Float32x2
@@ -363,6 +366,10 @@ mod tests {
         assert_eq!(
             TILE_VERTEX_LAYOUT.attributes[1].format,
             wgpu::VertexFormat::Float32x2
+        );
+        assert_eq!(
+            TILE_VERTEX_LAYOUT.attributes[2].format,
+            wgpu::VertexFormat::Float32
         );
     }
 
