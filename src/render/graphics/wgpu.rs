@@ -8,6 +8,7 @@ use crate::render::device::{
 };
 use crate::render::ImageUpdate;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use wgpu::util::DeviceExt;
 
 #[repr(C)]
@@ -265,6 +266,9 @@ pub struct WgpuSurface<'window> {
     configuration: wgpu::SurfaceConfiguration,
 }
 
+#[derive(Clone, Copy)]
+pub struct WgpuSurfaceFormat(wgpu::TextureFormat);
+
 pub enum WgpuSurfaceAcquire {
     Ready(WgpuSurfaceFrame),
     Suboptimal(WgpuSurfaceFrame),
@@ -290,12 +294,12 @@ impl WgpuSurfaceFrame {
 }
 
 impl WgpuSurface<'_> {
-    pub fn format(&self) -> wgpu::TextureFormat {
-        self.configuration.format
+    pub fn format(&self) -> WgpuSurfaceFormat {
+        WgpuSurfaceFormat(self.configuration.format)
     }
 
-    pub fn present_mode(&self) -> wgpu::PresentMode {
-        self.configuration.present_mode
+    pub fn present_mode_description(&self) -> String {
+        format!("{:?}", self.configuration.present_mode)
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -360,6 +364,18 @@ pub struct WgpuContext {
 }
 
 impl WgpuContext {
+    pub fn adapter_description(&self) -> (wgpu::Backend, String, wgpu::DeviceType) {
+        let info = self.adapter.get_info();
+        (info.backend, info.name, info.device_type)
+    }
+
+    pub fn poll_device(&self) -> Result<String, String> {
+        self.device
+            .poll(wgpu::PollType::Poll)
+            .map(|status| format!("{status:?}"))
+            .map_err(|error| error.to_string())
+    }
+
     pub async fn initialize(gpu_backend: GpuBackend) -> Result<Self, String> {
         let backends = match gpu_backend {
             GpuBackend::Auto => wgpu::Backends::all(),
@@ -434,7 +450,7 @@ impl WgpuContext {
 
 pub fn create_tile_pipeline(
     context: &WgpuContext,
-    format: wgpu::TextureFormat,
+    format: WgpuSurfaceFormat,
 ) -> (WgpuPipeline, WgpuTextureLayout) {
     let layout = context
         .device
@@ -497,7 +513,7 @@ pub fn create_tile_pipeline(
                 entry_point: Some("main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format,
+                    format: format.0,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -511,7 +527,7 @@ pub fn create_tile_pipeline(
 pub fn create_composition_texture(
     context: &WgpuContext,
     layout: &WgpuTextureLayout,
-    format: wgpu::TextureFormat,
+    format: WgpuSurfaceFormat,
     width: u32,
     height: u32,
 ) -> WgpuCompositionTexture {
@@ -525,7 +541,7 @@ pub fn create_composition_texture(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format,
+        format: format.0,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
@@ -567,6 +583,152 @@ pub fn create_composition_texture(
         present_vertex_buffer,
         width,
         height,
+    }
+}
+
+pub struct WgpuEncodedFrame {
+    command_buffer: wgpu::CommandBuffer,
+    composition_duration: Duration,
+    presentation_duration: Option<Duration>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WgpuFrameStage {
+    CompositionStarted,
+    CompositionFinished(Duration),
+    PresentationStarted,
+    PresentationFinished(Duration),
+    CommandEncodingFinished,
+}
+
+impl WgpuEncodedFrame {
+    pub fn composition_duration(&self) -> Duration {
+        self.composition_duration
+    }
+
+    pub fn presentation_duration(&self) -> Option<Duration> {
+        self.presentation_duration
+    }
+
+    pub fn submit(self, context: &WgpuContext) {
+        context.queue.submit(Some(self.command_buffer));
+    }
+}
+
+pub fn encode_frame(
+    context: &WgpuContext,
+    frame: &WgpuSurfaceFrame,
+    pipeline: &WgpuPipeline,
+    texture_store: Option<&GpuTextureStore>,
+    tile_commands: &[TileDrawCommand],
+    tile_vertices: &WgpuVertexBufferRing,
+    envelope: Option<(&GpuTileTexture, &WgpuVertexBufferRing)>,
+    overlay: Option<(&GpuTileTexture, &WgpuVertexBufferRing)>,
+    composition: Option<&WgpuCompositionTexture>,
+    preserve_previous_frame: bool,
+    surface_initialized: bool,
+    mut report_stage: impl FnMut(WgpuFrameStage),
+) -> WgpuEncodedFrame {
+    let surface_view = frame.create_view();
+    let mut encoder = context
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("gpu-clear"),
+        });
+    report_stage(WgpuFrameStage::CompositionStarted);
+    let composition_started = Instant::now();
+    {
+        let target = composition
+            .map(WgpuCompositionTexture::view)
+            .unwrap_or(&surface_view);
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("gpu-clear-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: surface_load_op(preserve_previous_frame, surface_initialized),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&pipeline.0);
+        if let Some(store) = texture_store {
+            if let Some(vertex_buffer) = tile_vertices.active_buffer() {
+                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                for (index, command) in tile_commands.iter().enumerate() {
+                    if let Some(tile_texture) = store.get(&command.texture) {
+                        pass.set_bind_group(0, &tile_texture.bind_group, &[]);
+                        let start = (index * 6) as u32;
+                        pass.draw(start..start + 6, 0..1);
+                    }
+                }
+            }
+            if let Some((texture, ring)) = envelope {
+                if let Some(vertex_buffer) = ring.active_buffer() {
+                    pass.set_bind_group(0, &texture.bind_group, &[]);
+                    pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                    pass.draw(0..6, 0..1);
+                }
+            }
+            if let Some((texture, ring)) = overlay {
+                if let Some(vertex_buffer) = ring.active_buffer() {
+                    pass.set_bind_group(0, &texture.bind_group, &[]);
+                    pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                    pass.draw(0..6, 0..1);
+                }
+            }
+        }
+    }
+    let composition_duration = composition_started.elapsed();
+    report_stage(WgpuFrameStage::CompositionFinished(composition_duration));
+
+    let present_started = Instant::now();
+    if let Some(composition) = composition {
+        report_stage(WgpuFrameStage::PresentationStarted);
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("gpu-present-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &surface_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&pipeline.0);
+        pass.set_bind_group(0, composition.bind_group(), &[]);
+        pass.set_vertex_buffer(0, composition.present_vertex_buffer().slice(..));
+        pass.draw(0..6, 0..1);
+        drop(pass);
+        let presentation_duration = present_started.elapsed();
+        report_stage(WgpuFrameStage::PresentationFinished(presentation_duration));
+        let command_buffer = encoder.finish();
+        report_stage(WgpuFrameStage::CommandEncodingFinished);
+        WgpuEncodedFrame {
+            command_buffer,
+            composition_duration,
+            presentation_duration: Some(presentation_duration),
+        }
+    } else {
+        let command_buffer = encoder.finish();
+        report_stage(WgpuFrameStage::CommandEncodingFinished);
+        WgpuEncodedFrame {
+            command_buffer,
+            composition_duration,
+            presentation_duration: None,
+        }
     }
 }
 

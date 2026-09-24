@@ -8,10 +8,11 @@ use crate::gpu::{
 };
 use crate::input::{InputEvent, ZoomDirection};
 use crate::render::graphics::wgpu::{
-    create_composition_texture, create_tile_pipeline, surface_load_op, tile_vertices_for_commands,
+    create_composition_texture, create_tile_pipeline, encode_frame, tile_vertices_for_commands,
     upload_tile_texture, write_tile_texture, GpuTextureStore, GpuTileTexture,
-    WgpuCompositionTexture, WgpuContext as GpuContext, WgpuPipeline, WgpuSurface,
-    WgpuSurfaceAcquire, WgpuTextureLayout, WgpuVertexBufferRing, GPU_VERTEX_BUFFER_RING_SIZE,
+    WgpuCompositionTexture, WgpuContext as GpuContext, WgpuFrameStage, WgpuPipeline, WgpuSurface,
+    WgpuSurfaceAcquire, WgpuSurfaceFormat, WgpuTextureLayout, WgpuVertexBufferRing,
+    GPU_VERTEX_BUFFER_RING_SIZE,
 };
 use crate::render::{ImageId, ImageRevision, ImageUpdate, PreparedFrame, Viewport};
 #[cfg(test)]
@@ -573,7 +574,7 @@ impl GpuWindowApp {
         &mut self,
         context: &GpuContext,
         layout: &WgpuTextureLayout,
-        format: wgpu::TextureFormat,
+        format: WgpuSurfaceFormat,
         width: u32,
         height: u32,
     ) {
@@ -877,13 +878,13 @@ impl ApplicationHandler for GpuWindowApp {
                 return;
             }
         };
-        let adapter_info = context.adapter.get_info();
+        let (adapter_backend, adapter_name, adapter_device_type) = context.adapter_description();
         crate::print_local!(
             "GPU adapter: {:?} / {} ({:?}); modo de apresentacao: {:?}",
-            adapter_info.backend,
-            adapter_info.name,
-            adapter_info.device_type,
-            surface.present_mode()
+            adapter_backend,
+            adapter_name,
+            adapter_device_type,
+            surface.present_mode_description()
         );
         let (pipeline, tile_bind_group_layout) = create_tile_pipeline(&context, surface.format());
         self.context = Some(context);
@@ -1018,146 +1019,82 @@ impl ApplicationHandler for GpuWindowApp {
                         );
                     }
                     {
-                        let composition = if uses_persistent_composition(preserve_previous_frame) {
-                            Some(
+                        let composition = uses_persistent_composition(preserve_previous_frame)
+                            .then(|| {
                                 self.composition_texture
                                     .as_ref()
-                                    .expect("composition texture must exist"),
-                            )
-                        } else {
-                            None
-                        };
-                        let surface_view = frame.create_view();
-                        let mut encoder = context.device.create_command_encoder(
-                            &wgpu::CommandEncoderDescriptor {
-                                label: Some("gpu-clear"),
-                            },
-                        );
-                        let composition_started = Instant::now();
-                        if let Some(state) = &mut self.state {
-                            state.canvas.record_frame_event(
-                                crate::orchestrator::FrameEventKind::GpuCompositionPassStarted,
-                                "passe de composicao GPU iniciado",
-                            );
-                        }
-                        {
-                            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                                label: Some("gpu-clear-pass"),
-                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                    view: composition
-                                        .map(WgpuCompositionTexture::view)
-                                        .unwrap_or(&surface_view),
-                                    depth_slice: None,
-                                    resolve_target: None,
-                                    ops: wgpu::Operations {
-                                        load: surface_load_op(
-                                            preserve_previous_frame,
-                                            self.surface_initialized,
-                                        ),
-                                        store: wgpu::StoreOp::Store,
-                                    },
-                                })],
-                                depth_stencil_attachment: None,
-                                timestamp_writes: None,
-                                occlusion_query_set: None,
-                                multiview_mask: None,
+                                    .expect("composition texture must exist")
                             });
-                            let mut pass = _pass;
-                            pass.set_pipeline(&pipeline.0);
-                            if let Some(store) = &self.texture_store {
-                                if let Some(vertex_buffer) = self.tile_vertex_ring.active_buffer() {
-                                    pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                                    for (index, command) in self.tile_commands.iter().enumerate() {
-                                        if let Some(tile_texture) = store.get(&command.texture) {
-                                            pass.set_bind_group(0, &tile_texture.bind_group, &[]);
-                                            let start = (index * 6) as u32;
-                                            pass.draw(start..start + 6, 0..1);
-                                        }
+                        let envelope = self.envelope_command.and_then(|_| {
+                            self.envelope_texture
+                                .as_ref()
+                                .map(|texture| (texture, &self.envelope_vertex_ring))
+                        });
+                        let overlay = self.overlay_command.and_then(|_| {
+                            self.overlay_texture
+                                .as_ref()
+                                .map(|texture| (texture, &self.overlay_vertex_ring))
+                        });
+                        let state = &mut self.state;
+                        let encoded = encode_frame(
+                            context,
+                            &frame,
+                            pipeline,
+                            self.texture_store.as_ref(),
+                            &self.tile_commands,
+                            &self.tile_vertex_ring,
+                            envelope,
+                            overlay,
+                            composition,
+                            preserve_previous_frame,
+                            self.surface_initialized,
+                            |stage| {
+                                let Some(state) = state.as_mut() else {
+                                    return;
+                                };
+                                match stage {
+                                    WgpuFrameStage::CompositionStarted => {
+                                        state.canvas.record_frame_event(
+                                            crate::orchestrator::FrameEventKind::GpuCompositionPassStarted,
+                                            "passe de composicao GPU iniciado",
+                                        );
+                                    }
+                                    WgpuFrameStage::CompositionFinished(duration) => {
+                                        state.canvas.record_frame_event(
+                                            crate::orchestrator::FrameEventKind::GpuCompositionPassFinished,
+                                            format_gpu_upload_stage(
+                                                "passe de composicao GPU concluido",
+                                                duration,
+                                                "codificacao do render pass",
+                                            ),
+                                        );
+                                    }
+                                    WgpuFrameStage::PresentationStarted => {
+                                        state.canvas.record_frame_event(
+                                            crate::orchestrator::FrameEventKind::GpuSurfacePresentPassStarted,
+                                            "passe de apresentacao da superficie GPU iniciado",
+                                        );
+                                    }
+                                    WgpuFrameStage::PresentationFinished(duration) => {
+                                        state.canvas.record_frame_event(
+                                            crate::orchestrator::FrameEventKind::GpuSurfacePresentPassFinished,
+                                            format_gpu_upload_stage(
+                                                "passe de apresentacao da superficie GPU concluido",
+                                                duration,
+                                                "codificacao do render pass",
+                                            ),
+                                        );
+                                    }
+                                    WgpuFrameStage::CommandEncodingFinished => {
+                                        state.canvas.record_frame_event(
+                                            crate::orchestrator::FrameEventKind::GpuCommandEncodingFinished,
+                                            "encoder GPU finalizado",
+                                        );
                                     }
                                 }
-                                if let (Some(envelope), Some(command), Some(envelope_vertices)) = (
-                                    &self.envelope_texture,
-                                    self.envelope_command,
-                                    self.envelope_vertex_ring.active_buffer(),
-                                ) {
-                                    pass.set_bind_group(0, &envelope.bind_group, &[]);
-                                    pass.set_vertex_buffer(0, envelope_vertices.slice(..));
-                                    pass.draw(0..6, 0..1);
-                                    let _ = command;
-                                }
-                                if let (Some(overlay), Some(command), Some(overlay_vertices)) = (
-                                    &self.overlay_texture,
-                                    self.overlay_command,
-                                    self.overlay_vertex_ring.active_buffer(),
-                                ) {
-                                    pass.set_bind_group(0, &overlay.bind_group, &[]);
-                                    pass.set_vertex_buffer(0, overlay_vertices.slice(..));
-                                    pass.draw(0..6, 0..1);
-                                    let _ = command;
-                                }
-                            }
-                        }
-                        if let Some(state) = &mut self.state {
-                            state.canvas.record_frame_event(
-                                crate::orchestrator::FrameEventKind::GpuCompositionPassFinished,
-                                format_gpu_upload_stage(
-                                    "passe de composicao GPU concluido",
-                                    composition_started.elapsed(),
-                                    "codificacao do render pass",
-                                ),
-                            );
-                        }
-                        if let Some(composition) = composition {
-                            let present_pass_started = Instant::now();
-                            if let Some(state) = &mut self.state {
-                                state.canvas.record_frame_event(
-                                    crate::orchestrator::FrameEventKind::GpuSurfacePresentPassStarted,
-                                    "passe de apresentacao da superficie GPU iniciado",
-                                );
-                            }
-                            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                                label: Some("gpu-present-pass"),
-                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                    view: &surface_view,
-                                    depth_slice: None,
-                                    resolve_target: None,
-                                    ops: wgpu::Operations {
-                                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                                        store: wgpu::StoreOp::Store,
-                                    },
-                                })],
-                                depth_stencil_attachment: None,
-                                timestamp_writes: None,
-                                occlusion_query_set: None,
-                                multiview_mask: None,
-                            });
-                            let mut pass = _pass;
-                            pass.set_pipeline(&pipeline.0);
-                            pass.set_bind_group(0, composition.bind_group(), &[]);
-                            pass.set_vertex_buffer(
-                                0,
-                                composition.present_vertex_buffer().slice(..),
-                            );
-                            pass.draw(0..6, 0..1);
-                            if let Some(state) = &mut self.state {
-                                state.canvas.record_frame_event(
-                                    crate::orchestrator::FrameEventKind::GpuSurfacePresentPassFinished,
-                                    format_gpu_upload_stage(
-                                        "passe de apresentacao da superficie GPU concluido",
-                                        present_pass_started.elapsed(),
-                                        "codificacao do render pass",
-                                    ),
-                                );
-                            }
-                        }
-                        let command_buffer = encoder.finish();
-                        if let Some(state) = &mut self.state {
-                            state.canvas.record_frame_event(
-                                crate::orchestrator::FrameEventKind::GpuCommandEncodingFinished,
-                                "encoder GPU finalizado",
-                            );
-                        }
-                        context.queue.submit(Some(command_buffer));
+                            },
+                        );
+                        encoded.submit(context);
                         if let Some(state) = &mut self.state {
                             state.canvas.record_frame_event(
                                 crate::orchestrator::FrameEventKind::GpuCommandsSubmitted,
@@ -1168,10 +1105,10 @@ impl ApplicationHandler for GpuWindowApp {
                                 "poll do device GPU iniciado",
                             );
                         }
-                        let poll_result = context.device.poll(wgpu::PollType::Poll);
+                        let poll_result = context.poll_device();
                         if let Some(state) = &mut self.state {
                             let description = match poll_result {
-                                Ok(status) => format!("poll do device GPU concluido: {status:?}"),
+                                Ok(status) => format!("poll do device GPU concluido: {status}"),
                                 Err(error) => format!("poll do device GPU falhou: {error}"),
                             };
                             state.canvas.record_frame_event(

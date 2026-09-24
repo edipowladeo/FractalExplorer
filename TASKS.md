@@ -186,8 +186,15 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   crescimento de capacidade, criação e escrita ficam em `WgpuVertexBufferRing`;
   os testes de capacidade e slots acompanham a implementação. `cargo test --lib`
   passou (187 testes), `cargo check --bin sprite-demo`, formatação e
-  `git diff --check` passaram. O runtime ainda acessa buffers durante o render
-  pass; essa fronteira permanece pendente.
+  `git diff --check` passaram. O render pass, acesso aos buffers, informações
+  do adaptador, consulta do device e formato da superfície também foram
+  confinados ao adaptador; `gpu_window.rs` agora usa somente wrappers e tipos
+  do domínio, sem imports ou tipos `wgpu::*`. A verificação estática da
+  fronteira e `cargo test --lib` (187 testes), `cargo check --bin sprite-demo`,
+  `cargo fmt --all -- --check` e `git diff --check` passaram. O Passo 5 está
+  concluído. O Passo 6 é o próximo: conectar a renderização efetiva do GPU aos
+  contratos `GpuRenderTarget`/`GraphicsDevice`; o adaptador ainda rejeita
+  `DrawTexture`/`Present` até essa migração.
 - **Diagnóstico de frames lentos:** adicionados eventos separados para o tempo
   entre a finalização de um frame e o próximo ciclo do event loop
   (`GpuEventLoopWait`) e para a latência entre `request_redraw` e
