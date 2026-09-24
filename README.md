@@ -49,6 +49,37 @@ cargo clean
 
 O protótipo é acompanhado pela `T001` em [TASKS.md](TASKS.md) e permanece em `TODO` até que testes, refactor e verificação visual sejam concluídos.
 
+## Profiling com Tracy
+
+Para executar a aplicacao com o Tracy Profiler:
+
+```powershell
+cargo run --features tracy --bin sprite-demo -- profiler
+```
+
+O argumento `profiler` e apenas o rotulo exibido no titulo da janela. Depois que
+o Tracy Profiler estiver aberto, a aplicacao aparece para conexao e captura.
+
+### Overhead em release
+
+O Tracy nao garante overhead zero. As zonas, marcadores de frame e o cliente
+podem consumir CPU e memoria mesmo quando nenhum profiler esta conectado. O
+impacto depende da quantidade de instrumentacao e deve ser medido no hardware
+alvo.
+
+A feature `tracy` controla a dependencia e as marcacoes. Builds sem essa
+feature, inclusive `cargo build --release`, nao compilam o cliente Tracy nem
+executam as zonas de profiling. Para uma captura em release, habilite-a
+explicitamente:
+
+```powershell
+cargo build --release --features tracy
+```
+
+Assim, nao e necessario remover o profiler do codigo antes de gerar o release
+de producao; basta nao habilitar a feature `tracy`. O binario com a feature
+continua sujeito ao overhead normal das marcacoes, mesmo sem conexao.
+
 ## Dynamic configuration UI
 
 The optional `native-ui` feature opens an `egui/eframe` configuration window alongside the `minifb` renderer window:

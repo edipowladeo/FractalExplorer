@@ -399,7 +399,7 @@ alterações no canvas, controlador, frame builder, overlays ou Config UI.
 - **Integração sem hardware:** fake runtime + fake target + mock device.
 - **Integração com hardware:** opt-in, separada, nunca necessária para o ciclo
   unitário RED/GREEN.
-- **HIL:** somente quando o checkbox global for marcado pelo usuário. Enquanto
+- **HITL:** somente quando o checkbox global for marcado pelo usuário. Enquanto
   estiver desmarcado, a aplicação não será iniciada automaticamente.
 
 Cada passo registra no `TASKS.md` o teste que falhou no RED, os testes GREEN e

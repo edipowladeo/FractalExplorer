@@ -296,7 +296,7 @@ fn run_cpu_with_updates_and_shutdown(
         config.effective_deallocation_ratio(),
     );
     let mut window = Window::new(
-        "FractalExplorer - Mandelbrot",
+        crate::app::window_title(),
         config.width,
         config.height,
         WindowOptions {
@@ -314,6 +314,7 @@ fn run_cpu_with_updates_and_shutdown(
         minifb::Error::WindowCreate("invalid renderer precision configuration".to_string())
     })?;
     while window.is_open() && !window.is_key_down(Key::Escape) {
+        crate::profile_scope!("renderer_frame");
         crate::output::begin_frame();
         canvas.begin_frame();
         if let Some((frame_number, duration)) = canvas.last_finished_frame_timing() {
@@ -491,7 +492,7 @@ fn run_cpu_with_updates_and_shutdown(
                 0x00ffff,
             );
         }
-        if config.debug.overlays_enabled() && config.debug.show_allocation_envelope {
+        if config.debug.should_show_allocation_envelope() {
             draw_rectangle_outline(
                 &mut surface.framebuffer,
                 surface.screen_size,
@@ -614,6 +615,7 @@ fn run_cpu_with_updates_and_shutdown(
         )?;
         canvas.record_frame_presentation_finished();
         canvas.finish_frame();
+        crate::profiling::finish_frame();
         crate::output::flush_frame();
     }
 
