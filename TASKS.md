@@ -107,6 +107,11 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   renderer de custo de aquisição, composição, submissão e apresentação GPU. A
   espera é registrada no frame anterior, antes do próximo `begin_frame`, para
   não misturar a preparação CPU do frame seguinte nessa medição.
+- **Passo 4 — shutdown coordenado:** o sinal `renderer_closed` foi extraído
+  para `signal_renderer_closed`, sem depender de uma janela real. RED/GREEN
+  passou com `gpu_window::tests::signals_renderer_closed_without_requiring_a_window`;
+  a suíte unitária permanece GREEN com 173 testes. O próximo avanço é o
+  adaptador GPU real do Passo 5, que fica sujeito a novo gate HITL.
 - **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
 
 ### T026 — Investigar e melhorar a precisão para zoom profundo
