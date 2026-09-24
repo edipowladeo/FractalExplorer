@@ -1,4 +1,4 @@
-use crate::app::{AppEffect, AppEvent, ApplicationController, DefaultApplicationController};
+use crate::app::{reduce_effects, AppEvent, ApplicationController, DefaultApplicationController};
 use crate::gpu::{
     create_tile_pipeline, debug_overlay_upload, debug_overlay_upload_with_rectangles,
     texture_keys_for_commands, tile_commands_for_frame, tile_vertices_for_commands,
@@ -718,8 +718,16 @@ impl GpuWindowApp {
                     crate::print_local!("Aviso: configuraÃ§Ã£o GPU ignorada: {error}");
                     continue;
                 }
-                self.app_controller
-                    .handle_event(AppEvent::ConfigurationChanged);
+                let actions = reduce_effects(
+                    &self
+                        .app_controller
+                        .handle_event(AppEvent::ConfigurationChanged),
+                );
+                if actions.request_redraw {
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                }
             }
         }
     }
@@ -1182,10 +1190,15 @@ impl ApplicationHandler for GpuWindowApp {
         }
         let app_event = app_event_from_window_event(&event);
         if let Some(app_event) = app_event {
-            let effects = self.app_controller.handle_event(app_event);
-            if effects.contains(&AppEffect::Exit) {
+            let actions = reduce_effects(&self.app_controller.handle_event(app_event));
+            if actions.exit {
                 event_loop.exit();
                 return;
+            }
+            if actions.request_redraw {
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
             }
         }
         let input_events = self
@@ -1194,8 +1207,16 @@ impl ApplicationHandler for GpuWindowApp {
             .map(|state| state.input_events_for_window_event(&event))
             .unwrap_or_default();
         for input_event in input_events {
-            self.app_controller
-                .handle_event(AppEvent::Input(input_event));
+            let actions = reduce_effects(
+                &self
+                    .app_controller
+                    .handle_event(AppEvent::Input(input_event)),
+            );
+            if actions.request_redraw {
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
         }
         let pending_input = self.app_controller.take_input_events();
         if let Some(state) = &mut self.state {

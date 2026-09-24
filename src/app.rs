@@ -39,6 +39,26 @@ pub enum AppEffect {
     Exit,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AppActions {
+    pub reconfigure: bool,
+    pub request_redraw: bool,
+    pub exit: bool,
+}
+
+pub fn reduce_effects(effects: &[AppEffect]) -> AppActions {
+    let mut actions = AppActions::default();
+    for effect in effects {
+        match effect {
+            AppEffect::Reconfigure => actions.reconfigure = true,
+            AppEffect::RequestRedraw => actions.request_redraw = true,
+            AppEffect::Render => {}
+            AppEffect::Exit => actions.exit = true,
+        }
+    }
+    actions
+}
+
 pub trait ApplicationController {
     fn handle_event(&mut self, event: AppEvent) -> Vec<AppEffect>;
     fn prepare_frame(&mut self) -> Result<PreparedFrame, RenderError>;
@@ -125,11 +145,29 @@ impl ApplicationController for DefaultApplicationController {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppEffect, AppEvent, ApplicationController, DefaultApplicationController, PreparedFrame,
+        reduce_effects, AppEffect, AppEvent, ApplicationController, DefaultApplicationController,
+        PreparedFrame,
     };
     use crate::geometry::ScreenPoint;
     use crate::input::{InputEvent, ZoomDirection};
     use crate::render::Viewport;
+
+    #[test]
+    fn reduces_controller_effects_to_runtime_actions() {
+        assert_eq!(
+            reduce_effects(&[
+                AppEffect::Reconfigure,
+                AppEffect::RequestRedraw,
+                AppEffect::Render,
+                AppEffect::Exit,
+            ]),
+            super::AppActions {
+                reconfigure: true,
+                request_redraw: true,
+                exit: true,
+            }
+        );
+    }
 
     #[test]
     fn controller_normalizes_resize_redraw_and_close_events() {
