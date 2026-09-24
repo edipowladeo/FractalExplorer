@@ -179,52 +179,65 @@ impl TextureResourceCache {
         updates: &[ImageUpdate],
     ) -> Result<usize, DeviceError> {
         let mut commands = CommandList::default();
+        let mut staged_textures = self.textures.clone();
+        let mut created_handles = Vec::new();
+        let mut replaced_handles = Vec::new();
         let mut uploaded = 0;
-        for update in updates {
-            let dimensions = update.dimensions();
-            if self
-                .textures
-                .get(&update.image())
-                .is_some_and(|cached| cached.revision.value() >= update.revision().value())
-            {
-                continue;
-            }
+        let staging_result = (|| {
+            for update in updates {
+                let dimensions = update.dimensions();
+                if staged_textures
+                    .get(&update.image())
+                    .is_some_and(|cached| cached.revision.value() >= update.revision().value())
+                {
+                    continue;
+                }
 
-            let (handle, replaced_handle) = match self.textures.get(&update.image()) {
-                Some(cached) if cached.dimensions == dimensions => (cached.handle, None),
-                Some(cached) => (
-                    device.create_texture(TextureDescriptor {
-                        width: dimensions.0,
-                        height: dimensions.1,
-                        format: TextureFormat::Rgba8,
-                    })?,
-                    Some(cached.handle),
-                ),
-                None => (
-                    device.create_texture(TextureDescriptor {
-                        width: dimensions.0,
-                        height: dimensions.1,
-                        format: TextureFormat::Rgba8,
-                    })?,
-                    None,
-                ),
-            };
-            commands.write_texture(handle, dimensions.0, dimensions.1, update.rgba8().to_vec());
-            self.textures.insert(
-                update.image(),
-                CachedTexture {
-                    handle,
-                    revision: update.revision(),
-                    dimensions,
-                },
-            );
-            if let Some(replaced_handle) = replaced_handle {
-                device.destroy_texture(replaced_handle);
+                let (handle, replaced_handle) = match staged_textures.get(&update.image()) {
+                    Some(cached) if cached.dimensions == dimensions => (cached.handle, None),
+                    cached => {
+                        let handle = device.create_texture(TextureDescriptor {
+                            width: dimensions.0,
+                            height: dimensions.1,
+                            format: TextureFormat::Rgba8,
+                        })?;
+                        created_handles.push(handle);
+                        (handle, cached.map(|cached| cached.handle))
+                    }
+                };
+                commands.write_texture(handle, dimensions.0, dimensions.1, update.rgba8().to_vec());
+                staged_textures.insert(
+                    update.image(),
+                    CachedTexture {
+                        handle,
+                        revision: update.revision(),
+                        dimensions,
+                    },
+                );
+                if let Some(replaced_handle) = replaced_handle {
+                    replaced_handles.push(replaced_handle);
+                }
+                uploaded += 1;
             }
-            uploaded += 1;
+            Ok::<(), DeviceError>(())
+        })();
+        if let Err(error) = staging_result {
+            for handle in created_handles {
+                device.destroy_texture(handle);
+            }
+            return Err(error);
         }
         if uploaded > 0 {
-            device.submit(commands)?;
+            if let Err(error) = device.submit(commands) {
+                for handle in created_handles {
+                    device.destroy_texture(handle);
+                }
+                return Err(error);
+            }
+        }
+        self.textures = staged_textures;
+        for handle in replaced_handles {
+            device.destroy_texture(handle);
         }
         Ok(uploaded)
     }
@@ -243,6 +256,7 @@ impl TextureResourceCache {
 pub struct MockGraphicsDevice {
     next_handle: u64,
     fail_next_texture_creation: bool,
+    fail_next_submission: bool,
     buffers: HashMap<BufferHandle, BufferDescriptor>,
     textures: HashMap<TextureHandle, TextureDescriptor>,
     submitted: Vec<CommandList>,
@@ -287,6 +301,9 @@ impl GraphicsDevice for MockGraphicsDevice {
     }
 
     fn submit(&mut self, commands: CommandList) -> Result<(), DeviceError> {
+        if std::mem::take(&mut self.fail_next_submission) {
+            return Err(DeviceError::UnsupportedCommand);
+        }
         for (index, command) in commands.commands().iter().enumerate() {
             match command {
                 Command::WriteBuffer {
@@ -518,6 +535,40 @@ mod tests {
         );
         assert_eq!(cache.handle(image), Some(old_handle));
         assert!(device.textures.contains_key(&old_handle));
+    }
+
+    #[test]
+    fn texture_cache_keeps_old_texture_when_replacement_upload_fails() {
+        let image = crate::render::ImageId::new(19);
+        let mut device = MockGraphicsDevice::default();
+        let mut cache = TextureResourceCache::new();
+        let first = crate::render::ImageUpdate::new(
+            image,
+            crate::render::ImageRevision::new(1),
+            1,
+            1,
+            vec![1, 2, 3, 255],
+        )
+        .unwrap();
+        cache.upload_updates(&mut device, &[first]).unwrap();
+        let old_handle = cache.handle(image).unwrap();
+        device.fail_next_submission = true;
+        let resized = crate::render::ImageUpdate::new(
+            image,
+            crate::render::ImageRevision::new(2),
+            2,
+            1,
+            vec![4, 5, 6, 255, 7, 8, 9, 255],
+        )
+        .unwrap();
+
+        assert_eq!(
+            cache.upload_updates(&mut device, &[resized]),
+            Err(DeviceError::UnsupportedCommand)
+        );
+        assert_eq!(cache.handle(image), Some(old_handle));
+        assert!(device.textures.contains_key(&old_handle));
+        assert_eq!(device.textures.len(), 1);
     }
 }
 use std::collections::HashMap;
