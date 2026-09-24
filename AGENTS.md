@@ -22,8 +22,9 @@ Este é o único checkbox de HITL do repositório e é controlado exclusivamente
    - **REFACTOR**: melhorar o design, a legibilidade e a manutenção sem alterar o comportamento; confirmar que os testes continuam passando.
    - **Exceção:** alterações exclusivamente de configuração ou de documentação de configuração não exigem o fluxo TDD.
 2. Se a estratégia de testes não for óbvia, discutir a estratégia com o usuário antes de implementar.
-3. Uma tarefa só pode ser considerada concluída depois de: testes em estado **GREEN**, refactor realizado, commit criado e push enviado ao remoto.
-4. Mover a tarefa para `DONE` imediatamente após todas as condições do item anterior serem atendidas.
+3. Uma tarefa pode ser considerada concluída localmente depois de: testes em estado **GREEN**, refactor realizado e commit criado.
+4. Mover a tarefa para `DONE` imediatamente após todas as condições locais do item anterior serem atendidas.
+5. O push para o remoto deve ser tentado quando autorizado e disponível, mas não bloqueia a conclusão local nem a movimentação para `DONE`. Se não puder ser enviado, registrar o motivo no `TASKS.md`.
 
 ## Ordem e seleção de tarefas
 
@@ -58,7 +59,7 @@ Esse procedimento não depende da configuração de depuração do VS Code nem d
 - Usar `TASKS.md` como fonte da fila de trabalho.
 - `TODO` contém apenas a fila ativa e ordenada.
 - `BACKLOG` contém ideias ou tarefas ainda não promovidas para execução.
-- `DONE` contém somente tarefas com testes GREEN, refactor, commit e push confirmados.
+- `DONE` contém somente tarefas com testes GREEN, refactor e commit confirmados. O estado de publicação remota deve ser registrado separadamente quando o push ainda não tiver sido enviado.
 - Ao trabalhar em uma tarefa, registrar critérios de aceitação e evidências de verificação.
 
 ## Commits e colaboração
@@ -66,4 +67,4 @@ Esse procedimento não depende da configuração de depuração do VS Code nem d
 - Fazer commits pequenos, focados e com mensagem clara.
 - Não misturar alterações não relacionadas à tarefa atual.
 - Antes do push, verificar o diff, os testes e o branch/remoto de destino.
-- Se commit ou push não puder ser feito por falta de acesso, registrar o bloqueio e não mover a tarefa para `DONE`.
+- Se o push não puder ser feito por falta de acesso, registrar o bloqueio e ainda permitir a conclusão local após testes, refactor e commit.
