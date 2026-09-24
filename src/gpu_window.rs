@@ -9,9 +9,9 @@ use crate::gpu::{
     PreparedTileBatch, TextureCache, TileDrawCommand,
 };
 use crate::input::{InputEvent, ZoomDirection};
-use crate::render::{
-    FrameBuilder, ImageId, ImageRevision, ImageUpdate, PreparedFrame, Rect, TileDraw, Viewport,
-};
+use crate::render::{ImageId, ImageRevision, ImageUpdate, PreparedFrame, Viewport};
+#[cfg(test)]
+use crate::render::{Rect, TileDraw};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -149,14 +149,16 @@ fn format_gpu_frame_overlay_header(frame_number: u64, visible_tiles: usize) -> S
     format!("Frame #{frame_number}, tiles:{visible_tiles}")
 }
 
-fn gpu_delta_exponent(delta: f64) -> f64 {
-    -delta.log2()
-}
-
 fn format_gpu_overlay_text(state: &GpuAppState, visible_tiles: usize) -> String {
     let debug = &state.config.debug;
     let mut lines = Vec::new();
     let frame_number = state.canvas.current_frame_number();
+    let common = crate::app::prepare_overlay_snapshot(
+        &state.canvas,
+        &state.orchestrator,
+        &state.config,
+        Some(state.cursor),
+    );
 
     if debug.text_overlay_frames {
         lines.push(format_gpu_frame_overlay_header(frame_number, visible_tiles));
@@ -167,62 +169,15 @@ fn format_gpu_overlay_text(state: &GpuAppState, visible_tiles: usize) -> String 
     }
 
     if debug.text_overlay_layers {
-        let mouse = Some(state.canvas.screen_to_complex(state.cursor));
-        lines.extend(
-            state
-                .canvas
-                .layers()
-                .iter()
-                .enumerate()
-                .map(|(index, layer)| {
-                    let mouse_text = mouse.as_ref().map_or_else(String::new, |point| {
-                        format!(" mouse={:.15}x{:.15}", point.x, point.y)
-                    });
-                    format!(
-                        "Camada {index}: zoom={:.3} delta={:.3} {}x{} tiles{mouse_text}",
-                        layer.zoom().log2(),
-                        gpu_delta_exponent(layer.delta()),
-                        layer.column_count(),
-                        layer.row_count(),
-                    )
-                }),
-        );
+        lines.extend(common.layer_lines);
     }
 
     if debug.text_overlay_queue {
-        lines.extend(
-            state
-                .canvas
-                .layers()
-                .iter()
-                .enumerate()
-                .flat_map(|(layer_index, layer)| {
-                    layer
-                        .pending_work_positions()
-                        .into_iter()
-                        .map(move |(row, column)| {
-                            format!(
-                                "Camada={layer_index} pos {row}x{column} delta={:.3}",
-                                gpu_delta_exponent(layer.delta())
-                            )
-                        })
-                }),
-        );
+        lines.extend(common.queue_lines);
     }
 
     if debug.text_overlay_workers {
-        lines.extend(state.orchestrator.worker_statuses().into_iter().map(
-            |worker| match worker.tile {
-                Some(tile) => format!(
-                    "Worker {}: tile pos {:.3}x{:.3} delta={:.3}",
-                    worker.id,
-                    tile.coordinate.x,
-                    tile.coordinate.y,
-                    gpu_delta_exponent(tile.delta),
-                ),
-                None => format!("Worker {}: ocioso", worker.id),
-            },
-        ));
+        lines.extend(common.worker_lines);
     }
 
     lines.join("\n")
@@ -344,6 +299,7 @@ impl GpuFrameMetrics {
     }
 }
 
+#[cfg(test)]
 fn frame_tiles_from_batch(batch: &PreparedTileBatch) -> Vec<TileDraw> {
     batch
         .commands
@@ -371,7 +327,6 @@ pub struct GpuAppState {
     pub config: crate::config::RendererConfig,
     pub prepared_batch: Option<PreparedTileBatch>,
     pub prepared_frame: Option<PreparedFrame>,
-    frame_builder: FrameBuilder,
     pub texture_cache: TextureCache,
     pub last_frame_metrics: Option<GpuFrameMetrics>,
     pub frame_timing_ring: VecDeque<(u64, Duration)>,
@@ -403,7 +358,6 @@ impl GpuAppState {
             config,
             prepared_batch: None,
             prepared_frame: None,
-            frame_builder: FrameBuilder::new(),
             texture_cache: TextureCache::default(),
             last_frame_metrics: None,
             frame_timing_ring: VecDeque::with_capacity(GPU_FRAME_HISTORY_CAPACITY),
@@ -492,22 +446,12 @@ impl GpuAppState {
     }
 
     fn apply_input_event(&mut self, event: InputEvent) {
-        match event {
-            InputEvent::Drag { delta } => self.canvas.drag(delta),
-            InputEvent::Zoom { direction, cursor } => {
-                let multiplier = self.config.zoom_multiplier;
-                let current = self
-                    .canvas
-                    .layer(0)
-                    .map_or(self.config.max_apparent_pixel_size(), |layer| layer.zoom());
-                let zoom = match direction {
-                    ZoomDirection::In => current * multiplier,
-                    ZoomDirection::Out => current / multiplier,
-                };
-                self.canvas.zoom_at(cursor, zoom);
-            }
-            InputEvent::MiddleClick(_) => {}
-        }
+        crate::app::apply_canvas_input(
+            &mut self.canvas,
+            event,
+            self.config.zoom_multiplier,
+            self.config.max_apparent_pixel_size(),
+        );
     }
 
     fn refresh_allocation_bounds(&mut self) {
@@ -524,6 +468,17 @@ impl GpuAppState {
     }
 
     pub fn prepare_visible_batch(&mut self) {
+        let mut controller = DefaultApplicationController::new(Viewport::new(
+            self.config.width as u32,
+            self.config.height as u32,
+        ));
+        self.prepare_visible_batch_with_controller(&mut controller);
+    }
+
+    fn prepare_visible_batch_with_controller(
+        &mut self,
+        controller: &mut DefaultApplicationController,
+    ) {
         self.refresh_allocation_bounds();
         prepare_canvas_common(
             &mut self.canvas,
@@ -531,10 +486,13 @@ impl GpuAppState {
             self.allocation_bounds,
             self.deallocation_bounds,
         );
-        self.prepare_visible_batch_after_canvas();
+        self.prepare_visible_batch_after_canvas(controller);
     }
 
-    fn prepare_visible_batch_after_canvas(&mut self) {
+    fn prepare_visible_batch_after_canvas(
+        &mut self,
+        controller: &mut DefaultApplicationController,
+    ) {
         let preparation_started = Instant::now();
         if let Some(timing) = self.canvas.last_finished_frame_timing() {
             self.frame_timing_ring.push_back(timing);
@@ -542,37 +500,10 @@ impl GpuAppState {
                 self.frame_timing_ring.pop_front();
             }
         }
-        let mut tiles = Vec::new();
-        for layer in self.canvas.layers() {
-            for row in 0..layer.row_count() {
-                for column in 0..layer.column_count() {
-                    let Some(tile) = layer.tile(row, column) else {
-                        continue;
-                    };
-                    if tile.status() == crate::TileStatus::Completed && tile.sprite().is_none() {
-                        let sprite = Arc::new(crate::renderer::sprite_from_tile(
-                            tile,
-                            self.config.effective_max_iterations() as u64,
-                            self.config.palette,
-                            self.config.palette_period,
-                        ));
-                        tile.set_sprite(sprite);
-                    }
-                    let Some(sprite) = tile.sprite() else {
-                        continue;
-                    };
-                    let tile_sprite = crate::TileSprite::new(
-                        Arc::clone(tile),
-                        layer.complex_to_screen(tile.coordinate().clone()),
-                        layer.zoom(),
-                    );
-                    tiles.push((tile_sprite, sprite));
-                }
-            }
-        }
+        let tiles = crate::app::collect_completed_canvas_tiles(&self.canvas, &self.config);
         let references: Vec<_> = tiles
             .iter()
-            .map(|(tile, sprite)| (tile, Arc::clone(sprite)))
+            .map(|prepared| (&prepared.tile_sprite, Arc::clone(&prepared.sprite)))
             .collect();
         let batch = crate::gpu::prepare_tile_batch(&mut self.texture_cache, &references);
         self.canvas.record_frame_event(
@@ -583,7 +514,7 @@ impl GpuAppState {
             &batch,
             preparation_started.elapsed(),
         ));
-        let frame_tiles = frame_tiles_from_batch(&batch);
+        let frame_tiles = tiles.iter().map(|prepared| prepared.draw.clone()).collect();
         let image_updates = batch
             .uploads
             .iter()
@@ -598,12 +529,13 @@ impl GpuAppState {
                 .ok()
             })
             .collect();
-        let frame = self.frame_builder.build(
+        let frame = controller.build_prepared_frame(
             Viewport::new(self.config.width as u32, self.config.height as u32),
             frame_tiles,
             Vec::new(),
+            image_updates,
         );
-        self.prepared_frame = Some(PreparedFrame::new(frame, image_updates));
+        self.prepared_frame = Some(frame);
         self.prepared_batch = Some(batch);
     }
 }
@@ -1518,19 +1450,21 @@ impl ApplicationHandler for GpuWindowApp {
                 format_gpu_event_loop_wait(elapsed),
             );
         }
-        let prepared = self.state.as_mut().map(|state| {
-            state.refresh_allocation_bounds();
-            self.app_controller.prepare_canvas(
-                &mut state.canvas,
-                &state.orchestrator,
-                state.allocation_bounds,
-                state.deallocation_bounds,
-            );
-            self.app_controller
-                .begin_tile_composition(&mut state.canvas);
-            state.prepare_visible_batch_after_canvas();
-            (state.prepared_batch.take(), state.prepared_frame.clone())
-        });
+        let prepared = {
+            let (state, controller) = (&mut self.state, &mut self.app_controller);
+            state.as_mut().map(|state| {
+                state.refresh_allocation_bounds();
+                controller.prepare_canvas(
+                    &mut state.canvas,
+                    &state.orchestrator,
+                    state.allocation_bounds,
+                    state.deallocation_bounds,
+                );
+                controller.begin_tile_composition(&mut state.canvas);
+                state.prepare_visible_batch_after_canvas(controller);
+                (state.prepared_batch.take(), state.prepared_frame.clone())
+            })
+        };
         if let Some((Some(batch), Some(frame))) = prepared {
             let frame = self
                 .app_controller
@@ -1959,6 +1893,16 @@ mod tests {
             .prepared_frame
             .as_ref()
             .is_some_and(|prepared| !prepared.image_updates().is_empty()));
+        let batch = state.prepared_batch.as_ref().unwrap();
+        let frame_tile = &state.prepared_frame.as_ref().unwrap().frame().tiles()[0];
+        assert_eq!(
+            frame_tile.image().value(),
+            batch.commands[0].texture.tile as u64
+        );
+        assert_eq!(
+            frame_tile.revision().value(),
+            batch.commands[0].texture.content_hash
+        );
     }
 
     #[test]

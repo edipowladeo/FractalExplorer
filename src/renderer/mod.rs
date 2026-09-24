@@ -3,8 +3,8 @@ use crate::geometry::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
 use crate::orchestrator::CanvasNavigationEvent;
 use crate::output::OutputService;
 use crate::{
-    input::ZoomDirection, InputEvent, InputState, Orchestrator, PrecisionDecisionManager, Sprite,
-    Tile, TiledInfiniteCanvas,
+    InputEvent, InputState, Orchestrator, PrecisionDecisionManager, Sprite, Tile,
+    TiledInfiniteCanvas,
 };
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -182,10 +182,6 @@ fn prepared_cpu_tile(
     (draw, update)
 }
 
-fn cpu_tile_image_id(layer: usize, row: usize, column: usize) -> crate::render::ImageId {
-    crate::render::ImageId::new(((layer as u64) << 42) | ((row as u64) << 21) | column as u64)
-}
-
 /// Framebuffer and viewport-derived regions for the current native window size.
 struct RenderSurface {
     screen_size: ScreenSize,
@@ -329,7 +325,6 @@ fn run_cpu_with_updates_and_shutdown(
     let mut render_plan = PrecisionDecisionManager::from_config(initial_config).map_err(|_| {
         minifb::Error::WindowCreate("invalid renderer precision configuration".to_string())
     })?;
-    let mut frame_builder = crate::render::FrameBuilder::new();
     while window.is_open() && !window.is_key_down(Key::Escape) {
         crate::profile_scope!("renderer_frame");
         crate::output::begin_frame();
@@ -414,12 +409,17 @@ fn run_cpu_with_updates_and_shutdown(
         let pending_input =
             <crate::app::DefaultApplicationController as crate::app::ApplicationController>::take_input_events(
                 &mut app_controller,
-            );
+        );
         for event in pending_input {
-            match event {
-                InputEvent::Drag { delta } => canvas.drag(delta),
-                InputEvent::MiddleClick(cursor) => {
-                    let complex = canvas.screen_to_complex(cursor);
+            let middle_click = matches!(event, InputEvent::MiddleClick(_));
+            let complex = crate::app::apply_canvas_input(
+                canvas,
+                event,
+                config.zoom_multiplier,
+                config.max_apparent_pixel_size(),
+            );
+            if middle_click {
+                if let (InputEvent::MiddleClick(cursor), Some(complex)) = (event, complex) {
                     copy_coordinates(&format_copied_coordinates(
                         complex.clone(),
                         canvas.apparent_pixel_size(),
@@ -431,24 +431,14 @@ fn run_cpu_with_updates_and_shutdown(
                         );
                     }
                 }
-                InputEvent::Zoom { direction, cursor } => {
-                    let multiplier = config.zoom_multiplier;
-                    assert!(multiplier > 1.0, "zoom_multiplier must be greater than 1");
-                    let current_zoom = canvas
-                        .layer(0)
-                        .map_or(config.max_apparent_pixel_size(), |layer| layer.zoom());
-                    let zoom = match direction {
-                        ZoomDirection::In => current_zoom * multiplier,
-                        ZoomDirection::Out => current_zoom / multiplier,
-                    };
-                    canvas.zoom_at(cursor, zoom);
-                }
             }
         }
         canvas.record_frame_event(
             crate::orchestrator::FrameEventKind::InputProcessed,
             "entrada processada",
         );
+        let overlay_snapshot =
+            crate::app::prepare_overlay_snapshot(canvas, orchestrator, &config, mouse_position);
         if config.debug.overlays_enabled() {
             if let Some(cursor) = mouse_position {
                 let complex = canvas.screen_to_complex(cursor);
@@ -460,60 +450,30 @@ fn run_cpu_with_updates_and_shutdown(
             }
         }
         app_controller.begin_tile_composition(canvas);
-        let mut generated_sprites = 0;
-        let mut sprite_generation_duration = Duration::ZERO;
+        let generated_sprites = 0;
+        let sprite_generation_duration = Duration::ZERO;
         let mut rasterization_duration = Duration::ZERO;
         let mut frame_tiles = Vec::new();
         let mut image_updates = Vec::new();
-        for (layer_index, layer) in canvas.layers().iter().enumerate() {
-            let (tile_width, tile_height) = layer.tile_screen_size();
-            for row in 0..layer.row_count() {
-                for column in 0..layer.column_count() {
-                    let tile = layer.tile(row, column).expect("layer grid is rectangular");
-                    if tile.status() != crate::orchestrator::TileStatus::Completed {
-                        continue;
-                    }
-                    let sprite = tile.sprite().unwrap_or_else(|| {
-                        let started = Instant::now();
-                        let sprite = std::sync::Arc::new(sprite_from_tile(
-                            tile,
-                            config.effective_max_iterations() as u64,
-                            config.palette,
-                            config.palette_period,
-                        ));
-                        tile.set_sprite(sprite);
-                        generated_sprites += 1;
-                        sprite_generation_duration += started.elapsed();
-                        tile.sprite().expect("tile sprite should exist")
-                    });
-                    let tile_position = canvas.complex_to_screen(tile.coordinate().clone());
-                    let image_id = cpu_tile_image_id(layer_index, row, column);
-                    let (tile_draw, image_update) = prepared_cpu_tile(
-                        image_id,
-                        crate::render::ImageRevision::new(1),
-                        layer_index as u32,
-                        crate::render::Rect::new(
-                            tile_position.x as i32,
-                            tile_position.y as i32,
-                            tile_width,
-                            tile_height,
-                        ),
-                        &sprite,
-                    );
-                    frame_tiles.push(tile_draw);
-                    image_updates.push(image_update);
-                }
-            }
+        let canvas_tiles = crate::app::collect_completed_canvas_tiles(canvas, &config);
+        for prepared in canvas_tiles {
+            let (draw, update) = prepared_cpu_tile(
+                prepared.draw.image(),
+                prepared.draw.revision(),
+                prepared.draw.layer(),
+                prepared.draw.destination(),
+                &prepared.sprite,
+            );
+            frame_tiles.push(draw);
+            image_updates.push(update);
         }
-        let prepared_frame = crate::render::PreparedFrame::new(
-            frame_builder.build(
-                crate::render::Viewport::new(
-                    surface.screen_size.width as u32,
-                    surface.screen_size.height as u32,
-                ),
-                frame_tiles,
-                Vec::new(),
+        let prepared_frame = app_controller.build_prepared_frame(
+            crate::render::Viewport::new(
+                surface.screen_size.width as u32,
+                surface.screen_size.height as u32,
             ),
+            frame_tiles,
+            Vec::new(),
             image_updates,
         );
         let prepared_frame = app_controller
@@ -573,21 +533,7 @@ fn run_cpu_with_updates_and_shutdown(
             );
         }
         if config.debug.overlays_enabled() && config.debug.text_overlay_layers {
-            let overlays: Vec<_> = canvas
-                .layers()
-                .iter()
-                .enumerate()
-                .map(|(index, layer)| {
-                    format_layer_overlay(
-                        index,
-                        layer.zoom(),
-                        delta_exponent(layer.delta()),
-                        layer.column_count(),
-                        layer.row_count(),
-                        mouse_position.map(|cursor| canvas.screen_to_complex(cursor)),
-                    )
-                })
-                .collect();
+            let overlays = &overlay_snapshot.layer_lines;
             let first_overlay_y = surface
                 .screen_size
                 .height
@@ -605,24 +551,7 @@ fn run_cpu_with_updates_and_shutdown(
             }
         }
         if config.debug.overlays_enabled() && config.debug.text_overlay_queue {
-            let queue_lines: Vec<_> = canvas
-                .layers()
-                .iter()
-                .enumerate()
-                .flat_map(|(layer_index, layer)| {
-                    layer
-                        .pending_work_positions()
-                        .into_iter()
-                        .map(move |(row, column)| {
-                            format_worker_queue_line(
-                                layer_index,
-                                row,
-                                column,
-                                delta_exponent(layer.delta()),
-                            )
-                        })
-                })
-                .collect();
+            let queue_lines = &overlay_snapshot.queue_lines;
             for (line, queue_line) in queue_lines.iter().enumerate() {
                 let x = surface
                     .screen_size
@@ -640,14 +569,13 @@ fn run_cpu_with_updates_and_shutdown(
             }
         }
         if config.debug.overlays_enabled() && config.debug.text_overlay_workers {
-            for (line, worker) in orchestrator.worker_statuses().iter().enumerate() {
-                let worker_line = format_worker_status_line(worker.id, worker.tile.as_ref());
+            for (line, worker_line) in overlay_snapshot.worker_lines.iter().enumerate() {
                 draw_text(
                     &mut surface.framebuffer,
                     surface.screen_size,
                     8,
                     8 + line as i32 * 8,
-                    &worker_line,
+                    worker_line,
                     0xffffff,
                 );
             }
@@ -802,7 +730,7 @@ fn format_copied_coordinates(point: ComplexPoint<f64>, zoom: f64) -> String {
     format!("{}   zoom: {:.15}", format_coordinates(point), zoom.log2())
 }
 
-fn format_layer_overlay(
+pub(crate) fn format_layer_overlay(
     index: usize,
     zoom: f64,
     delta: f64,
@@ -819,7 +747,12 @@ fn format_layer_overlay(
     )
 }
 
-fn format_worker_queue_line(layer: usize, row: usize, column: usize, delta: f64) -> String {
+pub(crate) fn format_worker_queue_line(
+    layer: usize,
+    row: usize,
+    column: usize,
+    delta: f64,
+) -> String {
     format!("Camada={layer} pos {row}x{column} delta={delta:.3}")
 }
 
@@ -827,7 +760,10 @@ fn delta_exponent(delta: f64) -> f64 {
     -delta.log2()
 }
 
-fn format_worker_status_line(id: usize, tile: Option<&crate::orchestrator::WorkerTile>) -> String {
+pub(crate) fn format_worker_status_line(
+    id: usize,
+    tile: Option<&crate::orchestrator::WorkerTile>,
+) -> String {
     match tile {
         Some(tile) => format!(
             "Worker {id}: tile pos {:.3}x{:.3} delta={:.3}",
