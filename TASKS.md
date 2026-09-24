@@ -67,6 +67,14 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   `cargo fmt --all -- --check`, `git diff --check` e `cargo test --lib`
   passaram com 176 testes. A alteração não muda comportamento visual nem
   exige validação HILT.
+- Avanco do passo 3: o controlador agora expoe uma fronteira unica para
+  publicar e preparar `PreparedFrame`, usada pelos runtimes CPU e GPU. Tambem
+  centraliza o ciclo comum de canvas em `prepare_canvas_common`; `GpuWindowApp`
+  e o loop CPU deixam de duplicar begin frame, trim, cobertura e agendamento
+  das camadas. A composicao de imagens continua especifica do adaptador.
+  `cargo test --lib` passou com 177 testes. O passo 3 ainda nao esta concluido:
+  falta mover a preparacao real de tiles e overlays para o controlador sem
+  introduzir dependencia de backend.
 - **Passo 3 em andamento:** `ApplicationController::prepare_frame` passou a
   retornar `PreparedFrame`, alinhando a API comum ao snapshot usado por CPU e
   GPU. RED confirmou que o controlador ainda retornava `RenderFrame`; GREEN

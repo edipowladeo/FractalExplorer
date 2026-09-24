@@ -333,7 +333,6 @@ fn run_cpu_with_updates_and_shutdown(
     while window.is_open() && !window.is_key_down(Key::Escape) {
         crate::profile_scope!("renderer_frame");
         crate::output::begin_frame();
-        canvas.begin_frame();
         if let Some((frame_number, duration)) = canvas.last_finished_frame_timing() {
             frame_timing_ring.push(frame_number, duration);
         }
@@ -356,10 +355,6 @@ fn run_cpu_with_updates_and_shutdown(
                 );
             }
         }
-        canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::ConfigurationProcessed,
-            "configuracao processada",
-        );
         // `get_size` changes while the resize gesture is in progress, not only when it ends.
         let window_size = window.get_size();
         if surface.update_window_size(window_size) {
@@ -381,36 +376,21 @@ fn run_cpu_with_updates_and_shutdown(
         }
         cpu_target.set_preserve_previous_frame(config.preserve_previous_frame);
         surface.clear_if_needed(config.preserve_previous_frame);
-        canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::SurfacePrepared,
-            "superficie preparada",
-        );
-        canvas.trim_outside_allocation((
-            surface.deallocation.left,
-            surface.deallocation.top,
-            surface.deallocation.right,
-            surface.deallocation.bottom,
-        ));
-        canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::OutsideAllocationTrimmed,
-            "tiles fora da alocacao removidos",
-        );
-        canvas.ensure_screen_coverage((
-            surface.allocation.left,
-            surface.allocation.top,
-            surface.allocation.right,
-            surface.allocation.bottom,
-        ));
-        canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::ScreenCoverageCompleted,
-            "cobertura da tela concluida",
-        );
-        for layer in canvas.layers() {
-            orchestrator.render_layer(layer);
-        }
-        canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::LayerWorkScheduled,
-            "trabalho das camadas agendado",
+        app_controller.prepare_canvas(
+            canvas,
+            orchestrator,
+            (
+                surface.allocation.left,
+                surface.allocation.top,
+                surface.allocation.right,
+                surface.allocation.bottom,
+            ),
+            (
+                surface.deallocation.left,
+                surface.deallocation.top,
+                surface.deallocation.right,
+                surface.deallocation.bottom,
+            ),
         );
         let mouse_position = if has_live_window_size(window_size) {
             window
@@ -479,10 +459,7 @@ fn run_cpu_with_updates_and_shutdown(
                 );
             }
         }
-        canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::TileCompositionStarted,
-            "composicao de tiles iniciada",
-        );
+        app_controller.begin_tile_composition(canvas);
         let mut generated_sprites = 0;
         let mut sprite_generation_duration = Duration::ZERO;
         let mut rasterization_duration = Duration::ZERO;
@@ -539,11 +516,8 @@ fn run_cpu_with_updates_and_shutdown(
             ),
             image_updates,
         );
-        app_controller.publish_frame(prepared_frame);
-        let prepared_frame =
-            <crate::app::DefaultApplicationController as crate::app::ApplicationController>::prepare_frame(
-                &mut app_controller,
-            )
+        let prepared_frame = app_controller
+            .publish_and_prepare_frame(prepared_frame)
             .map_err(|error| minifb::Error::WindowCreate(format!("CPU frame failed: {error:?}")))?;
         let started = Instant::now();
         <crate::render::cpu::CpuRenderTarget as crate::render::RenderTarget>::update_images(

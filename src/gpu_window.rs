@@ -1,4 +1,7 @@
-use crate::app::{reduce_effects, AppEvent, ApplicationController, DefaultApplicationController};
+use crate::app::{
+    prepare_canvas_common, reduce_effects, AppEvent, ApplicationController,
+    DefaultApplicationController,
+};
 use crate::gpu::{
     create_tile_pipeline, debug_overlay_upload, debug_overlay_upload_with_rectangles,
     texture_keys_for_commands, tile_commands_for_frame, tile_vertices_for_commands,
@@ -507,24 +510,7 @@ impl GpuAppState {
         }
     }
 
-    pub fn prepare_visible_batch(&mut self) {
-        let preparation_started = Instant::now();
-        self.canvas.begin_frame();
-        if let Some(timing) = self.canvas.last_finished_frame_timing() {
-            self.frame_timing_ring.push_back(timing);
-            while self.frame_timing_ring.len() > GPU_FRAME_HISTORY_CAPACITY {
-                self.frame_timing_ring.pop_front();
-            }
-        }
-        self.canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::ConfigurationProcessed,
-            "configuracao processada",
-        );
-
-        self.canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::SurfacePrepared,
-            "superficie preparada",
-        );
+    fn refresh_allocation_bounds(&mut self) {
         self.allocation_bounds = centered_bounds(
             self.config.width,
             self.config.height,
@@ -535,26 +521,27 @@ impl GpuAppState {
             self.config.height,
             self.config.effective_deallocation_ratio(),
         );
-        self.canvas
-            .trim_outside_allocation(self.deallocation_bounds);
-        self.canvas.ensure_screen_coverage(self.allocation_bounds);
-        self.canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::ScreenCoverageCompleted,
-            "cobertura da tela concluida",
-        );
+    }
 
-        for layer in self.canvas.layers() {
-            self.orchestrator.render_layer(layer);
+    pub fn prepare_visible_batch(&mut self) {
+        self.refresh_allocation_bounds();
+        prepare_canvas_common(
+            &mut self.canvas,
+            &self.orchestrator,
+            self.allocation_bounds,
+            self.deallocation_bounds,
+        );
+        self.prepare_visible_batch_after_canvas();
+    }
+
+    fn prepare_visible_batch_after_canvas(&mut self) {
+        let preparation_started = Instant::now();
+        if let Some(timing) = self.canvas.last_finished_frame_timing() {
+            self.frame_timing_ring.push_back(timing);
+            while self.frame_timing_ring.len() > GPU_FRAME_HISTORY_CAPACITY {
+                self.frame_timing_ring.pop_front();
+            }
         }
-        self.canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::LayerWorkScheduled,
-            "trabalho das camadas agendado",
-        );
-        self.canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::TileCompositionStarted,
-            "composicao de tiles iniciada",
-        );
-
         let mut tiles = Vec::new();
         for layer in self.canvas.layers() {
             for row in 0..layer.row_count() {
@@ -1532,11 +1519,23 @@ impl ApplicationHandler for GpuWindowApp {
             );
         }
         let prepared = self.state.as_mut().map(|state| {
-            state.prepare_visible_batch();
+            state.refresh_allocation_bounds();
+            self.app_controller.prepare_canvas(
+                &mut state.canvas,
+                &state.orchestrator,
+                state.allocation_bounds,
+                state.deallocation_bounds,
+            );
+            self.app_controller
+                .begin_tile_composition(&mut state.canvas);
+            state.prepare_visible_batch_after_canvas();
             (state.prepared_batch.take(), state.prepared_frame.clone())
         });
         if let Some((Some(batch), Some(frame))) = prepared {
-            self.app_controller.publish_frame(frame.clone());
+            let frame = self
+                .app_controller
+                .publish_and_prepare_frame(frame)
+                .expect("GPU controller should prepare a published frame");
             if let Some(state) = &mut self.state {
                 state.canvas.record_frame_event(
                     crate::orchestrator::FrameEventKind::GpuBatchPreparationFinished,
