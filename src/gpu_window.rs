@@ -1180,14 +1180,7 @@ impl ApplicationHandler for GpuWindowApp {
                 renderer_closed.store(true, std::sync::atomic::Ordering::Release);
             }
         }
-        let app_event = match &event {
-            WindowEvent::CloseRequested => Some(AppEvent::CloseRequested),
-            WindowEvent::Resized(size) => {
-                Some(AppEvent::Resized(Viewport::new(size.width, size.height)))
-            }
-            WindowEvent::RedrawRequested => Some(AppEvent::RedrawRequested),
-            _ => None,
-        };
+        let app_event = app_event_from_window_event(&event);
         if let Some(app_event) = app_event {
             let effects = self.app_controller.handle_event(app_event);
             if effects.contains(&AppEffect::Exit) {
@@ -1519,18 +1512,52 @@ impl ApplicationHandler for GpuWindowApp {
     }
 }
 
+fn app_event_from_window_event(event: &WindowEvent) -> Option<AppEvent> {
+    match event {
+        WindowEvent::CloseRequested => Some(AppEvent::CloseRequested),
+        WindowEvent::Resized(size) => {
+            Some(AppEvent::Resized(Viewport::new(size.width, size.height)))
+        }
+        WindowEvent::RedrawRequested => Some(AppEvent::RedrawRequested),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        centered_bounds, format_gpu_frame_history, format_gpu_frame_overlay_header,
-        format_gpu_upload_stage, frame_tiles_from_batch, needs_batch_rebuild,
-        next_vertex_buffer_slot, overlay_cache_key, overlay_needs_refresh, select_present_mode,
-        vertex_buffer_capacity, vertex_buffer_needs_recreation, GpuFrameMetrics, PreparedTileBatch,
+        app_event_from_window_event, centered_bounds, format_gpu_frame_history,
+        format_gpu_frame_overlay_header, format_gpu_upload_stage, frame_tiles_from_batch,
+        needs_batch_rebuild, next_vertex_buffer_slot, overlay_cache_key, overlay_needs_refresh,
+        select_present_mode, vertex_buffer_capacity, vertex_buffer_needs_recreation,
+        GpuFrameMetrics, PreparedTileBatch,
     };
     use crate::geometry::ScreenPoint;
     use crate::gpu::{TextureKey, TextureUpload, TileDrawCommand};
     use crate::render::{ImageId, ImageRevision, Rect, Viewport};
     use std::time::Duration;
+    use winit::dpi::PhysicalSize;
+    use winit::event::WindowEvent;
+
+    #[test]
+    fn translates_window_lifecycle_events_to_application_events() {
+        assert_eq!(
+            app_event_from_window_event(&WindowEvent::Resized(PhysicalSize::new(640, 480))),
+            Some(crate::app::AppEvent::Resized(Viewport::new(640, 480)))
+        );
+        assert_eq!(
+            app_event_from_window_event(&WindowEvent::RedrawRequested),
+            Some(crate::app::AppEvent::RedrawRequested)
+        );
+        assert_eq!(
+            app_event_from_window_event(&WindowEvent::CloseRequested),
+            Some(crate::app::AppEvent::CloseRequested)
+        );
+        assert_eq!(
+            app_event_from_window_event(&WindowEvent::Occluded(false)),
+            None
+        );
+    }
 
     #[test]
     fn frame_stats_describe_visible_tiles_and_new_uploads() {
