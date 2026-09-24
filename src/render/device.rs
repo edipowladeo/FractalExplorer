@@ -240,9 +240,8 @@ pub struct MockGraphicsDevice {
 #[cfg(test)]
 impl MockGraphicsDevice {
     fn next_handle(&mut self) -> u64 {
-        let next = self.next_handle;
         self.next_handle = self.next_handle.wrapping_add(1);
-        next
+        self.next_handle
     }
 
     pub fn submitted(&self) -> &[CommandList] {
@@ -348,9 +347,8 @@ impl GraphicsDevice for MockGraphicsDevice {
 #[cfg(test)]
 mod tests {
     use super::{
-        BufferDescriptor, BufferHandle, BufferUsage, Command, CommandList, DeviceError,
-        GraphicsDevice, MockGraphicsDevice, TextureDescriptor, TextureFormat, TextureHandle,
-        TextureResourceCache,
+        BufferDescriptor, BufferUsage, Command, CommandList, DeviceError, GraphicsDevice,
+        MockGraphicsDevice, TextureDescriptor, TextureFormat, TextureResourceCache,
     };
 
     #[test]
@@ -411,42 +409,9 @@ mod tests {
         );
     }
 
-    #[derive(Default)]
-    struct RecordingDevice {
-        next_handle: u64,
-        submitted: Vec<CommandList>,
-    }
-
-    impl GraphicsDevice for RecordingDevice {
-        fn create_buffer(
-            &mut self,
-            _descriptor: BufferDescriptor,
-        ) -> Result<BufferHandle, DeviceError> {
-            self.next_handle += 1;
-            Ok(BufferHandle::new(self.next_handle))
-        }
-
-        fn create_texture(
-            &mut self,
-            _descriptor: TextureDescriptor,
-        ) -> Result<TextureHandle, DeviceError> {
-            self.next_handle += 1;
-            Ok(TextureHandle::new(self.next_handle))
-        }
-
-        fn submit(&mut self, commands: CommandList) -> Result<(), DeviceError> {
-            self.submitted.push(commands);
-            Ok(())
-        }
-
-        fn destroy_buffer(&mut self, _buffer: BufferHandle) {}
-
-        fn destroy_texture(&mut self, _texture: TextureHandle) {}
-    }
-
     #[test]
     fn device_contract_keeps_resource_creation_and_submission_backend_independent() {
-        let mut device = RecordingDevice::default();
+        let mut device = MockGraphicsDevice::default();
         let buffer = device
             .create_buffer(BufferDescriptor {
                 size: 16,
@@ -468,16 +433,16 @@ mod tests {
 
         assert_eq!(buffer.value(), 1);
         assert_eq!(texture.value(), 2);
-        assert_eq!(device.submitted.len(), 1);
+        assert_eq!(device.submitted().len(), 1);
         assert!(matches!(
-            &device.submitted[0].commands()[0],
+            &device.submitted()[0].commands()[0],
             Command::WriteBuffer { offset: 4, .. }
         ));
     }
 
     #[test]
     fn texture_cache_uploads_only_new_revisions_and_reuses_same_dimensions() {
-        let mut device = RecordingDevice::default();
+        let mut device = MockGraphicsDevice::default();
         let mut cache = TextureResourceCache::new();
         let first = crate::render::ImageUpdate::new(
             crate::render::ImageId::new(7),
@@ -504,7 +469,7 @@ mod tests {
         assert_eq!(cache.upload_updates(&mut device, &[first]).unwrap(), 0);
         assert_eq!(cache.upload_updates(&mut device, &[newer]).unwrap(), 1);
         assert_eq!(cache.handle(crate::render::ImageId::new(7)), handle);
-        assert_eq!(device.submitted.len(), 2);
+        assert_eq!(device.submitted().len(), 2);
     }
 }
 use std::collections::HashMap;
