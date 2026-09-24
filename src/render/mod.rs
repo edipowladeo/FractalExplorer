@@ -1,6 +1,7 @@
 pub mod cpu;
 pub mod device;
 pub mod gpu;
+pub mod graphics;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ImageId(u64);

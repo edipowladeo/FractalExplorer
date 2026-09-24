@@ -136,6 +136,16 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   HILT confirmou redraw, resize e fechamento sem panic. A integração visual da
   Config UI permanece explicitamente na T035 do backlog; composição `wgpu`
   migra nos Passos 5–6.
+- **Passo 5 em andamento:** RED fixou o caminho do adaptador público e GREEN
+  moveu `WgpuGraphicsDevice` para `render::graphics::wgpu`, com wrappers
+  `WgpuPipeline`, `WgpuSurface`, `WgpuBuffer` e `WgpuTexture`. Foi criado um
+  `MockGraphicsDevice` de teste que valida ciclo de vida, dimensões/limites de
+  uploads e a ordem de desenho/apresentação. Como o adaptador de recursos ainda
+  não codifica render pass, agora rejeita `DrawTexture`/`Present` em vez de
+  ignorá-los; o suporte de apresentação será fechado na migração do Passo 6.
+  `cargo test --lib` passou com 187 testes; `cargo check --bin sprite-demo`,
+  `cargo fmt --all -- --check` e `git diff --check` passaram. Ainda falta
+  completar e confinar todos os tipos `wgpu` ao adaptador.
 - **Diagnóstico de frames lentos:** adicionados eventos separados para o tempo
   entre a finalização de um frame e o próximo ciclo do event loop
   (`GpuEventLoopWait`) e para a latência entre `request_redraw` e
