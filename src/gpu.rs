@@ -159,7 +159,7 @@ pub fn debug_overlay_upload(text: &str, width: u32, height: u32) -> TextureUploa
     TextureUpload {
         key: TextureKey {
             tile: usize::MAX,
-            content_hash: hash_pixels(
+            content_hash: sprite_content_hash(
                 &rgba8
                     .chunks_exact(4)
                     .map(|pixel| u32::from_le_bytes([pixel[0], pixel[1], pixel[2], pixel[3]]))
@@ -200,7 +200,7 @@ pub fn debug_overlay_upload_with_rectangles(
             }
         }
     }
-    upload.key.content_hash = hash_pixels(
+    upload.key.content_hash = sprite_content_hash(
         &upload
             .rgba8
             .chunks_exact(4)
@@ -460,7 +460,7 @@ impl TextureCache {
         let tile_id = Arc::as_ptr(tile_sprite.tile()) as usize;
         let key = TextureKey {
             tile: tile_id,
-            content_hash: hash_pixels(sprite.pixels()),
+            content_hash: sprite_content_hash(sprite.pixels()),
         };
         if self.entries.get(&tile_id) == Some(&key) {
             return None;
@@ -532,7 +532,7 @@ pub fn prepare_tile_batch(
     let mut keyed_tiles = Vec::with_capacity(tiles.len());
     for (tile, sprite) in tiles {
         let tile_id = Arc::as_ptr(tile.tile()) as usize;
-        let content_hash = hash_pixels(sprite.pixels());
+        let content_hash = sprite_content_hash(sprite.pixels());
         let key = TextureKey {
             tile: tile_id,
             content_hash,
@@ -769,7 +769,7 @@ pub fn write_tile_texture(context: &GpuContext, texture: &wgpu::Texture, upload:
     );
 }
 
-fn hash_pixels(pixels: &[u32]) -> u64 {
+pub fn sprite_content_hash(pixels: &[u32]) -> u64 {
     pixels.iter().fold(0xcbf29ce484222325, |h, p| {
         (h ^ u64::from(*p)).wrapping_mul(0x100000001b3)
     })
