@@ -26,8 +26,9 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   destino; sua remoção pertence ao passo 7.
 - O cache do `GpuRenderTarget` descarta imagens que saíram do frame; falhas de
   criação/submissão mantêm o cache anterior consistente. Cobertura de overlay
-  inclui `reduced_viewport` mesmo com overlays globais desligados.
-- Verificações: `cargo test --lib -- --test-threads=1` (196 passaram),
+  inclui `reduced_viewport` mesmo com overlays globais desligados; o texto de
+  workers, fila, camadas e frames usa âncoras CPU na composição comum.
+- Verificações: `cargo test --lib -- --test-threads=1` (197 passaram),
   `cargo check --bin sprite-demo`, `cargo fmt -- --check` e `git diff --check`.
 - Validação visual HITL não foi executada conforme instrução do usuário. O
   passo 6 segue em andamento: instrumentação detalhada no adaptador e demais
