@@ -157,6 +157,12 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   refactor: `cargo test --lib` (187 testes), `cargo check --bin sprite-demo`,
   `cargo fmt --all -- --check`, busca de dependências legadas e
   `git diff --check` passaram.
+  A política de superfície para modo de apresentação e uso permitido foi
+  movida do runtime para o adaptador. RED confirmou as funções ausentes;
+  GREEN: os testes de preferência/fallback e uso de superfície passaram, assim
+  como `cargo test --lib` (187 testes), `cargo check --bin sprite-demo`,
+  `cargo fmt --all -- --check` e `git diff --check`. A apresentação efetiva e
+  os tipos WGPU restantes no runtime seguem pendentes, sem mudança visual.
 - **Diagnóstico de frames lentos:** adicionados eventos separados para o tempo
   entre a finalização de um frame e o próximo ciclo do event loop
   (`GpuEventLoopWait`) e para a latência entre `request_redraw` e
