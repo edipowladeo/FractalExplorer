@@ -4,7 +4,7 @@ use crate::app::{
 };
 use crate::gpu::{
     debug_overlay_upload, debug_overlay_upload_with_rectangles, texture_keys_for_commands,
-    tile_commands_for_frame, PreparedTileBatch, TextureCache, TileDrawCommand,
+    tile_commands_for_frame, PreparedTileBatch, TextureCache, TextureUpload, TileDrawCommand,
 };
 use crate::input::{InputEvent, ZoomDirection};
 use crate::render::graphics::wgpu::{
@@ -14,9 +14,9 @@ use crate::render::graphics::wgpu::{
     WgpuSurfaceAcquire, WgpuSurfaceFormat, WgpuTextureLayout, WgpuVertexBufferRing,
     GPU_VERTEX_BUFFER_RING_SIZE,
 };
-use crate::render::{ImageId, ImageRevision, ImageUpdate, PreparedFrame, Viewport};
-#[cfg(test)]
-use crate::render::{Rect, TileDraw};
+use crate::render::{
+    ImageId, ImageRevision, ImageUpdate, OverlayPrimitive, PreparedFrame, Rect, TileDraw, Viewport,
+};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -35,6 +35,8 @@ fn uses_persistent_composition(preserve_previous_frame: bool) -> bool {
 }
 
 const GPU_FRAME_HISTORY_CAPACITY: usize = 8;
+const GPU_TEXT_OVERLAY_IMAGE_ID: ImageId = ImageId::new(u64::MAX);
+const GPU_ENVELOPE_IMAGE_ID: ImageId = ImageId::new(u64::MAX - 1);
 
 fn format_gpu_frame_history(history: &VecDeque<(u64, Duration)>) -> String {
     history
@@ -151,6 +153,25 @@ fn format_gpu_redraw_latency(elapsed: Duration) -> String {
         "event loop",
     )
     .replace(" (event loop)", "")
+}
+
+fn append_image_overlay(
+    prepared: &PreparedFrame,
+    image: ImageId,
+    upload: TextureUpload,
+    destination: Rect,
+) -> Result<PreparedFrame, crate::render::ImageUpdateError> {
+    let revision = ImageRevision::new(upload.key.content_hash);
+    let update = ImageUpdate::new(image, revision, upload.width, upload.height, upload.rgba8)?;
+    let frame = prepared
+        .frame()
+        .clone()
+        .with_overlay(OverlayPrimitive::Image(
+            TileDraw::new(image, revision, 0).with_destination(destination),
+        ));
+    let mut updates = prepared.image_updates().to_vec();
+    updates.push(update);
+    Ok(PreparedFrame::new(frame, updates))
 }
 
 impl GpuFrameMetrics {
@@ -427,8 +448,64 @@ impl GpuAppState {
             Vec::new(),
             image_updates,
         );
-        self.prepared_frame = Some(frame);
+        self.prepared_frame = Some(self.append_debug_overlays(frame));
         self.prepared_batch = Some(batch);
+    }
+
+    fn append_debug_overlays(&self, mut prepared: PreparedFrame) -> PreparedFrame {
+        let debug = &self.config.debug;
+        let show_envelope = debug.should_show_allocation_envelope();
+        let show_text = debug.overlays_enabled()
+            && (debug.text_overlay_frames
+                || debug.text_overlay_layers
+                || debug.text_overlay_queue
+                || debug.text_overlay_workers);
+        if !show_envelope && !show_text {
+            return prepared;
+        }
+        let viewport = prepared.frame().viewport();
+        let width = viewport.width();
+        let height = viewport.height();
+        if width == 0 || height == 0 {
+            return prepared;
+        }
+
+        if show_envelope {
+            let rectangles = [
+                (self.allocation_bounds, [255, 0, 0, 255]),
+                (self.deallocation_bounds, [255, 255, 0, 255]),
+            ];
+            let upload = debug_overlay_upload_with_rectangles("", width, height, &rectangles);
+            if let Ok(with_envelope) = append_image_overlay(
+                &prepared,
+                GPU_ENVELOPE_IMAGE_ID,
+                upload,
+                Rect::new(0, 0, width, height),
+            ) {
+                prepared = with_envelope;
+            }
+        }
+
+        if show_text {
+            let text = format_gpu_overlay_text(
+                self,
+                self.last_frame_metrics.map_or(0, |m| m.visible_tiles()),
+            );
+            let line_count = text.lines().count().max(1);
+            let upload = debug_overlay_upload(&text, 240, line_count as u32 * 16);
+            let destination = Rect::new(
+                8,
+                height.saturating_sub(upload.height + 8) as i32,
+                upload.width,
+                upload.height,
+            );
+            if let Ok(with_text) =
+                append_image_overlay(&prepared, GPU_TEXT_OVERLAY_IMAGE_ID, upload, destination)
+            {
+                prepared = with_text;
+            }
+        }
+        prepared
     }
 }
 
@@ -614,12 +691,23 @@ impl GpuWindowApp {
         {
             return;
         }
-        let image_updates = self
-            .state
-            .as_ref()
-            .and_then(|state| state.prepared_frame.as_ref())
-            .map(|prepared| prepared.image_updates().to_vec())
-            .unwrap_or_default();
+        let image_updates =
+            self.state
+                .as_ref()
+                .and_then(|state| state.prepared_frame.as_ref())
+                .map(|prepared| {
+                    prepared
+                        .image_updates()
+                        .iter()
+                        .filter(|update| {
+                            batch.commands.iter().any(|command| {
+                                command.texture.tile as u64 == update.image().value()
+                            })
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
         let texture_upload_count = if image_updates.is_empty() {
             batch.uploads.len()
         } else {
@@ -1377,6 +1465,74 @@ mod tests {
                     .with_destination(Rect::new(31, 9, 8, 12)),
             ]
         );
+    }
+
+    #[test]
+    fn prepared_frame_adds_overlay_image_to_shared_resources_and_draw_order() {
+        let viewport = Viewport::new(4, 3);
+        let base = crate::render::PreparedFrame::new(
+            crate::render::RenderFrame::new(7, viewport),
+            Vec::new(),
+        );
+        let upload = TextureUpload {
+            key: TextureKey {
+                tile: usize::MAX,
+                content_hash: 42,
+            },
+            width: 1,
+            height: 1,
+            rgba8: vec![255, 255, 255, 255],
+        };
+
+        let prepared = super::append_image_overlay(
+            &base,
+            ImageId::new(usize::MAX as u64),
+            upload,
+            Rect::new(2, 1, 1, 1),
+        )
+        .unwrap();
+
+        assert_eq!(prepared.image_updates().len(), 1);
+        assert_eq!(
+            prepared.image_updates()[0].image(),
+            ImageId::new(usize::MAX as u64)
+        );
+        assert_eq!(prepared.frame().overlays().len(), 1);
+        let crate::render::OverlayPrimitive::Image(image) = &prepared.frame().overlays()[0];
+        assert_eq!(image.image(), ImageId::new(usize::MAX as u64));
+        assert_eq!(image.destination(), Rect::new(2, 1, 1, 1));
+    }
+
+    #[test]
+    fn reduced_viewport_keeps_its_envelope_in_the_common_frame() {
+        let canvas = crate::TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-2.0, 1.0),
+            8,
+            8,
+            0.01,
+            ScreenPoint::new(0, 0),
+            8.0,
+            0.5,
+        );
+        let orchestrator = crate::Orchestrator::with_worker_count(crate::Mandelbrot::new(32), 1);
+        let mut config = crate::config::RendererConfig::default();
+        config.width = 8;
+        config.height = 8;
+        config.debug.reduced_viewport = true;
+        config.debug.show_allocation_envelope = false;
+        config.debug.text_overlay_global = false;
+        let state = super::GpuAppState::new(canvas, orchestrator, config);
+        let base = crate::render::PreparedFrame::new(
+            crate::render::RenderFrame::new(8, Viewport::new(8, 8)),
+            Vec::new(),
+        );
+
+        let prepared = state.append_debug_overlays(base);
+
+        assert_eq!(prepared.frame().overlays().len(), 1);
+        assert_eq!(prepared.image_updates().len(), 1);
+        let crate::render::OverlayPrimitive::Image(envelope) = &prepared.frame().overlays()[0];
+        assert_eq!(envelope.image(), ImageId::new(u64::MAX - 1));
     }
 
     #[test]
