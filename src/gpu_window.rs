@@ -3,12 +3,12 @@ use crate::app::{
     DefaultApplicationController,
 };
 use crate::gpu::{
-    create_tile_pipeline, debug_overlay_upload, debug_overlay_upload_with_rectangles,
-    texture_keys_for_commands, tile_commands_for_frame, tile_vertices_for_commands,
-    upload_tile_texture, write_tile_texture, GpuContext, GpuTextureStore, GpuTileTexture,
-    PreparedTileBatch, TextureCache, TileDrawCommand,
+    debug_overlay_upload, debug_overlay_upload_with_rectangles, texture_keys_for_commands,
+    tile_commands_for_frame, tile_vertices_for_commands, upload_tile_texture, write_tile_texture,
+    GpuContext, GpuTextureStore, GpuTileTexture, PreparedTileBatch, TextureCache, TileDrawCommand,
 };
 use crate::input::{InputEvent, ZoomDirection};
+use crate::render::graphics::wgpu::{create_tile_pipeline, WgpuPipeline};
 use crate::render::{ImageId, ImageRevision, ImageUpdate, PreparedFrame, Viewport};
 #[cfg(test)]
 use crate::render::{Rect, TileDraw};
@@ -549,7 +549,7 @@ pub struct GpuWindowApp {
     window: Option<Arc<Window>>,
     surface: Option<wgpu::Surface<'static>>,
     surface_config: Option<wgpu::SurfaceConfiguration>,
-    pipeline: Option<wgpu::RenderPipeline>,
+    pipeline: Option<WgpuPipeline>,
     tile_bind_group_layout: Option<wgpu::BindGroupLayout>,
     tile_vertex_ring: VertexBufferRing,
     overlay_vertex_ring: VertexBufferRing,
@@ -1296,7 +1296,7 @@ impl ApplicationHandler for GpuWindowApp {
                                 multiview_mask: None,
                             });
                             let mut pass = _pass;
-                            pass.set_pipeline(pipeline);
+                            pass.set_pipeline(&pipeline.0);
                             if let Some(store) = &self.texture_store {
                                 if let Some(vertex_buffer) = self.tile_vertex_ring.active_buffer() {
                                     pass.set_vertex_buffer(0, vertex_buffer.slice(..));
@@ -1365,7 +1365,7 @@ impl ApplicationHandler for GpuWindowApp {
                                 multiview_mask: None,
                             });
                             let mut pass = _pass;
-                            pass.set_pipeline(pipeline);
+                            pass.set_pipeline(&pipeline.0);
                             pass.set_bind_group(0, &composition.bind_group, &[]);
                             pass.set_vertex_buffer(0, composition.present_vertex_buffer.slice(..));
                             pass.draw(0..6, 0..1);
