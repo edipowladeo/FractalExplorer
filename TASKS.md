@@ -17,6 +17,23 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## TODO
 
+### T029 — checkpoint atual do passo 6
+
+- O `GpuWindowApp` agora compartilha contexto/superfície WGPU com
+  `WgpuGraphicsDevice` e submete `PreparedFrame` via `RenderTargetSession`;
+  tiles, envelope e texto usam imagens/overlays do contrato comum. O código do
+  caminho antigo ainda existe, mas não é selecionado após a inicialização do
+  destino; sua remoção pertence ao passo 7.
+- O cache do `GpuRenderTarget` descarta imagens que saíram do frame; falhas de
+  criação/submissão mantêm o cache anterior consistente. Cobertura de overlay
+  inclui `reduced_viewport` mesmo com overlays globais desligados; o texto de
+  workers, fila, camadas e frames usa âncoras CPU na composição comum.
+- Verificações: `cargo test --lib -- --test-threads=1` (197 passaram),
+  `cargo check --bin sprite-demo`, `cargo fmt -- --check` e `git diff --check`.
+- Validação visual HITL não foi executada conforme instrução do usuário. O
+  passo 6 segue em andamento: instrumentação detalhada no adaptador e demais
+  critérios do plano ainda precisam ser fechados; não marcar T029 como DONE.
+
 ### T029 — Renderização modular com destinos plugáveis
 
 - **Objetivo:** transformar o spike GPU validado em apenas mais um destino de
@@ -35,6 +52,203 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   persistentes; renderer legado como fallback; Metal e GPGPU adicionáveis sem
   modificar canvas, UI, overlays ou instrumentação; testes GREEN, refactor,
   commits focados e push confirmados.
+- **Passo 0 concluído:** a caracterização determinística cobre viewport
+  reduzida, envelopes, ordem de camadas, tiles progressivos, overlays, input,
+  resize, configuração e encerramento. O golden data do `PreparedTileBatch`
+  preserva identidade, ordem e destino no `RenderFrame`; RED confirmou a
+  ausência da conversão isolada e GREEN passou após a extração de
+  `frame_tiles_from_batch`. `cargo fmt`, `git diff --check` e `cargo test
+  --lib` passaram com 160 testes. Não foi necessária validação HILT.
+- **Passo 1 concluído:** criado `PreparedFrame`, que mantém o `RenderFrame`
+  lógico separado dos `ImageUpdate` em um snapshot imutável; os caminhos GPU e
+  CPU publicam e consomem o mesmo contrato. No CPU, a conversão de sprites
+  preserva identidade, revisão, ordem, destino e payload RGBA, e o rasterizador
+  usa os destinos do snapshot. RED confirmou o tipo ausente e depois a unidade
+  de preparação CPU ausente; GREEN passou após a implementação e a migração.
+  `cargo fmt`, `git diff --check` e `cargo test --lib` passaram com 162 testes.
+  Não foi necessária validação HILT.
+- **Passo 2 concluído:** o `RenderTargetPipeline` agora centraliza a
+  sequência de resize, uploads, render, eviction e recovery, coberta por fake
+  determinística. O `CpuRenderTarget` passou a preservar a semântica de
+  framebuffer anterior, cor de fundo e o loop CPU já usa resize/update/render
+  pelo contrato comum. RED/GREEN cobriram a preservação de pixels; `cargo fmt`,
+  `git diff --check` e `cargo test --lib` passaram com 164 testes. Não foi
+  necessária validação HILT até aqui.
+- **Fechamento do passo 2:** `RendererFactory` passou a concentrar a seleção
+  CPU/GPU, o `main` consulta a factory em vez de comparar o enum de backend e
+  o runner CPU recebe a construção do `CpuRenderTarget` pela factory. A
+  factory CPU também é a implementação usada pelo contrato
+  `RenderTargetFactory`, mantendo o fallback legado no mesmo ponto de
+  composição. RED/GREEN: os testes de seleção CPU/GPU passaram; REFACTOR:
+  `CpuRenderTargetFactory::create_cpu_target` eliminou a construção duplicada.
+  `cargo fmt --all -- --check`, `git diff --check` e `cargo test --lib`
+  passaram com 176 testes. A alteração não muda comportamento visual nem
+  exige validação HILT.
+- **Passo 3 concluido:** o controlador agora expoe uma fronteira unica para
+  publicar e preparar `PreparedFrame`, usada pelos runtimes CPU e GPU. Tambem
+  centraliza o ciclo comum de canvas em `prepare_canvas_common`; `GpuWindowApp`
+  e o loop CPU deixam de duplicar begin frame, trim, cobertura e agendamento
+  das camadas. A composicao de imagens continua especifica do adaptador.
+  Shared canvas tile collection, sprite generation, stable identity, and logical
+  frame descriptions are now consumed by CPU and GPU. The controller builds
+  sequential PreparedFrame snapshots and owns shared pan/zoom behavior and
+  semantic layer, queue, and worker overlay data. The adapters still rasterize
+  those overlays. RED/GREEN: frame, input, and overlay-switch tests; cargo test
+  --lib passed (180 tests), cargo check --bin sprite-demo, cargo fmt --all
+  -- --check, and git diff --check passed. Visual HILT was confirmed by the
+  user before continuing.
+- Registro anterior do passo 3: `ApplicationController::prepare_frame` passou a
+  retornar `PreparedFrame`, alinhando a API comum ao snapshot usado por CPU e
+  GPU. RED confirmou que o controlador ainda retornava `RenderFrame`; GREEN
+  passou após encapsular frame e updates, com 2 testes do controlador. O
+  `publish_frame` agora recebe o snapshot do runtime GPU e o invalida em
+  resize, também coberto por RED/GREEN. O controlador ainda precisa receber o
+  canvas/scheduler e produzir os tiles e overlays reais; o loop CPU agora
+  também publica e consome o snapshot pelo controlador, e resize, input,
+  configuração e encerramento passam pela mesma normalização de eventos. O
+  runtime GPU agora drena atualizações de configuração por canal e sinaliza o
+  encerramento ao Config UI, ambos sem acesso à janela nos testes. O passo não
+  foi concluído. O canal agora é criado por `gpu_window::runtime_channels`,
+  conectado ao `main` e consumido por `GpuWindowApp`; o sinal de encerramento
+  também é compartilhado com a Config UI. RED/GREEN: o teste
+  `gpu_window::tests::runtime_channels_connect_config_updates_and_shutdown_signal`
+  passou, `cargo check --bin sprite-demo` passou e `cargo test --lib` passou com
+  168 testes; `cargo fmt --all` e `git diff --check` também passaram. O próximo
+  gate — validar resize, configuração, overlays e shutdown numa janela GPU
+  real — requer validação HILT.
+- **HILT e correção do runtime:** a validação manual reproduziu o panic do
+  `winit` quando o `EventLoop` era criado na thread GPU secundária no Windows.
+  GREEN: o entrypoint GPU voltou a executar o event loop na thread principal;
+  `cargo test --lib` passou com 170 testes e `cargo check --bin sprite-demo`
+  passou. A Config UI não é aberta simultaneamente pelo entrypoint GPU até a
+  integração ser migrada para um runtime único. Essa integração foi movida para
+  o backlog como T035; criar outro event loop em thread secundária teria a
+  mesma restrição de plataforma.
+- **Passo 4 — adaptador de ciclo de vida concluído no escopo T029:** a tradução
+  dos eventos de ciclo de vida do `winit`
+  (`resize`, `redraw` e fechamento) foi extraída para
+  `app_event_from_window_event`, deixando o adaptador GPU encaminhar eventos ao
+  `ApplicationController` por uma fronteira pura e testável. RED confirmou a
+  ausência do tradutor; GREEN passou com o teste
+  `gpu_window::tests::translates_window_lifecycle_events_to_application_events`.
+  `cargo fmt --all`, `git diff --check` e `cargo test --lib` passaram com 171
+  testes. A redução de `AppEffect` para ações do runtime também foi extraída;
+  agora resize, input e configuração encaminham `RequestRedraw` ao adaptador,
+  em vez de descartar o efeito. RED/GREEN cobriram
+  `app::tests::reduces_controller_effects_to_runtime_actions` e a suíte passou
+  com 172 testes. Registro intermediário: o ciclo de redraw e o encerramento
+  foram concluídos e validados nas atualizações abaixo.
+- **Passo 4 — ciclo de redraw:** RED confirmou que `AppEffect::Render` era
+  descartado por `reduce_effects`; GREEN preservou a ação e condicionou o
+  caminho GPU de `RedrawRequested` à decisão do controlador. O callback
+  `about_to_wait` agora também é representado por `AppEvent::AboutToWait`, com
+  ações explícitas `PrepareFrame` e `RequestRedraw`; após `CloseRequested`, o
+  controlador não agenda outro frame, evitando a preparação tardia que podia
+  falhar com `InvalidFrame("application is closed")`. RED/GREEN cobriu a
+  sequência do controlador. `cargo test --lib` passou com 183 testes,
+  `cargo check --bin sprite-demo`, `cargo fmt --all -- --check` e
+  `git diff --check` passaram. O teste fake de runtime cobre resize contínuo,
+  input, configuração, redraw, fechamento e o sinal de shutdown compartilhado,
+  sem janela real.
+  HILT confirmou redraw, resize e fechamento sem panic. A integração visual da
+  Config UI permanece explicitamente na T035 do backlog; composição `wgpu`
+  migra nos Passos 5–6.
+- **Passo 5 em andamento:** RED fixou o caminho do adaptador público e GREEN
+  moveu `WgpuContext`, `WgpuGraphicsDevice`, construção do pipeline, layout de
+  vértices, uploads e cache de texturas para `render::graphics::wgpu`, com
+  wrappers `WgpuPipeline`, `WgpuSurface`, `WgpuBuffer` e `WgpuTexture`. O
+  runtime GPU já consome esses wrappers para contexto, pipeline e texturas. Foi criado um
+  `MockGraphicsDevice` de teste que valida ciclo de vida, dimensões/limites de
+  uploads e a ordem de desenho/apresentação. Como o adaptador de recursos ainda
+  não codifica render pass, agora rejeita `DrawTexture`/`Present` em vez de
+  ignorá-los; o suporte de apresentação será fechado na migração do Passo 6.
+  Os testes de contrato e cache foram migrados do `RecordingDevice` local para
+  esse mock compartilhado.
+  `cargo test --lib` passou com 187 testes; `cargo check --bin sprite-demo`,
+  `cargo fmt --all -- --check` e `git diff --check` passaram. O módulo legado
+  `gpu.rs` agora mantém somente reexports de compatibilidade para vértices,
+  shaders e recursos de textura, sem duplicar suas implementações. O runtime
+  ainda contém acessos `wgpu` diretos; a migração e o confinamento completo
+  seguem pendentes. O adaptador também deixou de consultar constantes de
+  shader/layout/formato pelo módulo legado. A suíte foi repetida após esse
+  refactor: `cargo test --lib` (187 testes), `cargo check --bin sprite-demo`,
+  `cargo fmt --all -- --check`, busca de dependências legadas e
+  `git diff --check` passaram.
+  A política de superfície para modo de apresentação e uso permitido foi
+  movida do runtime para o adaptador. RED confirmou as funções ausentes;
+  GREEN: os testes de preferência/fallback e uso de superfície passaram, assim
+  como `cargo test --lib` (187 testes), `cargo check --bin sprite-demo`,
+  `cargo fmt --all -- --check` e `git diff --check`. A apresentação efetiva e
+  os tipos WGPU restantes no runtime seguem pendentes, sem mudança visual.
+  A superfície agora também encapsula configuração, resize, aquisição e
+  apresentação do frame; `GpuWindowApp` usa resultados normalizados de
+  aquisição e não guarda `SurfaceConfiguration`. RED/GREEN preservou os 187
+  testes; `cargo check --bin sprite-demo`, `cargo fmt --all -- --check` e
+  `git diff --check` passaram. O usuário confirmou o HITL desta integração
+  (janela GPU, resize, interação/overlays e fechamento). Permanecem acessos
+  diretos a pipeline, buffers, encoder e render pass no runtime; Passo 5 segue
+  em andamento até completar o confinamento.
+  A política `Load`/`Clear` da superfície e seu teste de caracterização também
+  foram movidos para o adaptador, mantendo a preservação de pixels anterior
+  somente após inicialização. `cargo test --lib render::graphics::wgpu::tests`
+  passou (4 testes); `cargo fmt --all -- --check` e `git diff --check` passaram.
+  O layout de bind group agora é um wrapper do adaptador (`WgpuTextureLayout`)
+  e a textura persistente de composição (`WgpuCompositionTexture`) também é
+  criada nele; `gpu_window.rs` não declara mais esses handles WGPU nem cria
+  diretamente a textura de composição. `cargo test --lib` (187 testes),
+  `cargo check --bin sprite-demo`, `cargo fmt --all -- --check` e
+  `git diff --check` passaram. O caminho de render pass continua legado e
+  pendente, sem mudança funcional pretendida.
+  O ring de buffers de vértices também foi movido para o adaptador: rotação,
+  crescimento de capacidade, criação e escrita ficam em `WgpuVertexBufferRing`;
+  os testes de capacidade e slots acompanham a implementação. `cargo test --lib`
+  passou (187 testes), `cargo check --bin sprite-demo`, formatação e
+  `git diff --check` passaram. O render pass, acesso aos buffers, informações
+  do adaptador, consulta do device e formato da superfície também foram
+  confinados ao adaptador; `gpu_window.rs` agora usa somente wrappers e tipos
+  do domínio, sem imports ou tipos `wgpu::*`. A verificação estática da
+  fronteira e `cargo test --lib` (187 testes), `cargo check --bin sprite-demo`,
+  `cargo fmt --all -- --check` e `git diff --check` passaram. O Passo 5 está
+  concluído. O Passo 6 é o próximo: conectar a renderização efetiva do GPU aos
+  contratos `GpuRenderTarget`/`GraphicsDevice`; o adaptador ainda rejeita
+  `DrawTexture`/`Present` até essa migração.
+- **Passo 6 em andamento:** RED identificou que `GpuRenderTarget::resize`
+  alterava somente o viewport lógico e não notificava o `GraphicsDevice`.
+  GREEN adicionou `GraphicsDevice::resize` com implementação padrão sem efeito
+  e fez o target propagar o viewport ao backend antes de atualizar seu estado;
+  o teste `gpu_target_forwards_resize_to_the_graphics_device` passou. A
+  renderização concreta de comandos `DrawTexture`/`Present` no adaptador WGPU e
+  a integração do target ao runtime ainda estão pendentes.
+- Outro RED/GREEN começou a fechar a gramática de submissão: uploads devem vir
+  antes dos draws, `Present` deve ser final e draws precisam de apresentação.
+  `validates_upload_draw_present_order_for_gpu_render_targets` passou após a
+  validação da sequência no adaptador. O desenho efetivo foi implementado no
+  checkpoint seguinte; a integração do backend ao runtime continua pendente.
+- **Passo 6 — checkpoint do adaptador WGPU:** `WgpuGraphicsDevice` agora
+  executa uploads de buffers/texturas, desenha texturas com coordenadas,
+  dimensões e opacidade, apresenta o frame e propaga resize/configuração da
+  superfície. Os vértices usam ring persistente; a textura de composição
+  preserva o frame anterior quando solicitado. RED/GREEN cobriu opacidade,
+  reutilização da textura ao mover uma imagem, política de preservação e a
+  gramática upload→draw→present. `cargo test --lib` passou com 190 testes,
+  `cargo check --bin sprite-demo`, `cargo fmt -- --check` e `git diff --check`
+  passaram. **O passo 6 não está concluído:** ainda falta conectar o
+  `GpuRenderTarget` ao runtime comum e migrar overlays/instrumentação para esse
+  caminho; nenhuma validação visual foi feita neste checkpoint.
+- **Diagnóstico de frames lentos:** adicionados eventos separados para o tempo
+  entre a finalização de um frame e o próximo ciclo do event loop
+  (`GpuEventLoopWait`) e para a latência entre `request_redraw` e
+  `RedrawRequested` (`GpuRedrawLatency`). RED/GREEN cobriu os formatadores
+  desses tempos; `cargo fmt --all`, `git diff --check` e `cargo test --lib`
+  passaram com 173 testes. Um dump agora consegue distinguir espera fora do
+  renderer de custo de aquisição, composição, submissão e apresentação GPU. A
+  espera é registrada no frame anterior, antes do próximo `begin_frame`, para
+  não misturar a preparação CPU do frame seguinte nessa medição.
+- **Passo 4 — shutdown coordenado:** o sinal `renderer_closed` foi extraído
+  para `signal_renderer_closed`, sem depender de uma janela real. RED/GREEN
+  passou com `gpu_window::tests::signals_renderer_closed_without_requiring_a_window`;
+  a suíte unitária permanece GREEN com 173 testes. O próximo avanço é o
+  adaptador GPU real do Passo 5, que fica sujeito a novo gate HITL.
 - **Worktree:** implementar em `FractalExplorer-gpu`, branch `gpu-renderer`.
 
 ### T026 — Investigar e melhorar a precisão para zoom profundo
@@ -91,6 +305,15 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   mas o push para `origin/multiprecisao` foi recusado pela política do ambiente.
 
 ## BACKLOG
+
+### T035 — Integrar Config UI e renderer GPU em runtime único
+
+- Resolver a limitação documentada em
+  [T035-gpu-config-ui-runtime.md](task-descriptions/T035-gpu-config-ui-runtime.md).
+- Manter `winit::EventLoop` na thread principal e permitir configuração ao vivo
+  no modo GPU sem abrir um segundo event loop em thread secundária.
+- Promover para `TODO` somente quando a implementação for explicitamente
+  priorizada.
 
 ### T030 - Filtrar tiles totalmente sobrepostos na composicao
 

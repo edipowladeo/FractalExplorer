@@ -1,10 +1,10 @@
-use crate::config::{RendererBackend, RendererConfig};
+use crate::config::RendererConfig;
 use crate::geometry::{ComplexEnvelope, ComplexPoint, ScreenPoint, ScreenSize};
 use crate::orchestrator::CanvasNavigationEvent;
 use crate::output::OutputService;
 use crate::{
-    input::ZoomDirection, InputEvent, InputState, Orchestrator, PrecisionDecisionManager, Sprite,
-    Tile, TiledInfiniteCanvas,
+    InputEvent, InputState, Orchestrator, PrecisionDecisionManager, Sprite, Tile,
+    TiledInfiniteCanvas,
 };
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -12,6 +12,47 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 const FRAME_HISTORY_CAPACITY: usize = 30;
+
+/// Selects the platform runtime and exposes the render-target factory that it
+/// can currently construct. Backend selection belongs here, at the adapter
+/// boundary, instead of being repeated by the application entrypoint.
+pub enum RendererFactory {
+    Cpu(crate::render::CpuRenderTargetFactory),
+    Gpu,
+}
+
+impl RendererFactory {
+    pub fn from_config(config: &RendererConfig) -> Result<Self, String> {
+        match config.backend.as_str() {
+            "cpu" => Ok(Self::Cpu(crate::render::CpuRenderTargetFactory)),
+            "gpu" => Ok(Self::Gpu),
+            other => Err(format!("backend de renderer desconhecido: {other}")),
+        }
+    }
+
+    pub fn is_gpu(&self) -> bool {
+        matches!(self, Self::Gpu)
+    }
+
+    pub fn target_factory(&self) -> Option<&dyn crate::render::RenderTargetFactory> {
+        match self {
+            Self::Cpu(factory) => Some(factory),
+            Self::Gpu => None,
+        }
+    }
+
+    fn create_cpu_target(
+        &self,
+        viewport: crate::render::Viewport,
+    ) -> Result<crate::render::cpu::CpuRenderTarget, crate::render::RenderError> {
+        match self {
+            Self::Cpu(factory) => Ok(factory.create_cpu_target(viewport)),
+            Self::Gpu => Err(crate::render::RenderError::BackendUnavailable(
+                "GPU runtime does not expose the CPU target",
+            )),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 struct FrameHistoryEntry {
@@ -117,6 +158,30 @@ pub(crate) fn sprite_from_tile(
     Sprite::from_pixels(tile.width() as usize, tile.height() as usize, pixels)
 }
 
+fn prepared_cpu_tile(
+    image: crate::render::ImageId,
+    revision: crate::render::ImageRevision,
+    layer: u32,
+    destination: crate::render::Rect,
+    sprite: &Sprite,
+) -> (crate::render::TileDraw, crate::render::ImageUpdate) {
+    let rgba8 = sprite
+        .pixels()
+        .iter()
+        .flat_map(|pixel| [(pixel >> 16) as u8, (pixel >> 8) as u8, *pixel as u8, 0xff])
+        .collect();
+    let update = crate::render::ImageUpdate::new(
+        image,
+        revision,
+        sprite.width() as u32,
+        sprite.height() as u32,
+        rgba8,
+    )
+    .expect("sprite dimensions and pixels must form a valid image update");
+    let draw = crate::render::TileDraw::new(image, revision, layer).with_destination(destination);
+    (draw, update)
+}
+
 /// Framebuffer and viewport-derived regions for the current native window size.
 struct RenderSurface {
     screen_size: ScreenSize,
@@ -174,69 +239,6 @@ pub fn run(
     run_with_updates(canvas, orchestrator, config, receiver, output)
 }
 
-fn format_shutdown_overlay_dump(
-    canvas: &TiledInfiniteCanvas,
-    orchestrator: &Orchestrator,
-    surface: &RenderSurface,
-    frame_timing_ring: &FrameTimingRing,
-    mouse_position: Option<ScreenPoint>,
-) -> String {
-    let mut lines = vec!["Overlay dump on shutdown".to_owned()];
-    let mouse = mouse_position.map(|cursor| canvas.screen_to_complex(cursor));
-
-    lines.push(match mouse {
-        Some(ref point) => format!(
-            "status bar: x={:.15} y={:.15}",
-            point.x, point.y
-        ),
-        None => "status bar: unavailable".to_owned(),
-    });
-    lines.push(format!(
-        "allocation envelope: allocation={:?} deallocation={:?}",
-        surface.allocation, surface.deallocation
-    ));
-
-    lines.push("layers:".to_owned());
-    lines.extend(canvas.layers().iter().enumerate().map(|(index, layer)| {
-        format_layer_overlay(
-            index,
-            layer.zoom(),
-            delta_exponent(layer.delta()),
-            layer.column_count(),
-            layer.row_count(),
-            mouse.clone(),
-        )
-    }));
-
-    lines.push("queue:".to_owned());
-    lines.extend(canvas.layers().iter().enumerate().flat_map(|(layer_index, layer)| {
-        layer
-            .pending_work_positions()
-            .into_iter()
-            .map(move |(row, column)| {
-                format_worker_queue_line(
-                    layer_index,
-                    row,
-                    column,
-                    delta_exponent(layer.delta()),
-                )
-            })
-    }));
-
-    lines.push("workers:".to_owned());
-    lines.extend(orchestrator.worker_statuses().iter().map(|worker| {
-        format_worker_status_line(worker.id, worker.tile.as_ref())
-    }));
-
-    lines.push("frames:".to_owned());
-    lines.extend(
-        frame_timing_ring
-            .entries_in_ring_order()
-            .map(format_frame_history_line),
-    );
-    lines.join("\n") + "\n"
-}
-
 pub fn run_with_updates(
     canvas: &mut TiledInfiniteCanvas,
     orchestrator: &Orchestrator,
@@ -262,19 +264,19 @@ pub fn run_with_updates_and_shutdown(
     output: &OutputService,
     renderer_closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), minifb::Error> {
-    match initial_config
-        .backend_kind()
-        .map_err(minifb::Error::WindowCreate)?
-    {
-        RendererBackend::Cpu => run_cpu_with_updates_and_shutdown(
+    let factory =
+        RendererFactory::from_config(initial_config).map_err(minifb::Error::WindowCreate)?;
+    match factory {
+        RendererFactory::Cpu(_) => run_cpu_with_updates_and_shutdown(
             canvas,
             orchestrator,
             initial_config,
             receiver,
             output,
             renderer_closed,
+            &factory,
         ),
-        RendererBackend::Gpu => Err(minifb::Error::WindowCreate(
+        RendererFactory::Gpu => Err(minifb::Error::WindowCreate(
             "backend GPU selecionado, mas o loop wgpu ainda nao foi conectado".to_string(),
         )),
     }
@@ -287,6 +289,7 @@ fn run_cpu_with_updates_and_shutdown(
     receiver: Receiver<RendererConfig>,
     output: &OutputService,
     renderer_closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    factory: &RendererFactory,
 ) -> Result<(), minifb::Error> {
     let mut config = initial_config.clone();
     let mut surface = RenderSurface::new(
@@ -294,6 +297,16 @@ fn run_cpu_with_updates_and_shutdown(
         config.height,
         config.effective_allocation_ratio(),
         config.effective_deallocation_ratio(),
+    );
+    let mut cpu_target = factory
+        .create_cpu_target(crate::render::Viewport::new(
+            config.width as u32,
+            config.height as u32,
+        ))
+        .map_err(|error| minifb::Error::WindowCreate(format!("CPU target failed: {error:?}")))?;
+    cpu_target.set_clear_color([0x10, 0x18, 0x20, 0xff]);
+    let mut app_controller = crate::app::DefaultApplicationController::new(
+        crate::render::Viewport::new(config.width as u32, config.height as u32),
     );
     let mut window = Window::new(
         crate::app::window_title(),
@@ -307,7 +320,6 @@ fn run_cpu_with_updates_and_shutdown(
     let _output_scope = output.attach_to_current_thread();
     let mut input = InputState::new();
     let mut frame_timing_ring = FrameTimingRing::default();
-    let mut last_mouse_position = None;
     canvas.set_frame_dump_events(config.debug.frame_dump_events.clone());
     canvas.set_slow_frame_threshold_ms(config.debug.slow_frame_threshold_ms);
     let mut render_plan = PrecisionDecisionManager::from_config(initial_config).map_err(|_| {
@@ -316,7 +328,6 @@ fn run_cpu_with_updates_and_shutdown(
     while window.is_open() && !window.is_key_down(Key::Escape) {
         crate::profile_scope!("renderer_frame");
         crate::output::begin_frame();
-        canvas.begin_frame();
         if let Some((frame_number, duration)) = canvas.last_finished_frame_timing() {
             frame_timing_ring.push(frame_number, duration);
         }
@@ -333,46 +344,48 @@ fn run_cpu_with_updates_and_shutdown(
                 config = next_config;
                 canvas.set_frame_dump_events(config.debug.frame_dump_events.clone());
                 canvas.set_slow_frame_threshold_ms(config.debug.slow_frame_threshold_ms);
+                <crate::app::DefaultApplicationController as crate::app::ApplicationController>::handle_event(
+                    &mut app_controller,
+                    crate::app::AppEvent::ConfigurationChanged,
+                );
             }
         }
-        canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::ConfigurationProcessed,
-            "configuracao processada",
-        );
         // `get_size` changes while the resize gesture is in progress, not only when it ends.
         let window_size = window.get_size();
-        surface.update_window_size(window_size);
-        surface.clear_if_needed(config.preserve_previous_frame);
-        canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::SurfacePrepared,
-            "superficie preparada",
-        );
-        canvas.trim_outside_allocation((
-            surface.deallocation.left,
-            surface.deallocation.top,
-            surface.deallocation.right,
-            surface.deallocation.bottom,
-        ));
-        canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::OutsideAllocationTrimmed,
-            "tiles fora da alocacao removidos",
-        );
-        canvas.ensure_screen_coverage((
-            surface.allocation.left,
-            surface.allocation.top,
-            surface.allocation.right,
-            surface.allocation.bottom,
-        ));
-        canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::ScreenCoverageCompleted,
-            "cobertura da tela concluida",
-        );
-        for layer in canvas.layers() {
-            orchestrator.render_layer(layer);
+        if surface.update_window_size(window_size) {
+            let viewport = crate::render::Viewport::new(
+                surface.screen_size.width as u32,
+                surface.screen_size.height as u32,
+            );
+            <crate::app::DefaultApplicationController as crate::app::ApplicationController>::handle_event(
+                &mut app_controller,
+                crate::app::AppEvent::Resized(viewport),
+            );
+            <crate::render::cpu::CpuRenderTarget as crate::render::RenderTarget>::resize(
+                &mut cpu_target,
+                viewport,
+            )
+            .map_err(|error| {
+                minifb::Error::WindowCreate(format!("CPU resize failed: {error:?}"))
+            })?;
         }
-        canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::LayerWorkScheduled,
-            "trabalho das camadas agendado",
+        cpu_target.set_preserve_previous_frame(config.preserve_previous_frame);
+        surface.clear_if_needed(config.preserve_previous_frame);
+        app_controller.prepare_canvas(
+            canvas,
+            orchestrator,
+            (
+                surface.allocation.left,
+                surface.allocation.top,
+                surface.allocation.right,
+                surface.allocation.bottom,
+            ),
+            (
+                surface.deallocation.left,
+                surface.deallocation.top,
+                surface.deallocation.right,
+                surface.deallocation.bottom,
+            ),
         );
         let mouse_position = if has_live_window_size(window_size) {
             window
@@ -381,7 +394,6 @@ fn run_cpu_with_updates_and_shutdown(
         } else {
             None
         };
-        last_mouse_position = mouse_position;
         let events = input.update(
             mouse_position,
             window.get_mouse_down(MouseButton::Left),
@@ -389,10 +401,25 @@ fn run_cpu_with_updates_and_shutdown(
             window.get_scroll_wheel().map_or(0.0, |(_, y)| y),
         );
         for event in events {
-            match event {
-                InputEvent::Drag { delta } => canvas.drag(delta),
-                InputEvent::MiddleClick(cursor) => {
-                    let complex = canvas.screen_to_complex(cursor);
+            <crate::app::DefaultApplicationController as crate::app::ApplicationController>::handle_event(
+                &mut app_controller,
+                crate::app::AppEvent::Input(event),
+            );
+        }
+        let pending_input =
+            <crate::app::DefaultApplicationController as crate::app::ApplicationController>::take_input_events(
+                &mut app_controller,
+        );
+        for event in pending_input {
+            let middle_click = matches!(event, InputEvent::MiddleClick(_));
+            let complex = crate::app::apply_canvas_input(
+                canvas,
+                event,
+                config.zoom_multiplier,
+                config.max_apparent_pixel_size(),
+            );
+            if middle_click {
+                if let (InputEvent::MiddleClick(cursor), Some(complex)) = (event, complex) {
                     copy_coordinates(&format_copied_coordinates(
                         complex.clone(),
                         canvas.apparent_pixel_size(),
@@ -404,24 +431,14 @@ fn run_cpu_with_updates_and_shutdown(
                         );
                     }
                 }
-                InputEvent::Zoom { direction, cursor } => {
-                    let multiplier = config.zoom_multiplier;
-                    assert!(multiplier > 1.0, "zoom_multiplier must be greater than 1");
-                    let current_zoom = canvas
-                        .layer(0)
-                        .map_or(config.max_apparent_pixel_size(), |layer| layer.zoom());
-                    let zoom = match direction {
-                        ZoomDirection::In => current_zoom * multiplier,
-                        ZoomDirection::Out => current_zoom / multiplier,
-                    };
-                    canvas.zoom_at(cursor, zoom);
-                }
             }
         }
         canvas.record_frame_event(
             crate::orchestrator::FrameEventKind::InputProcessed,
             "entrada processada",
         );
+        let overlay_snapshot =
+            crate::app::prepare_overlay_snapshot(canvas, orchestrator, &config, mouse_position);
         if config.debug.overlays_enabled() {
             if let Some(cursor) = mouse_position {
                 let complex = canvas.screen_to_complex(cursor);
@@ -432,50 +449,59 @@ fn run_cpu_with_updates_and_shutdown(
                 );
             }
         }
-        canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::TileCompositionStarted,
-            "composicao de tiles iniciada",
-        );
-        let mut generated_sprites = 0;
-        let mut sprite_generation_duration = Duration::ZERO;
+        app_controller.begin_tile_composition(canvas);
+        let generated_sprites = 0;
+        let sprite_generation_duration = Duration::ZERO;
         let mut rasterization_duration = Duration::ZERO;
-        let mut drawn_tiles = 0;
-        for layer in canvas.layers() {
-            let (tile_width, tile_height) = layer.tile_screen_size();
-            for row in 0..layer.row_count() {
-                for column in 0..layer.column_count() {
-                    let tile = layer.tile(row, column).expect("layer grid is rectangular");
-                    if tile.status() != crate::orchestrator::TileStatus::Completed {
-                        continue;
-                    }
-                    let sprite = tile.sprite().unwrap_or_else(|| {
-                        let started = Instant::now();
-                        let sprite = std::sync::Arc::new(sprite_from_tile(
-                            tile,
-                            config.effective_max_iterations() as u64,
-                            config.palette,
-                            config.palette_period,
-                        ));
-                        tile.set_sprite(sprite);
-                        generated_sprites += 1;
-                        sprite_generation_duration += started.elapsed();
-                        tile.sprite().expect("tile sprite should exist")
-                    });
-                    let tile_position = canvas.complex_to_screen(tile.coordinate().clone());
-                    let started = Instant::now();
-                    sprite.draw_into_scaled(
-                        &mut surface.framebuffer,
-                        surface.screen_size.width,
-                        tile_position.x as isize,
-                        tile_position.y as isize,
-                        tile_width as usize,
-                        tile_height as usize,
-                    );
-                    rasterization_duration += started.elapsed();
-                    drawn_tiles += 1;
-                }
-            }
+        let mut frame_tiles = Vec::new();
+        let mut image_updates = Vec::new();
+        let canvas_tiles = crate::app::collect_completed_canvas_tiles(canvas, &config);
+        for prepared in canvas_tiles {
+            let (draw, update) = prepared_cpu_tile(
+                prepared.draw.image(),
+                prepared.draw.revision(),
+                prepared.draw.layer(),
+                prepared.draw.destination(),
+                &prepared.sprite,
+            );
+            frame_tiles.push(draw);
+            image_updates.push(update);
         }
+        let prepared_frame = app_controller.build_prepared_frame(
+            crate::render::Viewport::new(
+                surface.screen_size.width as u32,
+                surface.screen_size.height as u32,
+            ),
+            frame_tiles,
+            Vec::new(),
+            image_updates,
+        );
+        let prepared_frame = app_controller
+            .publish_and_prepare_frame(prepared_frame)
+            .map_err(|error| minifb::Error::WindowCreate(format!("CPU frame failed: {error:?}")))?;
+        let started = Instant::now();
+        <crate::render::cpu::CpuRenderTarget as crate::render::RenderTarget>::update_images(
+            &mut cpu_target,
+            prepared_frame.image_updates(),
+        )
+        .map_err(|error| {
+            minifb::Error::WindowCreate(format!("CPU image update failed: {error:?}"))
+        })?;
+        <crate::render::cpu::CpuRenderTarget as crate::render::RenderTarget>::render(
+            &mut cpu_target,
+            prepared_frame.frame(),
+        )
+        .map_err(|error| minifb::Error::WindowCreate(format!("CPU render failed: {error:?}")))?;
+        for (destination, pixel) in surface
+            .framebuffer
+            .iter_mut()
+            .zip(cpu_target.framebuffer_rgba8().chunks_exact(4))
+        {
+            *destination =
+                (u32::from(pixel[0]) << 16) | (u32::from(pixel[1]) << 8) | u32::from(pixel[2]);
+        }
+        rasterization_duration += started.elapsed();
+        let drawn_tiles = prepared_frame.frame().tiles().len();
         canvas.record_frame_event(
             crate::orchestrator::FrameEventKind::TilesRasterized,
             format!(
@@ -507,21 +533,7 @@ fn run_cpu_with_updates_and_shutdown(
             );
         }
         if config.debug.overlays_enabled() && config.debug.text_overlay_layers {
-            let overlays: Vec<_> = canvas
-                .layers()
-                .iter()
-                .enumerate()
-                .map(|(index, layer)| {
-                    format_layer_overlay(
-                        index,
-                        layer.zoom(),
-                        delta_exponent(layer.delta()),
-                        layer.column_count(),
-                        layer.row_count(),
-                        mouse_position.map(|cursor| canvas.screen_to_complex(cursor)),
-                    )
-                })
-                .collect();
+            let overlays = &overlay_snapshot.layer_lines;
             let first_overlay_y = surface
                 .screen_size
                 .height
@@ -539,24 +551,7 @@ fn run_cpu_with_updates_and_shutdown(
             }
         }
         if config.debug.overlays_enabled() && config.debug.text_overlay_queue {
-            let queue_lines: Vec<_> = canvas
-                .layers()
-                .iter()
-                .enumerate()
-                .flat_map(|(layer_index, layer)| {
-                    layer
-                        .pending_work_positions()
-                        .into_iter()
-                        .map(move |(row, column)| {
-                            format_worker_queue_line(
-                                layer_index,
-                                row,
-                                column,
-                                delta_exponent(layer.delta()),
-                            )
-                        })
-                })
-                .collect();
+            let queue_lines = &overlay_snapshot.queue_lines;
             for (line, queue_line) in queue_lines.iter().enumerate() {
                 let x = surface
                     .screen_size
@@ -574,14 +569,13 @@ fn run_cpu_with_updates_and_shutdown(
             }
         }
         if config.debug.overlays_enabled() && config.debug.text_overlay_workers {
-            for (line, worker) in orchestrator.worker_statuses().iter().enumerate() {
-                let worker_line = format_worker_status_line(worker.id, worker.tile.as_ref());
+            for (line, worker_line) in overlay_snapshot.worker_lines.iter().enumerate() {
                 draw_text(
                     &mut surface.framebuffer,
                     surface.screen_size,
                     8,
                     8 + line as i32 * 8,
-                    &worker_line,
+                    worker_line,
                     0xffffff,
                 );
             }
@@ -619,17 +613,12 @@ fn run_cpu_with_updates_and_shutdown(
         crate::output::flush_frame();
     }
 
-    let shutdown_dump = format_shutdown_overlay_dump(
-        canvas,
-        orchestrator,
-        &surface,
-        &frame_timing_ring,
-        last_mouse_position,
-    );
-    output.submit_final_and_wait(shutdown_dump);
-
     // Closing the native window leaves the loop and releases the renderer
     // before the application returns from `main`.
+    <crate::app::DefaultApplicationController as crate::app::ApplicationController>::handle_event(
+        &mut app_controller,
+        crate::app::AppEvent::CloseRequested,
+    );
     drop(window);
     renderer_closed.store(true, std::sync::atomic::Ordering::Release);
     Ok(())
@@ -741,7 +730,7 @@ fn format_copied_coordinates(point: ComplexPoint<f64>, zoom: f64) -> String {
     format!("{}   zoom: {:.15}", format_coordinates(point), zoom.log2())
 }
 
-fn format_layer_overlay(
+pub(crate) fn format_layer_overlay(
     index: usize,
     zoom: f64,
     delta: f64,
@@ -758,7 +747,12 @@ fn format_layer_overlay(
     )
 }
 
-fn format_worker_queue_line(layer: usize, row: usize, column: usize, delta: f64) -> String {
+pub(crate) fn format_worker_queue_line(
+    layer: usize,
+    row: usize,
+    column: usize,
+    delta: f64,
+) -> String {
     format!("Camada={layer} pos {row}x{column} delta={delta:.3}")
 }
 
@@ -766,7 +760,10 @@ fn delta_exponent(delta: f64) -> f64 {
     -delta.log2()
 }
 
-fn format_worker_status_line(id: usize, tile: Option<&crate::orchestrator::WorkerTile>) -> String {
+pub(crate) fn format_worker_status_line(
+    id: usize,
+    tile: Option<&crate::orchestrator::WorkerTile>,
+) -> String {
     match tile {
         Some(tile) => format!(
             "Worker {id}: tile pos {:.3}x{:.3} delta={:.3}",
@@ -1045,14 +1042,34 @@ mod tests {
     use super::{
         allocation_screen_rect, draw_mouse_marker, draw_rectangle_outline, format_coordinates,
         format_copied_coordinates, format_frame_history_line, format_layer_overlay,
-        format_shutdown_overlay_dump,
         format_worker_queue_line, format_worker_status_line, has_live_window_size,
-        inverted_rainbow_color, middle_click_coordinate_report, pastelize_color, rainbow_color,
-        sprite_from_tile, FrameTimingRing, Palette, RenderSurface, ScreenRect,
+        inverted_rainbow_color, middle_click_coordinate_report, pastelize_color, prepared_cpu_tile,
+        rainbow_color, sprite_from_tile, FrameTimingRing, Palette, RenderSurface, RendererFactory,
+        ScreenRect,
     };
     use crate::geometry::{ComplexPoint, ScreenPoint, ScreenSize};
+    use crate::render::{ImageId, ImageRevision, Rect};
     use crate::{Mandelbrot, Orchestrator, Tile, TiledInfiniteCanvas};
     use std::time::Duration;
+
+    #[test]
+    fn renderer_factory_selects_cpu_target_without_exposing_backend_to_main() {
+        let config = crate::config::RendererConfig::default();
+        let factory = RendererFactory::from_config(&config).expect("default backend is valid");
+
+        assert!(!factory.is_gpu());
+        assert!(factory.target_factory().is_some());
+    }
+
+    #[test]
+    fn renderer_factory_selects_gpu_runtime_without_a_cpu_target() {
+        let mut config = crate::config::RendererConfig::default();
+        config.backend = "gpu".to_string();
+        let factory = RendererFactory::from_config(&config).expect("GPU backend is valid");
+
+        assert!(factory.is_gpu());
+        assert!(factory.target_factory().is_none());
+    }
 
     #[test]
     fn converts_tile_iterations_to_a_sprite() {
@@ -1063,6 +1080,31 @@ mod tests {
         assert_eq!((sprite.width(), sprite.height()), (3, 3));
         assert_eq!(sprite.pixels()[4], 0);
         assert_ne!(sprite.pixels()[0], 0);
+    }
+
+    #[test]
+    fn prepares_cpu_sprite_as_the_shared_image_contract() {
+        let sprite = crate::Sprite::from_pixels(2, 1, vec![0x00112233, 0x00445566]);
+
+        let (draw, update) = prepared_cpu_tile(
+            ImageId::new(7),
+            ImageRevision::new(3),
+            2,
+            Rect::new(-1, 4, 3, 2),
+            &sprite,
+        );
+
+        assert_eq!(draw.image(), ImageId::new(7));
+        assert_eq!(draw.revision(), ImageRevision::new(3));
+        assert_eq!(draw.layer(), 2);
+        assert_eq!(draw.destination(), Rect::new(-1, 4, 3, 2));
+        assert_eq!(update.image(), ImageId::new(7));
+        assert_eq!(update.revision(), ImageRevision::new(3));
+        assert_eq!(update.dimensions(), (2, 1));
+        assert_eq!(
+            update.rgba8(),
+            &[0x11, 0x22, 0x33, 0xff, 0x44, 0x55, 0x66, 0xff]
+        );
     }
 
     #[test]
@@ -1216,37 +1258,6 @@ mod tests {
             "Worker 2: tile pos -2.000x3.000 delta=1.000"
         );
         assert_eq!(format_worker_status_line(3, None), "Worker 3: ocioso");
-    }
-
-    #[test]
-    fn shutdown_overlay_dump_contains_all_overlay_groups() {
-        let canvas = TiledInfiniteCanvas::new(
-            ComplexPoint::new(-2.0, 1.0),
-            8,
-            8,
-            0.01,
-            ScreenPoint::new(0, 0),
-            8.0,
-            0.5,
-        );
-        let orchestrator = Orchestrator::with_worker_count(Mandelbrot::new(32), 1);
-        let surface = RenderSurface::new(640, 480, 1.2, 0.8);
-        let frame_timing_ring = FrameTimingRing::default();
-
-        let dump = format_shutdown_overlay_dump(
-            &canvas,
-            &orchestrator,
-            &surface,
-            &frame_timing_ring,
-            None,
-        );
-
-        assert!(dump.contains("status bar:"));
-        assert!(dump.contains("allocation envelope:"));
-        assert!(dump.contains("layers:"));
-        assert!(dump.contains("queue:"));
-        assert!(dump.contains("workers:"));
-        assert!(dump.contains("frames:"));
     }
 
     #[test]

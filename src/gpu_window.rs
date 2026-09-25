@@ -1,18 +1,27 @@
-use crate::app::{AppEffect, AppEvent, ApplicationController, DefaultApplicationController};
+use crate::app::{
+    prepare_canvas_common, reduce_effects, AppEvent, ApplicationController,
+    DefaultApplicationController,
+};
 use crate::gpu::{
-    create_tile_pipeline, debug_overlay_upload, debug_overlay_upload_with_rectangles,
-    texture_keys_for_commands, tile_commands_for_frame, tile_vertices_for_commands,
-    upload_tile_texture, write_tile_texture, GpuContext, GpuTextureStore, GpuTileTexture,
-    PreparedTileBatch, TextureCache, TileDrawCommand,
+    debug_overlay_upload, debug_overlay_upload_with_rectangles, texture_keys_for_commands,
+    tile_commands_for_frame, PreparedTileBatch, TextureCache, TextureUpload, TileDrawCommand,
 };
 use crate::input::{InputEvent, ZoomDirection};
+use crate::render::gpu::GpuRenderTarget;
+use crate::render::graphics::wgpu::{
+    create_composition_texture, create_tile_pipeline, encode_frame, tile_vertices_for_commands,
+    upload_tile_texture, write_tile_texture, GpuTextureStore, GpuTileTexture,
+    WgpuCompositionTexture, WgpuContext as GpuContext, WgpuFrameStage, WgpuGraphicsDevice,
+    WgpuPipeline, WgpuSurface, WgpuSurfaceAcquire, WgpuSurfaceFormat, WgpuTextureLayout,
+    WgpuVertexBufferRing, GPU_VERTEX_BUFFER_RING_SIZE,
+};
 use crate::render::{
-    FrameBuilder, ImageId, ImageRevision, ImageUpdate, Rect, RenderFrame, TileDraw, Viewport,
+    ImageId, ImageRevision, ImageUpdate, OverlayPrimitive, PreparedFrame, Rect,
+    RenderTargetSession, TileDraw, Viewport,
 };
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -23,116 +32,17 @@ fn needs_batch_rebuild(previous: (u32, u32), next: (u32, u32)) -> bool {
     previous != next
 }
 
-fn surface_load_op(
-    preserve_previous_frame: bool,
-    surface_initialized: bool,
-) -> wgpu::LoadOp<wgpu::Color> {
-    if preserve_previous_frame && surface_initialized {
-        wgpu::LoadOp::Load
-    } else {
-        wgpu::LoadOp::Clear(wgpu::Color::BLACK)
-    }
-}
-
-fn surface_usage(supported: wgpu::TextureUsages) -> wgpu::TextureUsages {
-    wgpu::TextureUsages::RENDER_ATTACHMENT & supported
-}
-
 fn uses_persistent_composition(preserve_previous_frame: bool) -> bool {
     preserve_previous_frame
 }
 
-fn vertex_buffer_capacity(current: usize, required: usize) -> usize {
-    if required <= current {
-        return current;
-    }
-    let mut capacity = current.max(1);
-    while capacity < required {
-        capacity = capacity.saturating_mul(2);
-        if capacity == usize::MAX {
-            return required;
-        }
-    }
-    capacity
-}
-
-fn vertex_buffer_needs_recreation(current_capacity: usize, required_vertices: usize) -> bool {
-    required_vertices > current_capacity
-}
-
-const GPU_VERTEX_BUFFER_RING_SIZE: usize = 3;
-
-fn next_vertex_buffer_slot(current: usize, slot_count: usize) -> usize {
-    (current + 1) % slot_count.max(1)
-}
-
-struct VertexBufferRing {
-    buffers: Vec<Option<wgpu::Buffer>>,
-    capacities: Vec<usize>,
-    active_slot: usize,
-}
-
-impl VertexBufferRing {
-    fn new(slot_count: usize) -> Self {
-        let slot_count = slot_count.max(1);
-        Self {
-            buffers: (0..slot_count).map(|_| None).collect(),
-            capacities: vec![0; slot_count],
-            active_slot: 0,
-        }
-    }
-
-    fn begin_frame(&mut self) {
-        self.active_slot = next_vertex_buffer_slot(self.active_slot, self.buffers.len());
-    }
-
-    fn reset(&mut self) {
-        for buffer in &mut self.buffers {
-            *buffer = None;
-        }
-        self.capacities.fill(0);
-        self.active_slot = 0;
-    }
-
-    fn active_buffer(&self) -> Option<&wgpu::Buffer> {
-        self.buffers[self.active_slot].as_ref()
-    }
-
-    fn active_slot(&self) -> usize {
-        self.active_slot
-    }
-
-    fn slot_count(&self) -> usize {
-        self.buffers.len()
-    }
-
-    fn ensure_buffer(
-        &mut self,
-        device: &wgpu::Device,
-        label: &'static str,
-        required_vertices: usize,
-    ) -> Option<&wgpu::Buffer> {
-        if required_vertices == 0 {
-            return None;
-        }
-        let current_capacity = self.capacities[self.active_slot];
-        let capacity = vertex_buffer_capacity(current_capacity, required_vertices);
-        if self.buffers[self.active_slot].is_none()
-            || vertex_buffer_needs_recreation(current_capacity, required_vertices)
-        {
-            self.buffers[self.active_slot] = Some(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size: (capacity * std::mem::size_of::<crate::gpu::TileVertex>()) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-            self.capacities[self.active_slot] = capacity;
-        }
-        self.active_buffer()
-    }
-}
-
 const GPU_FRAME_HISTORY_CAPACITY: usize = 8;
+const GPU_ENVELOPE_IMAGE_ID: ImageId = ImageId::new(u64::MAX - 1);
+const GPU_TEXT_OVERLAY_IMAGE_BASE: u64 = u64::MAX - 2;
+
+fn text_overlay_image_id(group: u64, line: usize) -> ImageId {
+    ImageId::new(GPU_TEXT_OVERLAY_IMAGE_BASE - (group << 32) - line as u64)
+}
 
 fn format_gpu_frame_history(history: &VecDeque<(u64, Duration)>) -> String {
     history
@@ -146,14 +56,16 @@ fn format_gpu_frame_overlay_header(frame_number: u64, visible_tiles: usize) -> S
     format!("Frame #{frame_number}, tiles:{visible_tiles}")
 }
 
-fn gpu_delta_exponent(delta: f64) -> f64 {
-    -delta.log2()
-}
-
 fn format_gpu_overlay_text(state: &GpuAppState, visible_tiles: usize) -> String {
     let debug = &state.config.debug;
     let mut lines = Vec::new();
     let frame_number = state.canvas.current_frame_number();
+    let common = crate::app::prepare_overlay_snapshot(
+        &state.canvas,
+        &state.orchestrator,
+        &state.config,
+        Some(state.cursor),
+    );
 
     if debug.text_overlay_frames {
         lines.push(format_gpu_frame_overlay_header(frame_number, visible_tiles));
@@ -164,72 +76,18 @@ fn format_gpu_overlay_text(state: &GpuAppState, visible_tiles: usize) -> String 
     }
 
     if debug.text_overlay_layers {
-        let mouse = Some(state.canvas.screen_to_complex(state.cursor));
-        lines.extend(
-            state
-                .canvas
-                .layers()
-                .iter()
-                .enumerate()
-                .map(|(index, layer)| {
-                    let mouse_text = mouse.as_ref().map_or_else(String::new, |point| {
-                        format!(" mouse={:.15}x{:.15}", point.x, point.y)
-                    });
-                    format!(
-                        "Camada {index}: zoom={:.3} delta={:.3} {}x{} tiles{mouse_text}",
-                        layer.zoom().log2(),
-                        gpu_delta_exponent(layer.delta()),
-                        layer.column_count(),
-                        layer.row_count(),
-                    )
-                }),
-        );
+        lines.extend(common.layer_lines);
     }
 
     if debug.text_overlay_queue {
-        lines.extend(
-            state
-                .canvas
-                .layers()
-                .iter()
-                .enumerate()
-                .flat_map(|(layer_index, layer)| {
-                    layer
-                        .pending_work_positions()
-                        .into_iter()
-                        .map(move |(row, column)| {
-                            format!(
-                                "Camada={layer_index} pos {row}x{column} delta={:.3}",
-                                gpu_delta_exponent(layer.delta())
-                            )
-                        })
-                }),
-        );
+        lines.extend(common.queue_lines);
     }
 
     if debug.text_overlay_workers {
-        lines.extend(state.orchestrator.worker_statuses().into_iter().map(
-            |worker| match worker.tile {
-                Some(tile) => format!(
-                    "Worker {}: tile pos {:.3}x{:.3} delta={:.3}",
-                    worker.id,
-                    tile.coordinate.x,
-                    tile.coordinate.y,
-                    gpu_delta_exponent(tile.delta),
-                ),
-                None => format!("Worker {}: ocioso", worker.id),
-            },
-        ));
+        lines.extend(common.worker_lines);
     }
 
     lines.join("\n")
-}
-
-fn select_present_mode(modes: &[wgpu::PresentMode]) -> Option<wgpu::PresentMode> {
-    [wgpu::PresentMode::AutoNoVsync, wgpu::PresentMode::Immediate]
-        .into_iter()
-        .find(|preferred| modes.contains(preferred))
-        .or_else(|| modes.first().copied())
 }
 
 fn centered_bounds(width: usize, height: usize, ratio: f64) -> (i32, i32, i32, i32) {
@@ -290,6 +148,63 @@ fn format_gpu_upload_stage(label: &str, elapsed: Duration, detail: &str) -> Stri
     )
 }
 
+fn format_gpu_event_loop_wait(elapsed: Duration) -> String {
+    format_gpu_upload_stage("espera do event loop GPU", elapsed, "fora do renderer")
+}
+
+fn format_gpu_redraw_latency(elapsed: Duration) -> String {
+    format_gpu_upload_stage(
+        "latencia entre request_redraw e RedrawRequested",
+        elapsed,
+        "event loop",
+    )
+    .replace(" (event loop)", "")
+}
+
+fn append_image_overlay(
+    prepared: &PreparedFrame,
+    image: ImageId,
+    upload: TextureUpload,
+    destination: Rect,
+) -> Result<PreparedFrame, crate::render::ImageUpdateError> {
+    let revision = ImageRevision::new(upload.key.content_hash);
+    let update = ImageUpdate::new(image, revision, upload.width, upload.height, upload.rgba8)?;
+    let frame = prepared
+        .frame()
+        .clone()
+        .with_overlay(OverlayPrimitive::Image(
+            TileDraw::new(image, revision, 0).with_destination(destination),
+        ));
+    let mut updates = prepared.image_updates().to_vec();
+    updates.push(update);
+    Ok(PreparedFrame::new(frame, updates))
+}
+
+fn append_text_overlay_line(
+    prepared: &PreparedFrame,
+    image: ImageId,
+    text: &str,
+    x: i32,
+    y: i32,
+    fixed_width: Option<u32>,
+) -> PreparedFrame {
+    let width = fixed_width.unwrap_or_else(|| (text.chars().count() as u32 * 6 + 4).max(4));
+    let upload = debug_overlay_upload(text, width, 11);
+    append_image_overlay(prepared, image, upload, Rect::new(x - 2, y - 2, width, 11))
+        .unwrap_or_else(|_| prepared.clone())
+}
+
+fn submit_prepared_frame<T: crate::render::RenderTarget>(
+    target: &mut RenderTargetSession<T>,
+    prepared: &PreparedFrame,
+) -> Result<crate::render::FrameOutcome, crate::render::RenderError> {
+    target.submit(
+        prepared.frame().viewport(),
+        prepared.image_updates(),
+        prepared.frame(),
+    )
+}
+
 impl GpuFrameMetrics {
     pub(crate) fn from_batch(batch: &PreparedTileBatch, prepare_duration: Duration) -> Self {
         Self {
@@ -328,14 +243,34 @@ impl GpuFrameMetrics {
     }
 }
 
+#[cfg(test)]
+fn frame_tiles_from_batch(batch: &PreparedTileBatch) -> Vec<TileDraw> {
+    batch
+        .commands
+        .iter()
+        .enumerate()
+        .map(|(layer, command)| {
+            TileDraw::new(
+                ImageId::new(command.texture.tile as u64),
+                ImageRevision::new(command.texture.content_hash),
+                layer as u32,
+            )
+            .with_destination(Rect::new(
+                command.position.x,
+                command.position.y,
+                command.size.0,
+                command.size.1,
+            ))
+        })
+        .collect()
+}
+
 pub struct GpuAppState {
     pub canvas: crate::TiledInfiniteCanvas,
     pub orchestrator: crate::Orchestrator,
     pub config: crate::config::RendererConfig,
     pub prepared_batch: Option<PreparedTileBatch>,
-    pub prepared_frame: Option<RenderFrame>,
-    pub prepared_image_updates: Vec<ImageUpdate>,
-    frame_builder: FrameBuilder,
+    pub prepared_frame: Option<PreparedFrame>,
     pub texture_cache: TextureCache,
     pub last_frame_metrics: Option<GpuFrameMetrics>,
     pub frame_timing_ring: VecDeque<(u64, Duration)>,
@@ -367,8 +302,6 @@ impl GpuAppState {
             config,
             prepared_batch: None,
             prepared_frame: None,
-            prepared_image_updates: Vec::new(),
-            frame_builder: FrameBuilder::new(),
             texture_cache: TextureCache::default(),
             last_frame_metrics: None,
             frame_timing_ring: VecDeque::with_capacity(GPU_FRAME_HISTORY_CAPACITY),
@@ -384,7 +317,34 @@ impl GpuAppState {
         self.config.height = viewport.height().max(1) as usize;
         self.prepared_batch = None;
         self.prepared_frame = None;
-        self.prepared_image_updates.clear();
+    }
+
+    pub fn apply_config(
+        &mut self,
+        next_config: crate::config::RendererConfig,
+    ) -> Result<(), String> {
+        let render_plan = crate::PrecisionDecisionManager::from_config(&next_config)
+            .map_err(|_| "invalid renderer precision configuration".to_string())?;
+        let viewport_changed =
+            (self.config.width, self.config.height) != (next_config.width, next_config.height);
+        self.config = next_config;
+        self.canvas
+            .set_frame_dump_events(self.config.debug.frame_dump_events.clone());
+        self.canvas
+            .set_slow_frame_threshold_ms(self.config.debug.slow_frame_threshold_ms);
+        self.orchestrator.set_render_plan(render_plan);
+        self.canvas.set_render_plan(render_plan);
+        self.canvas.invalidate_tiles();
+        if viewport_changed {
+            self.resize_viewport(Viewport::new(
+                self.config.width as u32,
+                self.config.height as u32,
+            ));
+        } else {
+            self.prepared_batch = None;
+            self.prepared_frame = None;
+        }
+        Ok(())
     }
 
     fn input_events_for_window_event(&mut self, event: &WindowEvent) -> Vec<InputEvent> {
@@ -430,42 +390,15 @@ impl GpuAppState {
     }
 
     fn apply_input_event(&mut self, event: InputEvent) {
-        match event {
-            InputEvent::Drag { delta } => self.canvas.drag(delta),
-            InputEvent::Zoom { direction, cursor } => {
-                let multiplier = self.config.zoom_multiplier;
-                let current = self
-                    .canvas
-                    .layer(0)
-                    .map_or(self.config.max_apparent_pixel_size(), |layer| layer.zoom());
-                let zoom = match direction {
-                    ZoomDirection::In => current * multiplier,
-                    ZoomDirection::Out => current / multiplier,
-                };
-                self.canvas.zoom_at(cursor, zoom);
-            }
-            InputEvent::MiddleClick(_) => {}
-        }
+        crate::app::apply_canvas_input(
+            &mut self.canvas,
+            event,
+            self.config.zoom_multiplier,
+            self.config.max_apparent_pixel_size(),
+        );
     }
 
-    pub fn prepare_visible_batch(&mut self) {
-        let preparation_started = Instant::now();
-        self.canvas.begin_frame();
-        if let Some(timing) = self.canvas.last_finished_frame_timing() {
-            self.frame_timing_ring.push_back(timing);
-            while self.frame_timing_ring.len() > GPU_FRAME_HISTORY_CAPACITY {
-                self.frame_timing_ring.pop_front();
-            }
-        }
-        self.canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::ConfigurationProcessed,
-            "configuracao processada",
-        );
-
-        self.canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::SurfacePrepared,
-            "superficie preparada",
-        );
+    fn refresh_allocation_bounds(&mut self) {
         self.allocation_bounds = centered_bounds(
             self.config.width,
             self.config.height,
@@ -476,57 +409,45 @@ impl GpuAppState {
             self.config.height,
             self.config.effective_deallocation_ratio(),
         );
-        self.canvas
-            .trim_outside_allocation(self.deallocation_bounds);
-        self.canvas.ensure_screen_coverage(self.allocation_bounds);
-        self.canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::ScreenCoverageCompleted,
-            "cobertura da tela concluida",
-        );
+    }
 
-        for layer in self.canvas.layers() {
-            self.orchestrator.render_layer(layer);
-        }
-        self.canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::LayerWorkScheduled,
-            "trabalho das camadas agendado",
-        );
-        self.canvas.record_frame_event(
-            crate::orchestrator::FrameEventKind::TileCompositionStarted,
-            "composicao de tiles iniciada",
-        );
+    pub fn prepare_visible_batch(&mut self) {
+        let mut controller = DefaultApplicationController::new(Viewport::new(
+            self.config.width as u32,
+            self.config.height as u32,
+        ));
+        self.prepare_visible_batch_with_controller(&mut controller);
+    }
 
-        let mut tiles = Vec::new();
-        for layer in self.canvas.layers() {
-            for row in 0..layer.row_count() {
-                for column in 0..layer.column_count() {
-                    let Some(tile) = layer.tile(row, column) else {
-                        continue;
-                    };
-                    if tile.status() == crate::TileStatus::Completed && tile.sprite().is_none() {
-                        let sprite = Arc::new(crate::renderer::sprite_from_tile(
-                            tile,
-                            self.config.effective_max_iterations() as u64,
-                            self.config.palette,
-                            self.config.palette_period,
-                        ));
-                        tile.set_sprite(sprite);
-                    }
-                    let Some(sprite) = tile.sprite() else {
-                        continue;
-                    };
-                    let tile_sprite = crate::TileSprite::new(
-                        Arc::clone(tile),
-                        layer.complex_to_screen(tile.coordinate().clone()),
-                        layer.zoom(),
-                    );
-                    tiles.push((tile_sprite, sprite));
-                }
+    fn prepare_visible_batch_with_controller(
+        &mut self,
+        controller: &mut DefaultApplicationController,
+    ) {
+        self.refresh_allocation_bounds();
+        prepare_canvas_common(
+            &mut self.canvas,
+            &self.orchestrator,
+            self.allocation_bounds,
+            self.deallocation_bounds,
+        );
+        self.prepare_visible_batch_after_canvas(controller);
+    }
+
+    fn prepare_visible_batch_after_canvas(
+        &mut self,
+        controller: &mut DefaultApplicationController,
+    ) {
+        let preparation_started = Instant::now();
+        if let Some(timing) = self.canvas.last_finished_frame_timing() {
+            self.frame_timing_ring.push_back(timing);
+            while self.frame_timing_ring.len() > GPU_FRAME_HISTORY_CAPACITY {
+                self.frame_timing_ring.pop_front();
             }
         }
+        let tiles = crate::app::collect_completed_canvas_tiles(&self.canvas, &self.config);
         let references: Vec<_> = tiles
             .iter()
-            .map(|(tile, sprite)| (tile, Arc::clone(sprite)))
+            .map(|prepared| (&prepared.tile_sprite, Arc::clone(&prepared.sprite)))
             .collect();
         let batch = crate::gpu::prepare_tile_batch(&mut self.texture_cache, &references);
         self.canvas.record_frame_event(
@@ -537,25 +458,8 @@ impl GpuAppState {
             &batch,
             preparation_started.elapsed(),
         ));
-        let frame_tiles = batch
-            .commands
-            .iter()
-            .enumerate()
-            .map(|(layer, command)| {
-                TileDraw::new(
-                    ImageId::new(command.texture.tile as u64),
-                    ImageRevision::new(command.texture.content_hash),
-                    layer as u32,
-                )
-                .with_destination(Rect::new(
-                    command.position.x,
-                    command.position.y,
-                    command.size.0,
-                    command.size.1,
-                ))
-            })
-            .collect();
-        self.prepared_image_updates = batch
+        let frame_tiles = tiles.iter().map(|prepared| prepared.draw.clone()).collect();
+        let image_updates = batch
             .uploads
             .iter()
             .filter_map(|upload| {
@@ -569,45 +473,142 @@ impl GpuAppState {
                 .ok()
             })
             .collect();
-        self.prepared_frame = Some(self.frame_builder.build(
+        let frame = controller.build_prepared_frame(
             Viewport::new(self.config.width as u32, self.config.height as u32),
             frame_tiles,
             Vec::new(),
-        ));
+            image_updates,
+        );
+        self.prepared_frame = Some(self.append_debug_overlays(frame));
         self.prepared_batch = Some(batch);
+    }
+
+    fn append_debug_overlays(&self, mut prepared: PreparedFrame) -> PreparedFrame {
+        let debug = &self.config.debug;
+        let show_envelope = debug.should_show_allocation_envelope();
+        let show_text = debug.overlays_enabled()
+            && (debug.text_overlay_frames
+                || debug.text_overlay_layers
+                || debug.text_overlay_queue
+                || debug.text_overlay_workers);
+        if !show_envelope && !show_text {
+            return prepared;
+        }
+        let viewport = prepared.frame().viewport();
+        let width = viewport.width();
+        let height = viewport.height();
+        if width == 0 || height == 0 {
+            return prepared;
+        }
+
+        if show_envelope {
+            let rectangles = [
+                (self.allocation_bounds, [255, 0, 0, 255]),
+                (self.deallocation_bounds, [255, 255, 0, 255]),
+            ];
+            let upload = debug_overlay_upload_with_rectangles("", width, height, &rectangles);
+            if let Ok(with_envelope) = append_image_overlay(
+                &prepared,
+                GPU_ENVELOPE_IMAGE_ID,
+                upload,
+                Rect::new(0, 0, width, height),
+            ) {
+                prepared = with_envelope;
+            }
+        }
+
+        if show_text {
+            let snapshot = crate::app::prepare_overlay_snapshot(
+                &self.canvas,
+                &self.orchestrator,
+                &self.config,
+                Some(self.cursor),
+            );
+            if debug.text_overlay_layers && !snapshot.layer_lines.is_empty() {
+                let first_y =
+                    height.saturating_sub(24 + snapshot.layer_lines.len() as u32 * 8 + 4) as i32;
+                for (line, text) in snapshot.layer_lines.iter().enumerate() {
+                    prepared = append_text_overlay_line(
+                        &prepared,
+                        text_overlay_image_id(1, line),
+                        text,
+                        8,
+                        first_y + line as i32 * 8,
+                        None,
+                    );
+                }
+            }
+            if debug.text_overlay_queue {
+                for (line, text) in snapshot.queue_lines.iter().enumerate() {
+                    let x = width.saturating_sub(text.chars().count() as u32 * 6 + 8) as i32;
+                    prepared = append_text_overlay_line(
+                        &prepared,
+                        text_overlay_image_id(2, line),
+                        text,
+                        x,
+                        8 + line as i32 * 8,
+                        None,
+                    );
+                }
+            }
+            if debug.text_overlay_workers {
+                for (line, text) in snapshot.worker_lines.iter().enumerate() {
+                    prepared = append_text_overlay_line(
+                        &prepared,
+                        text_overlay_image_id(3, line),
+                        text,
+                        8,
+                        8 + line as i32 * 8,
+                        None,
+                    );
+                }
+            }
+            if debug.text_overlay_frames {
+                let x = width.saturating_sub(240) as i32;
+                for (line, (frame, duration)) in self.frame_timing_ring.iter().enumerate() {
+                    let text =
+                        format!("Frame #{frame}, {:.3} ms", duration.as_secs_f64() * 1_000.0);
+                    prepared = append_text_overlay_line(
+                        &prepared,
+                        text_overlay_image_id(4, line),
+                        &text,
+                        x,
+                        8 + line as i32 * 8,
+                        Some(240),
+                    );
+                }
+            }
+        }
+        prepared
     }
 }
 
 pub struct GpuWindowApp {
     pub state: Option<GpuAppState>,
     app_controller: DefaultApplicationController,
-    context: Option<GpuContext>,
+    config_updates: Option<std::sync::mpsc::Receiver<crate::config::RendererConfig>>,
+    renderer_closed: Option<Arc<std::sync::atomic::AtomicBool>>,
+    context: Option<Arc<GpuContext>>,
     window: Option<Arc<Window>>,
-    surface: Option<wgpu::Surface<'static>>,
-    surface_config: Option<wgpu::SurfaceConfiguration>,
-    pipeline: Option<wgpu::RenderPipeline>,
-    tile_bind_group_layout: Option<wgpu::BindGroupLayout>,
-    tile_vertex_ring: VertexBufferRing,
-    overlay_vertex_ring: VertexBufferRing,
+    surface: Option<Arc<std::sync::Mutex<WgpuSurface<'static>>>>,
+    render_target: Option<RenderTargetSession<GpuRenderTarget<WgpuGraphicsDevice>>>,
+    pipeline: Option<WgpuPipeline>,
+    tile_bind_group_layout: Option<WgpuTextureLayout>,
+    tile_vertex_ring: WgpuVertexBufferRing,
+    overlay_vertex_ring: WgpuVertexBufferRing,
     overlay_texture: Option<GpuTileTexture>,
     overlay_cache_key: Option<OverlayCacheKey>,
     overlay_command: Option<TileDrawCommand>,
-    envelope_vertex_ring: VertexBufferRing,
+    envelope_vertex_ring: WgpuVertexBufferRing,
     envelope_texture: Option<GpuTileTexture>,
     envelope_command: Option<TileDrawCommand>,
     envelope_cache_key: Option<EnvelopeCacheKey>,
     texture_store: Option<GpuTextureStore>,
     tile_commands: Vec<crate::gpu::TileDrawCommand>,
     surface_initialized: bool,
-    composition_texture: Option<CompositionTexture>,
-}
-
-struct CompositionTexture {
-    view: wgpu::TextureView,
-    bind_group: wgpu::BindGroup,
-    present_vertex_buffer: wgpu::Buffer,
-    width: u32,
-    height: u32,
+    composition_texture: Option<WgpuCompositionTexture>,
+    last_frame_finished_at: Option<Instant>,
+    last_redraw_requested_at: Option<Instant>,
 }
 
 impl GpuWindowApp {
@@ -627,18 +628,20 @@ impl GpuWindowApp {
         Self {
             state,
             app_controller: DefaultApplicationController::new(viewport),
+            config_updates: None,
+            renderer_closed: None,
             context: None,
             window: None,
             surface: None,
-            surface_config: None,
+            render_target: None,
             pipeline: None,
             tile_bind_group_layout: None,
-            tile_vertex_ring: VertexBufferRing::new(ring_size),
-            overlay_vertex_ring: VertexBufferRing::new(ring_size),
+            tile_vertex_ring: WgpuVertexBufferRing::new(ring_size),
+            overlay_vertex_ring: WgpuVertexBufferRing::new(ring_size),
             overlay_texture: None,
             overlay_cache_key: None,
             overlay_command: None,
-            envelope_vertex_ring: VertexBufferRing::new(ring_size),
+            envelope_vertex_ring: WgpuVertexBufferRing::new(ring_size),
             envelope_texture: None,
             envelope_command: None,
             envelope_cache_key: None,
@@ -646,6 +649,8 @@ impl GpuWindowApp {
             tile_commands: Vec::new(),
             surface_initialized: false,
             composition_texture: None,
+            last_frame_finished_at: None,
+            last_redraw_requested_at: None,
         }
     }
 
@@ -656,25 +661,67 @@ impl GpuWindowApp {
             state.config.height as u32,
         ));
         self.state = Some(state);
-        self.tile_vertex_ring = VertexBufferRing::new(ring_size);
-        self.overlay_vertex_ring = VertexBufferRing::new(ring_size);
-        self.envelope_vertex_ring = VertexBufferRing::new(ring_size);
+        self.tile_vertex_ring = WgpuVertexBufferRing::new(ring_size);
+        self.overlay_vertex_ring = WgpuVertexBufferRing::new(ring_size);
+        self.envelope_vertex_ring = WgpuVertexBufferRing::new(ring_size);
         self.surface_initialized = false;
         self.composition_texture = None;
+        self.last_frame_finished_at = None;
+        self.last_redraw_requested_at = None;
+    }
+
+    pub fn with_state_and_config_updates(
+        state: Option<GpuAppState>,
+        config_updates: std::sync::mpsc::Receiver<crate::config::RendererConfig>,
+        renderer_closed: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        let mut app = Self::with_state(state);
+        app.config_updates = Some(config_updates);
+        app.renderer_closed = Some(renderer_closed);
+        app
+    }
+
+    fn apply_pending_config_updates(&mut self) {
+        let Some(receiver) = &self.config_updates else {
+            return;
+        };
+        while let Ok(config) = receiver.try_recv() {
+            if let Some(state) = &mut self.state {
+                if let Err(error) = state.apply_config(config) {
+                    crate::print_local!("Aviso: configuraÃ§Ã£o GPU ignorada: {error}");
+                    continue;
+                }
+                let preserve_previous_frame = state.config.preserve_previous_frame;
+                if let Some(target) = &mut self.render_target {
+                    target
+                        .target_mut()
+                        .device_mut()
+                        .set_preserve_previous_frame(preserve_previous_frame);
+                }
+                let actions = reduce_effects(
+                    &self
+                        .app_controller
+                        .handle_event(AppEvent::ConfigurationChanged),
+                );
+                if actions.request_redraw {
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                }
+            }
+        }
     }
 
     fn configure_surface(&mut self, width: u32, height: u32) {
         let (Some(context), Some(surface)) = (&self.context, &self.surface) else {
             return;
         };
-        let Some(config) = self.surface_config.as_mut() else {
+        let Ok(mut surface) = surface.lock() else {
             return;
         };
-        let previous = (config.width, config.height);
-        config.width = width.max(1);
-        config.height = height.max(1);
-        surface.configure(&context.device, config);
-        if needs_batch_rebuild(previous, (config.width, config.height)) {
+        let previous = surface.size();
+        surface.resize(context, width, height);
+        if needs_batch_rebuild(previous, surface.size()) {
             self.surface_initialized = false;
             self.composition_texture = None;
             self.tile_vertex_ring.reset();
@@ -686,68 +733,30 @@ impl GpuWindowApp {
         }
     }
 
+    fn surface_size(&self) -> Option<(u32, u32)> {
+        self.surface
+            .as_ref()?
+            .lock()
+            .ok()
+            .map(|surface| surface.size())
+    }
+
     fn ensure_composition_texture(
         &mut self,
-        device: &wgpu::Device,
-        layout: &wgpu::BindGroupLayout,
-        format: wgpu::TextureFormat,
+        context: &GpuContext,
+        layout: &WgpuTextureLayout,
+        format: WgpuSurfaceFormat,
         width: u32,
         height: u32,
     ) {
         let needs_recreation = self
             .composition_texture
             .as_ref()
-            .is_none_or(|texture| texture.width != width || texture.height != height);
+            .is_none_or(|texture| texture.size() != (width, height));
         if needs_recreation {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("persistent-composition"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("composition-sampler"),
-                mag_filter: wgpu::FilterMode::Nearest,
-                min_filter: wgpu::FilterMode::Nearest,
-                ..Default::default()
-            });
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("composition-bind-group"),
-                layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&sampler),
-                    },
-                ],
-            });
-            let present_vertex_buffer =
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("composition-present-quad"),
-                    contents: bytemuck::cast_slice(&crate::gpu::tile_quad_vertices()),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-            self.composition_texture = Some(CompositionTexture {
-                view,
-                bind_group,
-                present_vertex_buffer,
-                width,
-                height,
-            });
+            self.composition_texture = Some(create_composition_texture(
+                context, layout, format, width, height,
+            ));
             self.surface_initialized = false;
         }
     }
@@ -776,11 +785,23 @@ impl GpuWindowApp {
         {
             return;
         }
-        let image_updates = self
-            .state
-            .as_ref()
-            .map(|state| state.prepared_image_updates.clone())
-            .unwrap_or_default();
+        let image_updates =
+            self.state
+                .as_ref()
+                .and_then(|state| state.prepared_frame.as_ref())
+                .map(|prepared| {
+                    prepared
+                        .image_updates()
+                        .iter()
+                        .filter(|update| {
+                            batch.commands.iter().any(|command| {
+                                command.texture.tile as u64 == update.image().value()
+                            })
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
         let texture_upload_count = if image_updates.is_empty() {
             batch.uploads.len()
         } else {
@@ -830,22 +851,14 @@ impl GpuWindowApp {
         self.overlay_vertex_ring.begin_frame();
         self.envelope_vertex_ring.begin_frame();
         let vertex_upload_started = Instant::now();
-        if let (Some(context), Some(surface_config)) = (&self.context, &self.surface_config) {
-            let vertices = tile_vertices_for_commands(
-                &frame_commands,
-                surface_config.width,
-                surface_config.height,
-            );
-            if !vertices.is_empty() {
-                if let Some(buffer) = self.tile_vertex_ring.ensure_buffer(
-                    &context.device,
-                    "tile-batch-vertices",
-                    vertices.len(),
-                ) {
-                    context
-                        .queue
-                        .write_buffer(buffer, 0, bytemuck::cast_slice(&vertices));
-                }
+        if let (Some(context), Some((width, height))) = (&self.context, self.surface_size()) {
+            let vertices = tile_vertices_for_commands(&frame_commands, width, height);
+            if self
+                .tile_vertex_ring
+                .ensure_buffer(context, "tile-batch-vertices", vertices.len())
+            {
+                self.tile_vertex_ring
+                    .write_active(context, bytemuck::cast_slice(&vertices));
             }
         }
         self.record_gpu_upload_stage(
@@ -884,10 +897,10 @@ impl GpuWindowApp {
             let line_count = text.lines().count().max(1);
             let upload = debug_overlay_upload(&text, 240, line_count as u32 * 16);
             let key = upload.key;
-            if let (Some(context), Some(layout), Some(surface_config)) = (
+            if let (Some(context), Some(layout), Some((width, height))) = (
                 &self.context,
                 &self.tile_bind_group_layout,
-                &self.surface_config,
+                self.surface_size(),
             ) {
                 let cache_key = overlay_cache_key(&upload);
                 if overlay_needs_refresh(self.overlay_cache_key, cache_key) {
@@ -902,26 +915,21 @@ impl GpuWindowApp {
                 }
                 let position = crate::geometry::ScreenPoint::new(
                     8,
-                    surface_config.height.saturating_sub(upload.height + 8) as i32,
+                    height.saturating_sub(upload.height + 8) as i32,
                 );
                 let command = TileDrawCommand {
                     texture: key,
                     position,
                     size: (upload.width, upload.height),
                 };
-                let vertices = tile_vertices_for_commands(
-                    &[command],
-                    surface_config.width,
-                    surface_config.height,
-                );
-                if let Some(buffer) = self.overlay_vertex_ring.ensure_buffer(
-                    &context.device,
+                let vertices = tile_vertices_for_commands(&[command], width, height);
+                if self.overlay_vertex_ring.ensure_buffer(
+                    context,
                     "gpu-debug-overlay-vertices",
                     vertices.len(),
                 ) {
-                    context
-                        .queue
-                        .write_buffer(buffer, 0, bytemuck::cast_slice(&vertices));
+                    self.overlay_vertex_ring
+                        .write_active(context, bytemuck::cast_slice(&vertices));
                 }
                 self.overlay_command = Some(command);
             }
@@ -941,15 +949,15 @@ impl GpuWindowApp {
         }
         if show_envelope {
             let envelope_started = Instant::now();
-            if let (Some(context), Some(layout), Some(surface_config), Some(state)) = (
+            if let (Some(context), Some(layout), Some((width, height)), Some(state)) = (
                 &self.context,
                 &self.tile_bind_group_layout,
-                &self.surface_config,
+                self.surface_size(),
                 &self.state,
             ) {
                 let cache_key = EnvelopeCacheKey {
-                    width: surface_config.width,
-                    height: surface_config.height,
+                    width,
+                    height,
                     allocation: state.allocation_bounds,
                     deallocation: state.deallocation_bounds,
                 };
@@ -958,12 +966,8 @@ impl GpuWindowApp {
                         (state.allocation_bounds, [255, 0, 0, 255]),
                         (state.deallocation_bounds, [255, 255, 0, 255]),
                     ];
-                    let upload = debug_overlay_upload_with_rectangles(
-                        "",
-                        surface_config.width,
-                        surface_config.height,
-                        &rectangles,
-                    );
+                    let upload =
+                        debug_overlay_upload_with_rectangles("", width, height, &rectangles);
                     let key = upload.key;
                     self.envelope_texture = Some(upload_tile_texture(context, layout, &upload));
                     self.envelope_cache_key = Some(cache_key);
@@ -974,19 +978,14 @@ impl GpuWindowApp {
                     });
                 }
                 if let Some(command) = self.envelope_command {
-                    let vertices = tile_vertices_for_commands(
-                        &[command],
-                        surface_config.width,
-                        surface_config.height,
-                    );
-                    if let Some(buffer) = self.envelope_vertex_ring.ensure_buffer(
-                        &context.device,
+                    let vertices = tile_vertices_for_commands(&[command], width, height);
+                    if self.envelope_vertex_ring.ensure_buffer(
+                        context,
                         "gpu-allocation-envelope-vertices",
                         vertices.len(),
                     ) {
-                        context
-                            .queue
-                            .write_buffer(buffer, 0, bytemuck::cast_slice(&vertices));
+                        self.envelope_vertex_ring
+                            .write_active(context, bytemuck::cast_slice(&vertices));
                     }
                 }
             }
@@ -1051,7 +1050,8 @@ impl ApplicationHandler for GpuWindowApp {
                 return;
             }
         };
-        let surface = match context.instance.create_surface(Arc::clone(&window)) {
+        let size = window.inner_size();
+        let surface = match context.create_surface(Arc::clone(&window), size.width, size.height) {
             Ok(surface) => surface,
             Err(error) => {
                 crate::print_local!("Falha ao criar superfície GPU: {error}");
@@ -1059,49 +1059,47 @@ impl ApplicationHandler for GpuWindowApp {
                 return;
             }
         };
-        let capabilities = surface.get_capabilities(&context.adapter);
-        let adapter_info = context.adapter.get_info();
+        let context = Arc::new(context);
+        let surface = Arc::new(std::sync::Mutex::new(surface));
+        let Ok(surface_info) = surface.lock() else {
+            crate::print_local!("Falha ao acessar superfÃ­cie GPU");
+            event_loop.exit();
+            return;
+        };
+        let (adapter_backend, adapter_name, adapter_device_type) = context.adapter_description();
         crate::print_local!(
-            "GPU adapter: {:?} / {} ({:?}); modos de apresentacao: {:?}",
-            adapter_info.backend,
-            adapter_info.name,
-            adapter_info.device_type,
-            capabilities.present_modes
+            "GPU adapter: {:?} / {} ({:?}); modo de apresentacao: {:?}",
+            adapter_backend,
+            adapter_name,
+            adapter_device_type,
+            surface_info.present_mode_description()
         );
-        let Some(format) = capabilities.formats.first().copied() else {
-            crate::print_local!("GPU não oferece formato de superfície compatível");
-            event_loop.exit();
-            return;
-        };
-        let Some(present_mode) = select_present_mode(&capabilities.present_modes) else {
-            crate::print_local!("GPU não oferece modo de apresentação compatível");
-            event_loop.exit();
-            return;
-        };
-        crate::print_local!("Modo de apresentacao GPU selecionado: {:?}", present_mode);
-        let Some(alpha_mode) = capabilities.alpha_modes.first().copied() else {
-            crate::print_local!("GPU não oferece modo alpha compatível");
-            event_loop.exit();
-            return;
-        };
-        let size = window.inner_size();
-        let config = wgpu::SurfaceConfiguration {
-            usage: surface_usage(capabilities.usages),
-            format,
-            color_space: wgpu::SurfaceColorSpace::Auto,
-            width: size.width.max(1),
-            height: size.height.max(1),
-            present_mode,
-            alpha_mode,
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(&context.device, &config);
-        let (pipeline, tile_bind_group_layout) = create_tile_pipeline(&context, format);
+        let (pipeline, tile_bind_group_layout) =
+            create_tile_pipeline(&context, surface_info.format());
+        let surface_size = surface_info.size();
+        drop(surface_info);
+        let mut graphics_device =
+            match WgpuGraphicsDevice::new(Arc::clone(&context), Arc::clone(&surface)) {
+                Ok(device) => device,
+                Err(error) => {
+                    crate::print_local!("Falha ao criar destino de renderizaÃ§Ã£o GPU: {error:?}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+        let preserve_previous_frame = self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.config.preserve_previous_frame);
+        graphics_device.set_preserve_previous_frame(preserve_previous_frame);
+        let viewport = Viewport::new(surface_size.0, surface_size.1);
+        self.render_target = Some(RenderTargetSession::new(
+            GpuRenderTarget::new(graphics_device, viewport),
+            viewport,
+        ));
         self.context = Some(context);
         self.window = Some(window);
         self.surface = Some(surface);
-        self.surface_config = Some(config);
         self.pipeline = Some(pipeline);
         self.tile_bind_group_layout = Some(tile_bind_group_layout);
         self.texture_store = Some(GpuTextureStore::new());
@@ -1113,19 +1111,22 @@ impl ApplicationHandler for GpuWindowApp {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        let app_event = match &event {
-            WindowEvent::CloseRequested => Some(AppEvent::CloseRequested),
-            WindowEvent::Resized(size) => {
-                Some(AppEvent::Resized(Viewport::new(size.width, size.height)))
-            }
-            WindowEvent::RedrawRequested => Some(AppEvent::RedrawRequested),
-            _ => None,
-        };
+        let mut render_requested = false;
+        if matches!(&event, WindowEvent::CloseRequested) {
+            signal_renderer_closed(self.renderer_closed.as_ref());
+        }
+        let app_event = app_event_from_window_event(&event);
         if let Some(app_event) = app_event {
-            let effects = self.app_controller.handle_event(app_event);
-            if effects.contains(&AppEffect::Exit) {
+            let actions = reduce_effects(&self.app_controller.handle_event(app_event));
+            render_requested = actions.render;
+            if actions.exit {
                 event_loop.exit();
                 return;
+            }
+            if actions.request_redraw {
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
             }
         }
         let input_events = self
@@ -1134,8 +1135,16 @@ impl ApplicationHandler for GpuWindowApp {
             .map(|state| state.input_events_for_window_event(&event))
             .unwrap_or_default();
         for input_event in input_events {
-            self.app_controller
-                .handle_event(AppEvent::Input(input_event));
+            let actions = reduce_effects(
+                &self
+                    .app_controller
+                    .handle_event(AppEvent::Input(input_event)),
+            );
+            if actions.request_redraw {
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
         }
         let pending_input = self.app_controller.take_input_events();
         if let Some(state) = &mut self.state {
@@ -1151,15 +1160,85 @@ impl ApplicationHandler for GpuWindowApp {
                 }
                 self.configure_surface(size.width, size.height)
             }
-            WindowEvent::RedrawRequested => {
+            WindowEvent::RedrawRequested if render_requested => {
+                if self.render_target.is_some() {
+                    if let Some(state) = &mut self.state {
+                        state.canvas.record_frame_event(
+                            crate::orchestrator::FrameEventKind::GpuRedrawReceived,
+                            "evento RedrawRequested recebido",
+                        );
+                        if let Some(requested_at) = self.last_redraw_requested_at.take() {
+                            state.canvas.record_frame_event(
+                                crate::orchestrator::FrameEventKind::GpuRedrawLatency,
+                                format_gpu_redraw_latency(requested_at.elapsed()),
+                            );
+                        }
+                    }
+                    let Some(prepared) = self
+                        .state
+                        .as_ref()
+                        .and_then(|state| state.prepared_frame.as_ref())
+                        .cloned()
+                    else {
+                        return;
+                    };
+                    let submit_started = Instant::now();
+                    if let Some(state) = &mut self.state {
+                        state.canvas.record_frame_presentation_started();
+                        state.canvas.record_frame_event(
+                            crate::orchestrator::FrameEventKind::GpuPresentationStarted,
+                            "submissao do frame pelo destino GPU iniciada",
+                        );
+                    }
+                    let result = submit_prepared_frame(
+                        self.render_target
+                            .as_mut()
+                            .expect("common GPU target checked above"),
+                        &prepared,
+                    );
+                    match result {
+                        Ok(outcome) if outcome.was_submitted() => {
+                            if let Some(state) = &mut self.state {
+                                state.canvas.record_frame_event(
+                                    crate::orchestrator::FrameEventKind::GpuCommandsSubmitted,
+                                    "comandos do frame submetidos pelo destino GPU",
+                                );
+                                state.canvas.record_frame_event(
+                                    crate::orchestrator::FrameEventKind::OverlaysDrawn,
+                                    "overlays incluidos no frame comum",
+                                );
+                                state.canvas.record_frame_event(
+                                    crate::orchestrator::FrameEventKind::GpuPresentationFinished,
+                                    format_gpu_upload_stage(
+                                        "submissao/apresentacao pelo destino GPU concluida",
+                                        submit_started.elapsed(),
+                                        "inclui aquisicao, composicao e apresentacao",
+                                    ),
+                                );
+                                state.canvas.record_frame_presentation_finished();
+                                state.canvas.finish_frame();
+                            }
+                            self.last_frame_finished_at = Some(Instant::now());
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            crate::print_local!(
+                                "Falha ao submeter frame pelo destino GPU: {error:?}"
+                            );
+                        }
+                    }
+                    return;
+                }
                 let preserve_previous_frame = self
                     .state
                     .as_ref()
                     .is_some_and(|state| state.config.preserve_previous_frame);
-                let composition_parameters = self
-                    .surface_config
-                    .as_ref()
-                    .map(|config| (config.format, config.width, config.height));
+                let composition_parameters = self.surface.as_ref().and_then(|surface| {
+                    surface.lock().ok().map(|surface| {
+                        let (width, height) = surface.size();
+                        (surface.format(), width, height)
+                    })
+                });
                 if let (Some(context), Some((format, width, height))) =
                     (self.context.take(), composition_parameters)
                 {
@@ -1168,13 +1247,7 @@ impl ApplicationHandler for GpuWindowApp {
                             .tile_bind_group_layout
                             .take()
                             .expect("tile bind group layout must exist");
-                        self.ensure_composition_texture(
-                            &context.device,
-                            &layout,
-                            format,
-                            width,
-                            height,
-                        );
+                        self.ensure_composition_texture(&context, &layout, format, width, height);
                         self.tile_bind_group_layout = Some(layout);
                     }
                     self.context = Some(context);
@@ -1184,35 +1257,40 @@ impl ApplicationHandler for GpuWindowApp {
                         crate::orchestrator::FrameEventKind::GpuRedrawReceived,
                         "evento RedrawRequested recebido",
                     );
+                    if let Some(requested_at) = self.last_redraw_requested_at.take() {
+                        state.canvas.record_frame_event(
+                            crate::orchestrator::FrameEventKind::GpuRedrawLatency,
+                            format_gpu_redraw_latency(requested_at.elapsed()),
+                        );
+                    }
                 }
                 if let (Some(context), Some(surface), Some(pipeline)) =
                     (&self.context, &self.surface, &self.pipeline)
                 {
+                    let Ok(surface) = surface.lock() else {
+                        return;
+                    };
                     if let Some(state) = &mut self.state {
                         state.canvas.record_frame_event(
                             crate::orchestrator::FrameEventKind::GpuSurfaceAcquireStarted,
                             "aquisicao da superficie GPU iniciada",
                         );
                     }
-                    let frame = match surface.get_current_texture() {
-                        wgpu::CurrentSurfaceTexture::Success(frame)
-                        | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-                        wgpu::CurrentSurfaceTexture::Timeout
-                        | wgpu::CurrentSurfaceTexture::Occluded => {
+                    let frame = match surface.acquire() {
+                        WgpuSurfaceAcquire::Ready(frame)
+                        | WgpuSurfaceAcquire::Suboptimal(frame) => frame,
+                        WgpuSurfaceAcquire::Timeout | WgpuSurfaceAcquire::Occluded => {
                             return;
                         }
-                        wgpu::CurrentSurfaceTexture::Outdated
-                        | wgpu::CurrentSurfaceTexture::Lost => {
-                            if let Some(config) = &self.surface_config {
-                                surface.configure(&context.device, config);
-                            }
+                        WgpuSurfaceAcquire::Outdated | WgpuSurfaceAcquire::Lost => {
+                            surface.configure(context);
                             self.surface_initialized = false;
                             self.tile_vertex_ring.reset();
                             self.overlay_vertex_ring.reset();
                             self.envelope_vertex_ring.reset();
                             return;
                         }
-                        wgpu::CurrentSurfaceTexture::Validation => {
+                        WgpuSurfaceAcquire::Validation => {
                             crate::print_local!("Falha de validação ao obter frame GPU");
                             return;
                         }
@@ -1224,145 +1302,82 @@ impl ApplicationHandler for GpuWindowApp {
                         );
                     }
                     {
-                        let composition = if uses_persistent_composition(preserve_previous_frame) {
-                            Some(
+                        let composition = uses_persistent_composition(preserve_previous_frame)
+                            .then(|| {
                                 self.composition_texture
                                     .as_ref()
-                                    .expect("composition texture must exist"),
-                            )
-                        } else {
-                            None
-                        };
-                        let surface_view = frame
-                            .texture
-                            .create_view(&wgpu::TextureViewDescriptor::default());
-                        let mut encoder = context.device.create_command_encoder(
-                            &wgpu::CommandEncoderDescriptor {
-                                label: Some("gpu-clear"),
-                            },
-                        );
-                        let composition_started = Instant::now();
-                        if let Some(state) = &mut self.state {
-                            state.canvas.record_frame_event(
-                                crate::orchestrator::FrameEventKind::GpuCompositionPassStarted,
-                                "passe de composicao GPU iniciado",
-                            );
-                        }
-                        {
-                            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                                label: Some("gpu-clear-pass"),
-                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                    view: composition
-                                        .map(|composition| &composition.view)
-                                        .unwrap_or(&surface_view),
-                                    depth_slice: None,
-                                    resolve_target: None,
-                                    ops: wgpu::Operations {
-                                        load: surface_load_op(
-                                            preserve_previous_frame,
-                                            self.surface_initialized,
-                                        ),
-                                        store: wgpu::StoreOp::Store,
-                                    },
-                                })],
-                                depth_stencil_attachment: None,
-                                timestamp_writes: None,
-                                occlusion_query_set: None,
-                                multiview_mask: None,
+                                    .expect("composition texture must exist")
                             });
-                            let mut pass = _pass;
-                            pass.set_pipeline(pipeline);
-                            if let Some(store) = &self.texture_store {
-                                if let Some(vertex_buffer) = self.tile_vertex_ring.active_buffer() {
-                                    pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                                    for (index, command) in self.tile_commands.iter().enumerate() {
-                                        if let Some(tile_texture) = store.get(&command.texture) {
-                                            pass.set_bind_group(0, &tile_texture.bind_group, &[]);
-                                            let start = (index * 6) as u32;
-                                            pass.draw(start..start + 6, 0..1);
-                                        }
+                        let envelope = self.envelope_command.and_then(|_| {
+                            self.envelope_texture
+                                .as_ref()
+                                .map(|texture| (texture, &self.envelope_vertex_ring))
+                        });
+                        let overlay = self.overlay_command.and_then(|_| {
+                            self.overlay_texture
+                                .as_ref()
+                                .map(|texture| (texture, &self.overlay_vertex_ring))
+                        });
+                        let state = &mut self.state;
+                        let encoded = encode_frame(
+                            context,
+                            &frame,
+                            pipeline,
+                            self.texture_store.as_ref(),
+                            &self.tile_commands,
+                            &self.tile_vertex_ring,
+                            envelope,
+                            overlay,
+                            composition,
+                            preserve_previous_frame,
+                            self.surface_initialized,
+                            |stage| {
+                                let Some(state) = state.as_mut() else {
+                                    return;
+                                };
+                                match stage {
+                                    WgpuFrameStage::CompositionStarted => {
+                                        state.canvas.record_frame_event(
+                                            crate::orchestrator::FrameEventKind::GpuCompositionPassStarted,
+                                            "passe de composicao GPU iniciado",
+                                        );
+                                    }
+                                    WgpuFrameStage::CompositionFinished(duration) => {
+                                        state.canvas.record_frame_event(
+                                            crate::orchestrator::FrameEventKind::GpuCompositionPassFinished,
+                                            format_gpu_upload_stage(
+                                                "passe de composicao GPU concluido",
+                                                duration,
+                                                "codificacao do render pass",
+                                            ),
+                                        );
+                                    }
+                                    WgpuFrameStage::PresentationStarted => {
+                                        state.canvas.record_frame_event(
+                                            crate::orchestrator::FrameEventKind::GpuSurfacePresentPassStarted,
+                                            "passe de apresentacao da superficie GPU iniciado",
+                                        );
+                                    }
+                                    WgpuFrameStage::PresentationFinished(duration) => {
+                                        state.canvas.record_frame_event(
+                                            crate::orchestrator::FrameEventKind::GpuSurfacePresentPassFinished,
+                                            format_gpu_upload_stage(
+                                                "passe de apresentacao da superficie GPU concluido",
+                                                duration,
+                                                "codificacao do render pass",
+                                            ),
+                                        );
+                                    }
+                                    WgpuFrameStage::CommandEncodingFinished => {
+                                        state.canvas.record_frame_event(
+                                            crate::orchestrator::FrameEventKind::GpuCommandEncodingFinished,
+                                            "encoder GPU finalizado",
+                                        );
                                     }
                                 }
-                                if let (Some(envelope), Some(command), Some(envelope_vertices)) = (
-                                    &self.envelope_texture,
-                                    self.envelope_command,
-                                    self.envelope_vertex_ring.active_buffer(),
-                                ) {
-                                    pass.set_bind_group(0, &envelope.bind_group, &[]);
-                                    pass.set_vertex_buffer(0, envelope_vertices.slice(..));
-                                    pass.draw(0..6, 0..1);
-                                    let _ = command;
-                                }
-                                if let (Some(overlay), Some(command), Some(overlay_vertices)) = (
-                                    &self.overlay_texture,
-                                    self.overlay_command,
-                                    self.overlay_vertex_ring.active_buffer(),
-                                ) {
-                                    pass.set_bind_group(0, &overlay.bind_group, &[]);
-                                    pass.set_vertex_buffer(0, overlay_vertices.slice(..));
-                                    pass.draw(0..6, 0..1);
-                                    let _ = command;
-                                }
-                            }
-                        }
-                        if let Some(state) = &mut self.state {
-                            state.canvas.record_frame_event(
-                                crate::orchestrator::FrameEventKind::GpuCompositionPassFinished,
-                                format_gpu_upload_stage(
-                                    "passe de composicao GPU concluido",
-                                    composition_started.elapsed(),
-                                    "codificacao do render pass",
-                                ),
-                            );
-                        }
-                        if let Some(composition) = composition {
-                            let present_pass_started = Instant::now();
-                            if let Some(state) = &mut self.state {
-                                state.canvas.record_frame_event(
-                                    crate::orchestrator::FrameEventKind::GpuSurfacePresentPassStarted,
-                                    "passe de apresentacao da superficie GPU iniciado",
-                                );
-                            }
-                            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                                label: Some("gpu-present-pass"),
-                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                    view: &surface_view,
-                                    depth_slice: None,
-                                    resolve_target: None,
-                                    ops: wgpu::Operations {
-                                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                                        store: wgpu::StoreOp::Store,
-                                    },
-                                })],
-                                depth_stencil_attachment: None,
-                                timestamp_writes: None,
-                                occlusion_query_set: None,
-                                multiview_mask: None,
-                            });
-                            let mut pass = _pass;
-                            pass.set_pipeline(pipeline);
-                            pass.set_bind_group(0, &composition.bind_group, &[]);
-                            pass.set_vertex_buffer(0, composition.present_vertex_buffer.slice(..));
-                            pass.draw(0..6, 0..1);
-                            if let Some(state) = &mut self.state {
-                                state.canvas.record_frame_event(
-                                    crate::orchestrator::FrameEventKind::GpuSurfacePresentPassFinished,
-                                    format_gpu_upload_stage(
-                                        "passe de apresentacao da superficie GPU concluido",
-                                        present_pass_started.elapsed(),
-                                        "codificacao do render pass",
-                                    ),
-                                );
-                            }
-                        }
-                        let command_buffer = encoder.finish();
-                        if let Some(state) = &mut self.state {
-                            state.canvas.record_frame_event(
-                                crate::orchestrator::FrameEventKind::GpuCommandEncodingFinished,
-                                "encoder GPU finalizado",
-                            );
-                        }
-                        context.queue.submit(Some(command_buffer));
+                            },
+                        );
+                        encoded.submit(context);
                         if let Some(state) = &mut self.state {
                             state.canvas.record_frame_event(
                                 crate::orchestrator::FrameEventKind::GpuCommandsSubmitted,
@@ -1373,10 +1388,10 @@ impl ApplicationHandler for GpuWindowApp {
                                 "poll do device GPU iniciado",
                             );
                         }
-                        let poll_result = context.device.poll(wgpu::PollType::Poll);
+                        let poll_result = context.poll_device();
                         if let Some(state) = &mut self.state {
                             let description = match poll_result {
-                                Ok(status) => format!("poll do device GPU concluido: {status:?}"),
+                                Ok(status) => format!("poll do device GPU concluido: {status}"),
                                 Err(error) => format!("poll do device GPU falhou: {error}"),
                             };
                             state.canvas.record_frame_event(
@@ -1389,7 +1404,7 @@ impl ApplicationHandler for GpuWindowApp {
                             );
                             state.canvas.record_frame_presentation_started();
                         }
-                        context.queue.present(frame);
+                        frame.present(context);
                         self.surface_initialized = true;
                         if let Some(state) = &mut self.state {
                             state.canvas.record_frame_event(
@@ -1406,6 +1421,7 @@ impl ApplicationHandler for GpuWindowApp {
                             );
                             state.canvas.record_frame_presentation_finished();
                             state.canvas.finish_frame();
+                            self.last_frame_finished_at = Some(Instant::now());
                         }
                     }
                 }
@@ -1414,54 +1430,242 @@ impl ApplicationHandler for GpuWindowApp {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        let prepared = self.state.as_mut().map(|state| {
-            state.prepare_visible_batch();
-            (state.prepared_batch.take(), state.prepared_frame.clone())
-        });
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.apply_pending_config_updates();
+        let actions = reduce_effects(&self.app_controller.handle_event(AppEvent::AboutToWait));
+        if actions.exit {
+            event_loop.exit();
+            return;
+        }
+        if !actions.prepare_frame {
+            return;
+        }
+        let event_loop_wait = self
+            .last_frame_finished_at
+            .take()
+            .map(|finished_at| finished_at.elapsed());
+        if let (Some(state), Some(elapsed)) = (&mut self.state, event_loop_wait) {
+            state.canvas.record_frame_event(
+                crate::orchestrator::FrameEventKind::GpuEventLoopWait,
+                format_gpu_event_loop_wait(elapsed),
+            );
+        }
+        let prepared = {
+            let (state, controller) = (&mut self.state, &mut self.app_controller);
+            state.as_mut().map(|state| {
+                state.refresh_allocation_bounds();
+                controller.prepare_canvas(
+                    &mut state.canvas,
+                    &state.orchestrator,
+                    state.allocation_bounds,
+                    state.deallocation_bounds,
+                );
+                controller.begin_tile_composition(&mut state.canvas);
+                state.prepare_visible_batch_after_canvas(controller);
+                (state.prepared_batch.take(), state.prepared_frame.clone())
+            })
+        };
         if let Some((Some(batch), Some(frame))) = prepared {
+            let frame = self
+                .app_controller
+                .publish_and_prepare_frame(frame)
+                .expect("GPU controller should prepare a published frame");
+            if let Some(state) = &mut self.state {
+                state.prepared_frame = Some(frame.clone());
+            }
             if let Some(state) = &mut self.state {
                 state.canvas.record_frame_event(
                     crate::orchestrator::FrameEventKind::GpuBatchPreparationFinished,
                     "preparacao do batch GPU concluida",
                 );
-                state.canvas.record_frame_event(
-                    crate::orchestrator::FrameEventKind::GpuBatchUploadStarted,
-                    "upload do batch GPU iniciado",
-                );
             }
-            self.upload_batch(batch, tile_commands_for_frame(&frame));
-            if let Some(state) = &mut self.state {
-                state.canvas.record_frame_event(
-                    crate::orchestrator::FrameEventKind::GpuBatchUploadFinished,
-                    "upload do batch GPU concluido",
-                );
+            if self.render_target.is_none() {
+                if let Some(state) = &mut self.state {
+                    state.canvas.record_frame_event(
+                        crate::orchestrator::FrameEventKind::GpuBatchUploadStarted,
+                        "upload do batch GPU iniciado",
+                    );
+                }
+                self.upload_batch(batch, tile_commands_for_frame(frame.frame()));
+                if let Some(state) = &mut self.state {
+                    state.canvas.record_frame_event(
+                        crate::orchestrator::FrameEventKind::GpuBatchUploadFinished,
+                        "upload do batch GPU concluido",
+                    );
+                }
             }
         }
-        if let Some(window) = &self.window {
-            if let Some(state) = &mut self.state {
-                state.canvas.record_frame_event(
-                    crate::orchestrator::FrameEventKind::GpuRedrawRequested,
-                    "request_redraw GPU disparado",
-                );
+        if actions.request_redraw {
+            if let Some(window) = &self.window {
+                self.last_redraw_requested_at = Some(Instant::now());
+                if let Some(state) = &mut self.state {
+                    state.canvas.record_frame_event(
+                        crate::orchestrator::FrameEventKind::GpuRedrawRequested,
+                        "request_redraw GPU disparado",
+                    );
+                }
+                window.request_redraw();
             }
-            window.request_redraw();
         }
+    }
+}
+
+fn app_event_from_window_event(event: &WindowEvent) -> Option<AppEvent> {
+    match event {
+        WindowEvent::CloseRequested => Some(AppEvent::CloseRequested),
+        WindowEvent::Resized(size) => {
+            Some(AppEvent::Resized(Viewport::new(size.width, size.height)))
+        }
+        WindowEvent::RedrawRequested => Some(AppEvent::RedrawRequested),
+        _ => None,
+    }
+}
+
+fn signal_renderer_closed(renderer_closed: Option<&Arc<std::sync::atomic::AtomicBool>>) {
+    if let Some(renderer_closed) = renderer_closed {
+        renderer_closed.store(true, std::sync::atomic::Ordering::Release);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        centered_bounds, format_gpu_frame_history, format_gpu_frame_overlay_header,
-        format_gpu_upload_stage, needs_batch_rebuild, next_vertex_buffer_slot, overlay_cache_key,
-        overlay_needs_refresh, select_present_mode, vertex_buffer_capacity,
-        vertex_buffer_needs_recreation, GpuFrameMetrics, PreparedTileBatch,
+        app_event_from_window_event, centered_bounds, format_gpu_event_loop_wait,
+        format_gpu_frame_history, format_gpu_frame_overlay_header, format_gpu_redraw_latency,
+        format_gpu_upload_stage, frame_tiles_from_batch, needs_batch_rebuild, overlay_cache_key,
+        overlay_needs_refresh, signal_renderer_closed, GpuFrameMetrics, PreparedTileBatch,
     };
+    use crate::app::ApplicationController;
     use crate::geometry::ScreenPoint;
     use crate::gpu::{TextureKey, TextureUpload, TileDrawCommand};
-    use crate::render::Viewport;
+    use crate::render::{ImageId, ImageRevision, Rect, Viewport};
+    use std::sync::Arc;
     use std::time::Duration;
+    use winit::dpi::PhysicalSize;
+    use winit::event::WindowEvent;
+
+    #[derive(Default)]
+    struct RecordingTarget(Vec<&'static str>);
+
+    impl crate::render::RenderTarget for RecordingTarget {
+        fn capabilities(&self) -> crate::render::RenderCapabilities {
+            crate::render::RenderCapabilities::default()
+        }
+
+        fn resize(&mut self, _viewport: Viewport) -> Result<(), crate::render::RenderError> {
+            self.0.push("resize");
+            Ok(())
+        }
+
+        fn update_images(
+            &mut self,
+            _updates: &[crate::render::ImageUpdate],
+        ) -> Result<(), crate::render::RenderError> {
+            self.0.push("upload");
+            Ok(())
+        }
+
+        fn render(
+            &mut self,
+            _frame: &crate::render::RenderFrame,
+        ) -> Result<crate::render::FrameOutcome, crate::render::RenderError> {
+            self.0.push("render");
+            Ok(crate::render::FrameOutcome::submitted())
+        }
+
+        fn evict_images(&mut self, _images: &[ImageId]) {}
+
+        fn recover(
+            &mut self,
+            _reason: crate::render::SurfaceFailure,
+        ) -> Result<(), crate::render::RenderError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn gpu_runtime_submits_prepared_frames_through_common_target_order() {
+        let initial_viewport = Viewport::new(2, 2);
+        let frame_viewport = Viewport::new(1, 1);
+        let image = ImageId::new(3);
+        let update = crate::render::ImageUpdate::new(
+            image,
+            ImageRevision::new(1),
+            1,
+            1,
+            vec![10, 20, 30, 255],
+        )
+        .unwrap();
+        let frame = crate::render::RenderFrame::new(1, frame_viewport).with_tile(
+            crate::render::TileDraw::new(image, ImageRevision::new(1), 0),
+        );
+        let prepared = crate::render::PreparedFrame::new(frame, vec![update]);
+        let mut session =
+            crate::render::RenderTargetSession::new(RecordingTarget::default(), initial_viewport);
+
+        let outcome = super::submit_prepared_frame(&mut session, &prepared).unwrap();
+
+        assert!(outcome.was_submitted());
+        assert_eq!(session.target().0, ["resize", "upload", "render"]);
+    }
+
+    #[test]
+    fn signals_renderer_closed_without_requiring_a_window() {
+        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        signal_renderer_closed(Some(&closed));
+
+        assert!(closed.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn fake_runtime_close_signals_config_ui_and_exits_controller() {
+        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut controller = crate::app::DefaultApplicationController::new(Viewport::new(320, 200));
+        let event = WindowEvent::CloseRequested;
+
+        signal_renderer_closed(Some(&closed));
+        let app_event = app_event_from_window_event(&event).unwrap();
+        let actions = crate::app::reduce_effects(&controller.handle_event(app_event));
+
+        assert!(closed.load(std::sync::atomic::Ordering::Acquire));
+        assert!(actions.exit);
+        assert!(controller
+            .handle_event(crate::app::AppEvent::AboutToWait)
+            .is_empty());
+    }
+
+    #[test]
+    fn formats_event_loop_wait_and_redraw_latency_separately() {
+        assert_eq!(
+            format_gpu_event_loop_wait(Duration::from_millis(6019)),
+            "espera do event loop GPU: 6019.000 ms (fora do renderer)"
+        );
+        assert_eq!(
+            format_gpu_redraw_latency(Duration::from_micros(570)),
+            "latencia entre request_redraw e RedrawRequested: 0.570 ms"
+        );
+    }
+
+    #[test]
+    fn translates_window_lifecycle_events_to_application_events() {
+        assert_eq!(
+            app_event_from_window_event(&WindowEvent::Resized(PhysicalSize::new(640, 480))),
+            Some(crate::app::AppEvent::Resized(Viewport::new(640, 480)))
+        );
+        assert_eq!(
+            app_event_from_window_event(&WindowEvent::RedrawRequested),
+            Some(crate::app::AppEvent::RedrawRequested)
+        );
+        assert_eq!(
+            app_event_from_window_event(&WindowEvent::CloseRequested),
+            Some(crate::app::AppEvent::CloseRequested)
+        );
+        assert_eq!(
+            app_event_from_window_event(&WindowEvent::Occluded(false)),
+            None
+        );
+    }
 
     #[test]
     fn frame_stats_describe_visible_tiles_and_new_uploads() {
@@ -1493,6 +1697,144 @@ mod tests {
             GpuFrameMetrics::from_batch(&batch, Duration::ZERO).draw_calls(),
             1
         );
+    }
+
+    #[test]
+    fn prepared_batch_golden_data_preserves_image_identity_order_and_destination() {
+        let batch = PreparedTileBatch {
+            uploads: Vec::new(),
+            commands: vec![
+                TileDrawCommand {
+                    texture: TextureKey {
+                        tile: 17,
+                        content_hash: 101,
+                    },
+                    position: ScreenPoint::new(4, 6),
+                    size: (20, 10),
+                },
+                TileDrawCommand {
+                    texture: TextureKey {
+                        tile: 23,
+                        content_hash: 202,
+                    },
+                    position: ScreenPoint::new(31, 9),
+                    size: (8, 12),
+                },
+            ],
+        };
+
+        assert_eq!(
+            frame_tiles_from_batch(&batch),
+            vec![
+                crate::render::TileDraw::new(ImageId::new(17), ImageRevision::new(101), 0)
+                    .with_destination(Rect::new(4, 6, 20, 10)),
+                crate::render::TileDraw::new(ImageId::new(23), ImageRevision::new(202), 1)
+                    .with_destination(Rect::new(31, 9, 8, 12)),
+            ]
+        );
+    }
+
+    #[test]
+    fn prepared_frame_adds_overlay_image_to_shared_resources_and_draw_order() {
+        let viewport = Viewport::new(4, 3);
+        let base = crate::render::PreparedFrame::new(
+            crate::render::RenderFrame::new(7, viewport),
+            Vec::new(),
+        );
+        let upload = TextureUpload {
+            key: TextureKey {
+                tile: usize::MAX,
+                content_hash: 42,
+            },
+            width: 1,
+            height: 1,
+            rgba8: vec![255, 255, 255, 255],
+        };
+
+        let prepared = super::append_image_overlay(
+            &base,
+            ImageId::new(usize::MAX as u64),
+            upload,
+            Rect::new(2, 1, 1, 1),
+        )
+        .unwrap();
+
+        assert_eq!(prepared.image_updates().len(), 1);
+        assert_eq!(
+            prepared.image_updates()[0].image(),
+            ImageId::new(usize::MAX as u64)
+        );
+        assert_eq!(prepared.frame().overlays().len(), 1);
+        let crate::render::OverlayPrimitive::Image(image) = &prepared.frame().overlays()[0];
+        assert_eq!(image.image(), ImageId::new(usize::MAX as u64));
+        assert_eq!(image.destination(), Rect::new(2, 1, 1, 1));
+    }
+
+    #[test]
+    fn reduced_viewport_keeps_its_envelope_in_the_common_frame() {
+        let canvas = crate::TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-2.0, 1.0),
+            8,
+            8,
+            0.01,
+            ScreenPoint::new(0, 0),
+            8.0,
+            0.5,
+        );
+        let orchestrator = crate::Orchestrator::with_worker_count(crate::Mandelbrot::new(32), 1);
+        let mut config = crate::config::RendererConfig::default();
+        config.width = 8;
+        config.height = 8;
+        config.debug.reduced_viewport = true;
+        config.debug.show_allocation_envelope = false;
+        config.debug.text_overlay_global = false;
+        let state = super::GpuAppState::new(canvas, orchestrator, config);
+        let base = crate::render::PreparedFrame::new(
+            crate::render::RenderFrame::new(8, Viewport::new(8, 8)),
+            Vec::new(),
+        );
+
+        let prepared = state.append_debug_overlays(base);
+
+        assert_eq!(prepared.frame().overlays().len(), 1);
+        assert_eq!(prepared.image_updates().len(), 1);
+        let crate::render::OverlayPrimitive::Image(envelope) = &prepared.frame().overlays()[0];
+        assert_eq!(envelope.image(), ImageId::new(u64::MAX - 1));
+    }
+
+    #[test]
+    fn common_worker_overlay_uses_the_cpu_top_left_anchor() {
+        let canvas = crate::TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-2.0, 1.0),
+            8,
+            8,
+            0.01,
+            ScreenPoint::new(0, 0),
+            8.0,
+            0.5,
+        );
+        let orchestrator = crate::Orchestrator::with_worker_count(crate::Mandelbrot::new(32), 1);
+        let mut config = crate::config::RendererConfig::default();
+        config.width = 640;
+        config.height = 400;
+        config.debug.text_overlay_global = true;
+        config.debug.text_overlay_workers = true;
+        config.debug.text_overlay_frames = false;
+        config.debug.text_overlay_layers = false;
+        config.debug.text_overlay_queue = false;
+        config.debug.show_allocation_envelope = false;
+        let state = super::GpuAppState::new(canvas, orchestrator, config);
+        let base = crate::render::PreparedFrame::new(
+            crate::render::RenderFrame::new(9, Viewport::new(640, 400)),
+            Vec::new(),
+        );
+
+        let prepared = state.append_debug_overlays(base);
+
+        assert_eq!(prepared.frame().overlays().len(), 1);
+        let crate::render::OverlayPrimitive::Image(worker_line) = &prepared.frame().overlays()[0];
+        assert_eq!(worker_line.destination().x + 2, 8);
+        assert_eq!(worker_line.destination().y + 2, 8);
     }
 
     #[test]
@@ -1568,51 +1910,6 @@ mod tests {
     }
 
     #[test]
-    fn vertex_buffer_capacity_grows_only_when_required_vertices_do_not_fit() {
-        assert_eq!(vertex_buffer_capacity(96, 48), 96);
-        assert_eq!(vertex_buffer_capacity(96, 97), 192);
-        assert_eq!(vertex_buffer_capacity(0, 1), 1);
-    }
-
-    #[test]
-    fn vertex_buffer_recreation_is_needed_only_after_capacity_is_exceeded() {
-        assert!(!vertex_buffer_needs_recreation(96, 96));
-        assert!(!vertex_buffer_needs_recreation(96, 48));
-        assert!(vertex_buffer_needs_recreation(96, 97));
-    }
-
-    #[test]
-    fn vertex_buffer_ring_rotates_slots_without_reusing_the_current_slot() {
-        assert_eq!(next_vertex_buffer_slot(0, 3), 1);
-        assert_eq!(next_vertex_buffer_slot(1, 3), 2);
-        assert_eq!(next_vertex_buffer_slot(2, 3), 0);
-        assert_eq!(next_vertex_buffer_slot(0, 0), 0);
-    }
-
-    #[test]
-    fn surface_load_op_preserves_previous_pixels_only_after_initialization() {
-        assert!(matches!(
-            super::surface_load_op(false, false),
-            wgpu::LoadOp::Clear(_)
-        ));
-        assert!(matches!(
-            super::surface_load_op(true, false),
-            wgpu::LoadOp::Clear(_)
-        ));
-        assert!(matches!(
-            super::surface_load_op(true, true),
-            wgpu::LoadOp::Load
-        ));
-    }
-
-    #[test]
-    fn surface_usage_does_not_request_unsupported_copy_destination() {
-        let supported = wgpu::TextureUsages::RENDER_ATTACHMENT;
-
-        assert_eq!(super::surface_usage(supported), supported);
-    }
-
-    #[test]
     fn persistent_composition_is_used_only_when_frame_preservation_is_enabled() {
         assert!(super::uses_persistent_composition(true));
         assert!(!super::uses_persistent_composition(false));
@@ -1643,7 +1940,70 @@ mod tests {
         assert_eq!(state.config.height, 768);
         assert!(state.prepared_batch.is_none());
         assert!(state.prepared_frame.is_none());
-        assert!(state.prepared_image_updates.is_empty());
+    }
+
+    #[test]
+    fn gpu_state_applies_renderer_configuration_through_one_entry_point() {
+        let canvas = crate::TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-2.0, 1.0),
+            8,
+            8,
+            0.01,
+            ScreenPoint::new(0, 0),
+            8.0,
+            0.5,
+        );
+        let orchestrator = crate::Orchestrator::with_worker_count(crate::Mandelbrot::new(32), 1);
+        let mut state = super::GpuAppState::new(
+            canvas,
+            orchestrator,
+            crate::config::RendererConfig::default(),
+        );
+        state.prepare_visible_batch();
+        let mut next = state.config.clone();
+        next.width = 1024;
+        next.height = 768;
+        next.palette_period = 7.0;
+
+        state.apply_config(next.clone()).unwrap();
+
+        assert_eq!(state.config.width, next.width);
+        assert_eq!(state.config.height, next.height);
+        assert_eq!(state.config.palette_period, next.palette_period);
+        assert!(state.prepared_batch.is_none());
+        assert!(state.prepared_frame.is_none());
+    }
+
+    #[test]
+    fn gpu_runtime_drains_configuration_updates_without_window_access() {
+        let canvas = crate::TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-2.0, 1.0),
+            8,
+            8,
+            0.01,
+            ScreenPoint::new(0, 0),
+            8.0,
+            0.5,
+        );
+        let orchestrator = crate::Orchestrator::with_worker_count(crate::Mandelbrot::new(32), 1);
+        let initial = crate::config::RendererConfig::default();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut app = super::GpuWindowApp::with_state_and_config_updates(
+            Some(super::GpuAppState::new(
+                canvas,
+                orchestrator,
+                initial.clone(),
+            )),
+            receiver,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let mut next = initial;
+        next.palette_period = 9.0;
+        sender.send(next).unwrap();
+
+        app.apply_pending_config_updates();
+
+        assert_eq!(app.state.as_ref().unwrap().config.palette_period, 9.0);
     }
 
     #[test]
@@ -1666,8 +2026,19 @@ mod tests {
         );
 
         state.prepare_visible_batch();
-        std::thread::sleep(Duration::from_millis(50));
-        state.prepare_visible_batch();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !state
+            .prepared_frame
+            .as_ref()
+            .is_some_and(|prepared| !prepared.image_updates().is_empty())
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "worker did not publish the expected tile before the timeout"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+            state.prepare_visible_batch();
+        }
 
         assert!(state
             .prepared_batch
@@ -1676,8 +2047,21 @@ mod tests {
         assert!(state
             .prepared_frame
             .as_ref()
-            .is_some_and(|frame| !frame.tiles().is_empty()));
-        assert!(!state.prepared_image_updates.is_empty());
+            .is_some_and(|prepared| !prepared.frame().tiles().is_empty()));
+        assert!(state
+            .prepared_frame
+            .as_ref()
+            .is_some_and(|prepared| !prepared.image_updates().is_empty()));
+        let batch = state.prepared_batch.as_ref().unwrap();
+        let frame_tile = &state.prepared_frame.as_ref().unwrap().frame().tiles()[0];
+        assert_eq!(
+            frame_tile.image().value(),
+            batch.commands[0].texture.tile as u64
+        );
+        assert_eq!(
+            frame_tile.revision().value(),
+            batch.commands[0].texture.content_hash
+        );
     }
 
     #[test]
@@ -1724,25 +2108,21 @@ mod tests {
     }
 
     #[test]
-    fn selects_a_non_vsync_present_mode_when_the_adapter_supports_one() {
-        assert_eq!(
-            select_present_mode(&[wgpu::PresentMode::Fifo, wgpu::PresentMode::AutoNoVsync,]),
-            Some(wgpu::PresentMode::AutoNoVsync)
-        );
-        assert_eq!(
-            select_present_mode(&[wgpu::PresentMode::Fifo, wgpu::PresentMode::Immediate]),
-            Some(wgpu::PresentMode::Immediate)
-        );
-        assert_eq!(
-            select_present_mode(&[wgpu::PresentMode::Fifo]),
-            Some(wgpu::PresentMode::Fifo)
-        );
-    }
-
-    #[test]
     fn reduced_viewport_is_centered_and_scales_both_axes() {
         assert_eq!(centered_bounds(800, 600, 1.0), (0, 0, 799, 599));
         assert_eq!(centered_bounds(800, 600, 0.7), (120, 90, 679, 509));
+    }
+
+    #[test]
+    fn runtime_channels_connect_config_updates_and_shutdown_signal() {
+        let (sender, receiver, renderer_closed) = super::runtime_channels();
+        let config = crate::config::RendererConfig::default();
+        sender.send(config.clone()).unwrap();
+
+        assert_eq!(receiver.recv().unwrap(), config);
+        assert!(!renderer_closed.load(std::sync::atomic::Ordering::Acquire));
+        renderer_closed.store(true, std::sync::atomic::Ordering::Release);
+        assert!(renderer_closed.load(std::sync::atomic::Ordering::Acquire));
     }
 }
 
@@ -1750,9 +2130,33 @@ pub fn run_window() -> Result<(), winit::error::EventLoopError> {
     run_window_with_state(None)
 }
 
+/// Creates the channels shared by the renderer window and the configuration UI.
+pub fn runtime_channels() -> (
+    std::sync::mpsc::Sender<crate::config::RendererConfig>,
+    std::sync::mpsc::Receiver<crate::config::RendererConfig>,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let renderer_closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    (sender, receiver, renderer_closed)
+}
+
 pub fn run_window_with_state(
     state: Option<GpuAppState>,
 ) -> Result<(), winit::error::EventLoopError> {
     let event_loop = EventLoop::new()?;
     event_loop.run_app(&mut GpuWindowApp::with_state(state))
+}
+
+pub fn run_window_with_state_and_updates(
+    state: Option<GpuAppState>,
+    receiver: std::sync::mpsc::Receiver<crate::config::RendererConfig>,
+    renderer_closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), winit::error::EventLoopError> {
+    let event_loop = EventLoop::new()?;
+    event_loop.run_app(&mut GpuWindowApp::with_state_and_config_updates(
+        state,
+        receiver,
+        renderer_closed,
+    ))
 }
