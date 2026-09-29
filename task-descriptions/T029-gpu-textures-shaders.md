@@ -297,6 +297,10 @@ usada apenas como smoke test depois que o contrato estiver GREEN.
   finalização no controlador.
 - Converter atualização da Config UI em `AppEvent::ConfigurationChanged`.
 - Fazer CPU e GPU receberem o mesmo `PreparedFrame`.
+- Representar no contrato comum a posição e o conteúdo dos textos de overlay
+  (preferencialmente como primitivas/listas de strings) e permitir que cada
+  renderer use um rasterizador de texto otimizado, reaproveitando ao máximo a
+  preparação comum.
 - Remover essas responsabilidades de `GpuWindowApp` e do loop CPU.
 
 **Teste RED principal:** uma sequência normalizada de eventos produz os mesmos
@@ -351,9 +355,14 @@ RED/GREEN.
 - Integrar o envelope e o timing overlay ao modelo comum de imagens/revisões.
 - Manter instrumentação nas fronteiras lógicas e permitir métricas extras do
   adaptador.
-- A decisão sobre a representação final de envelope e overlays entre o caminho
-  legado e o contrato comum permanece aberta; fechá-la antes da remoção do
-  caminho legado no Passo 7.
+- Adotar `OverlayPrimitive` como representação definitiva de envelope, texto e
+  ferramentas de debug no frame comum; o adaptador pode rasterizar texto com
+  uma implementação otimizada, mas recebe do contrato comum ao menos posição e
+  conteúdo (ou uma lista de strings).
+- Detalhar a telemetria de composição, codificação, submissão, `poll` e
+  apresentação. Cada métrica deve ser avaliada quanto a custo e complexidade,
+  e a instrumentação deve poder ser desativada/removida em build de release
+  sem alterar o comportamento do renderer.
 
 **Teste RED principal:** frames sem mudança não criam nem enviam texturas ou
 buffers; mudança de posição atualiza somente instâncias; mudança de imagem
@@ -395,12 +404,14 @@ não devem ser simulados além do que o mock consegue afirmar.
 - Remover `encode_frame`, `GpuTextureStore`, `GpuTileTexture` e as demais
   estruturas exclusivas do caminho de composição legado quando não houver mais
   consumidores.
+- Remover os parâmetros de envelope/overlay e o callback de estágios de
+  `encode_frame` junto com o restante do caminho legado; a paridade passa a ser
+  garantida por `OverlayPrimitive` e pela telemetria do destino comum.
 - Preservar o renderer CPU como fallback de inicialização para máquinas sem os
   recursos GPU, por meio da seleção de `RenderTarget`; nunca executar os dois
   caminhos para o mesmo frame ou conteúdo.
 - Resolver a paridade de overlays, ferramentas de debug, posições, conteúdos e
-  alterações de configuração conforme a decisão registrada em
-  `revisao-idependente-26-09-28/open-questions.md`.
+  alterações de configuração usando `OverlayPrimitive` como fonte de verdade.
 
 **Gate arquitetural:** busca estática e testes impedem imports de `wgpu`,
 `winit` ou `minifb` em `app_core`, `orchestrator` e contratos de renderização.
@@ -414,6 +425,11 @@ do T029. A prioridade será definida item a item durante a execução: validaç�
 de comandos, tipagem de erros e decomposição do adaptador entram nos Passos
 6–8; o desacoplamento final de vértices e a remoção dos tipos legados entram no
 Passo 7.
+
+O contrato de contexto WGPU deve usar um `WgpuContextError` específico do
+adaptador, convertido na fronteira portável quando necessário, com um campo
+genérico para preservar a causa específica como texto ou objeto pequeno. Não
+expor `Result<_, String>` diretamente nas APIs públicas de `WgpuContext`.
 
 ### Passo 8 — Conformidade, fallback e recuperação
 
