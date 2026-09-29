@@ -17,6 +17,8 @@ pub struct CpuRenderTarget {
     viewport: Viewport,
     framebuffer: Vec<u8>,
     images: HashMap<ImageId, StoredImage>,
+    preserve_previous_frame: bool,
+    clear_color: [u8; 4],
 }
 
 impl CpuRenderTarget {
@@ -25,7 +27,21 @@ impl CpuRenderTarget {
             framebuffer: vec![0; framebuffer_len(viewport)],
             viewport,
             images: HashMap::new(),
+            preserve_previous_frame: false,
+            clear_color: [0, 0, 0, 0],
         }
+    }
+
+    pub fn set_preserve_previous_frame(&mut self, preserve: bool) {
+        self.preserve_previous_frame = preserve;
+    }
+
+    pub fn framebuffer_rgba8(&self) -> &[u8] {
+        &self.framebuffer
+    }
+
+    pub fn set_clear_color(&mut self, color: [u8; 4]) {
+        self.clear_color = color;
     }
 
     pub fn pixel_rgba8(&self, x: u32, y: u32) -> Option<[u8; 4]> {
@@ -39,7 +55,11 @@ impl CpuRenderTarget {
     }
 
     fn clear(&mut self) {
-        self.framebuffer.fill(0);
+        if !self.preserve_previous_frame {
+            for pixel in self.framebuffer.chunks_exact_mut(4) {
+                pixel.copy_from_slice(&self.clear_color);
+            }
+        }
     }
 
     fn draw_image(
@@ -218,5 +238,30 @@ mod tests {
         target.render(&frame).unwrap();
 
         assert_eq!(target.pixel_rgba8(0, 0), Some([200, 210, 220, 255]));
+    }
+
+    #[test]
+    fn cpu_target_can_preserve_previous_pixels_between_frames() {
+        let mut target = CpuRenderTarget::new(Viewport::new(1, 1));
+        target.set_preserve_previous_frame(true);
+        let update = ImageUpdate::new(
+            ImageId::new(1),
+            ImageRevision::new(1),
+            1,
+            1,
+            vec![10, 20, 30, 255],
+        )
+        .unwrap();
+        let frame = RenderFrame::new(0, Viewport::new(1, 1)).with_tile(
+            TileDraw::new(ImageId::new(1), ImageRevision::new(1), 0)
+                .with_destination(Rect::new(0, 0, 1, 1)),
+        );
+        target.update_images(&[update]).unwrap();
+        target.render(&frame).unwrap();
+        target
+            .render(&RenderFrame::new(1, Viewport::new(1, 1)))
+            .unwrap();
+
+        assert_eq!(target.pixel_rgba8(0, 0), Some([10, 20, 30, 255]));
     }
 }

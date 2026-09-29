@@ -53,6 +53,7 @@ pub struct TextureDescriptor {
 pub enum DeviceError {
     InvalidResource,
     UnsupportedFormat,
+    UnsupportedCommand,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +138,10 @@ impl CommandList {
 }
 
 pub trait GraphicsDevice: Send {
+    fn resize(&mut self, _viewport: crate::render::Viewport) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
     fn create_buffer(&mut self, descriptor: BufferDescriptor) -> Result<BufferHandle, DeviceError>;
     fn create_texture(
         &mut self,
@@ -174,46 +179,65 @@ impl TextureResourceCache {
         updates: &[ImageUpdate],
     ) -> Result<usize, DeviceError> {
         let mut commands = CommandList::default();
+        let mut staged_textures = self.textures.clone();
+        let mut created_handles = Vec::new();
+        let mut replaced_handles = Vec::new();
         let mut uploaded = 0;
-        for update in updates {
-            let dimensions = update.dimensions();
-            if self
-                .textures
-                .get(&update.image())
-                .is_some_and(|cached| cached.revision.value() >= update.revision().value())
-            {
-                continue;
-            }
-
-            let handle = match self.textures.get(&update.image()) {
-                Some(cached) if cached.dimensions == dimensions => cached.handle,
-                Some(cached) => {
-                    device.destroy_texture(cached.handle);
-                    device.create_texture(TextureDescriptor {
-                        width: dimensions.0,
-                        height: dimensions.1,
-                        format: TextureFormat::Rgba8,
-                    })?
+        let staging_result = (|| {
+            for update in updates {
+                let dimensions = update.dimensions();
+                if staged_textures
+                    .get(&update.image())
+                    .is_some_and(|cached| cached.revision.value() >= update.revision().value())
+                {
+                    continue;
                 }
-                None => device.create_texture(TextureDescriptor {
-                    width: dimensions.0,
-                    height: dimensions.1,
-                    format: TextureFormat::Rgba8,
-                })?,
-            };
-            commands.write_texture(handle, dimensions.0, dimensions.1, update.rgba8().to_vec());
-            self.textures.insert(
-                update.image(),
-                CachedTexture {
-                    handle,
-                    revision: update.revision(),
-                    dimensions,
-                },
-            );
-            uploaded += 1;
+
+                let (handle, replaced_handle) = match staged_textures.get(&update.image()) {
+                    Some(cached) if cached.dimensions == dimensions => (cached.handle, None),
+                    cached => {
+                        let handle = device.create_texture(TextureDescriptor {
+                            width: dimensions.0,
+                            height: dimensions.1,
+                            format: TextureFormat::Rgba8,
+                        })?;
+                        created_handles.push(handle);
+                        (handle, cached.map(|cached| cached.handle))
+                    }
+                };
+                commands.write_texture(handle, dimensions.0, dimensions.1, update.rgba8().to_vec());
+                staged_textures.insert(
+                    update.image(),
+                    CachedTexture {
+                        handle,
+                        revision: update.revision(),
+                        dimensions,
+                    },
+                );
+                if let Some(replaced_handle) = replaced_handle {
+                    replaced_handles.push(replaced_handle);
+                }
+                uploaded += 1;
+            }
+            Ok::<(), DeviceError>(())
+        })();
+        if let Err(error) = staging_result {
+            for handle in created_handles {
+                device.destroy_texture(handle);
+            }
+            return Err(error);
         }
         if uploaded > 0 {
-            device.submit(commands)?;
+            if let Err(error) = device.submit(commands) {
+                for handle in created_handles {
+                    device.destroy_texture(handle);
+                }
+                return Err(error);
+            }
+        }
+        self.textures = staged_textures;
+        for handle in replaced_handles {
+            device.destroy_texture(handle);
         }
         Ok(uploaded)
     }
@@ -225,51 +249,211 @@ impl TextureResourceCache {
             }
         }
     }
+
+    pub fn retain_only<D: GraphicsDevice>(&mut self, device: &mut D, images: &[ImageId]) {
+        let retained: std::collections::HashSet<_> = images.iter().copied().collect();
+        let stale: Vec<_> = self
+            .textures
+            .keys()
+            .filter(|image| !retained.contains(image))
+            .copied()
+            .collect();
+        self.evict(device, &stale);
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub struct MockGraphicsDevice {
+    next_handle: u64,
+    fail_next_texture_creation: bool,
+    fail_next_submission: bool,
+    buffers: HashMap<BufferHandle, BufferDescriptor>,
+    textures: HashMap<TextureHandle, TextureDescriptor>,
+    submitted: Vec<CommandList>,
+}
+
+#[cfg(test)]
+impl MockGraphicsDevice {
+    fn next_handle(&mut self) -> u64 {
+        self.next_handle = self.next_handle.wrapping_add(1);
+        self.next_handle
+    }
+
+    pub fn submitted(&self) -> &[CommandList] {
+        &self.submitted
+    }
+}
+
+#[cfg(test)]
+impl GraphicsDevice for MockGraphicsDevice {
+    fn create_buffer(&mut self, descriptor: BufferDescriptor) -> Result<BufferHandle, DeviceError> {
+        if descriptor.size == 0 {
+            return Err(DeviceError::InvalidResource);
+        }
+        let handle = BufferHandle::new(self.next_handle());
+        self.buffers.insert(handle, descriptor);
+        Ok(handle)
+    }
+
+    fn create_texture(
+        &mut self,
+        descriptor: TextureDescriptor,
+    ) -> Result<TextureHandle, DeviceError> {
+        if std::mem::take(&mut self.fail_next_texture_creation) {
+            return Err(DeviceError::InvalidResource);
+        }
+        if descriptor.width == 0 || descriptor.height == 0 {
+            return Err(DeviceError::InvalidResource);
+        }
+        let handle = TextureHandle::new(self.next_handle());
+        self.textures.insert(handle, descriptor);
+        Ok(handle)
+    }
+
+    fn submit(&mut self, commands: CommandList) -> Result<(), DeviceError> {
+        if std::mem::take(&mut self.fail_next_submission) {
+            return Err(DeviceError::UnsupportedCommand);
+        }
+        for (index, command) in commands.commands().iter().enumerate() {
+            match command {
+                Command::WriteBuffer {
+                    buffer,
+                    offset,
+                    bytes,
+                } => {
+                    let descriptor = self
+                        .buffers
+                        .get(buffer)
+                        .ok_or(DeviceError::InvalidResource)?;
+                    if offset
+                        .checked_add(bytes.len())
+                        .is_none_or(|end| end > descriptor.size)
+                    {
+                        return Err(DeviceError::InvalidResource);
+                    }
+                }
+                Command::WriteTexture {
+                    texture,
+                    width,
+                    height,
+                    bytes,
+                } => {
+                    let descriptor = self
+                        .textures
+                        .get(texture)
+                        .ok_or(DeviceError::InvalidResource)?;
+                    let expected = (*width as usize)
+                        .checked_mul(*height as usize)
+                        .and_then(|pixels| pixels.checked_mul(4));
+                    if (*width, *height) != (descriptor.width, descriptor.height)
+                        || expected != Some(bytes.len())
+                    {
+                        return Err(DeviceError::InvalidResource);
+                    }
+                }
+                Command::DrawTexture {
+                    texture,
+                    width,
+                    height,
+                    opacity_bits,
+                    ..
+                } => {
+                    if !self.textures.contains_key(texture)
+                        || *width == 0
+                        || *height == 0
+                        || !(0.0..=1.0).contains(&f32::from_bits(*opacity_bits))
+                    {
+                        return Err(DeviceError::InvalidResource);
+                    }
+                }
+                Command::Present if index + 1 != commands.commands().len() => {
+                    return Err(DeviceError::UnsupportedCommand);
+                }
+                Command::Present => {}
+            }
+        }
+        self.submitted.push(commands);
+        Ok(())
+    }
+
+    fn destroy_buffer(&mut self, buffer: BufferHandle) {
+        self.buffers.remove(&buffer);
+    }
+
+    fn destroy_texture(&mut self, texture: TextureHandle) {
+        self.textures.remove(&texture);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        BufferDescriptor, BufferHandle, BufferUsage, Command, CommandList, DeviceError,
-        GraphicsDevice, TextureDescriptor, TextureFormat, TextureHandle, TextureResourceCache,
+        BufferDescriptor, BufferUsage, Command, CommandList, DeviceError, GraphicsDevice,
+        MockGraphicsDevice, TextureDescriptor, TextureFormat, TextureResourceCache,
     };
 
-    #[derive(Default)]
-    struct RecordingDevice {
-        next_handle: u64,
-        submitted: Vec<CommandList>,
+    #[test]
+    fn mock_graphics_device_validates_resource_lifecycle_and_command_order() {
+        let mut mock = MockGraphicsDevice::default();
+        let texture = mock
+            .create_texture(TextureDescriptor {
+                width: 1,
+                height: 1,
+                format: TextureFormat::Rgba8,
+            })
+            .unwrap();
+        let mut commands = CommandList::default();
+        commands.write_texture(texture, 1, 1, vec![0, 0, 0, 255]);
+        commands.draw_texture(texture, 0, 0, 1, 1, 1.0);
+        commands.present();
+
+        mock.submit(commands).unwrap();
+        assert_eq!(mock.submitted().len(), 1);
+
+        mock.destroy_texture(texture);
+        let mut stale_draw = CommandList::default();
+        stale_draw.draw_texture(texture, 0, 0, 1, 1, 1.0);
+        stale_draw.present();
+        assert_eq!(mock.submit(stale_draw), Err(DeviceError::InvalidResource));
     }
 
-    impl GraphicsDevice for RecordingDevice {
-        fn create_buffer(
-            &mut self,
-            _descriptor: BufferDescriptor,
-        ) -> Result<BufferHandle, DeviceError> {
-            self.next_handle += 1;
-            Ok(BufferHandle::new(self.next_handle))
-        }
+    #[test]
+    fn mock_graphics_device_rejects_out_of_bounds_writes_and_commands_after_present() {
+        let mut mock = MockGraphicsDevice::default();
+        let buffer = mock
+            .create_buffer(BufferDescriptor {
+                size: 4,
+                usage: BufferUsage::Vertex,
+            })
+            .unwrap();
+        let texture = mock
+            .create_texture(TextureDescriptor {
+                width: 1,
+                height: 1,
+                format: TextureFormat::Rgba8,
+            })
+            .unwrap();
 
-        fn create_texture(
-            &mut self,
-            _descriptor: TextureDescriptor,
-        ) -> Result<TextureHandle, DeviceError> {
-            self.next_handle += 1;
-            Ok(TextureHandle::new(self.next_handle))
-        }
+        let mut out_of_bounds = CommandList::default();
+        out_of_bounds.write_buffer(buffer, 2, vec![0; 3]);
+        assert_eq!(
+            mock.submit(out_of_bounds),
+            Err(DeviceError::InvalidResource)
+        );
 
-        fn submit(&mut self, commands: CommandList) -> Result<(), DeviceError> {
-            self.submitted.push(commands);
-            Ok(())
-        }
-
-        fn destroy_buffer(&mut self, _buffer: BufferHandle) {}
-
-        fn destroy_texture(&mut self, _texture: TextureHandle) {}
+        let mut after_present = CommandList::default();
+        after_present.present();
+        after_present.draw_texture(texture, 0, 0, 1, 1, 1.0);
+        assert_eq!(
+            mock.submit(after_present),
+            Err(DeviceError::UnsupportedCommand)
+        );
     }
 
     #[test]
     fn device_contract_keeps_resource_creation_and_submission_backend_independent() {
-        let mut device = RecordingDevice::default();
+        let mut device = MockGraphicsDevice::default();
         let buffer = device
             .create_buffer(BufferDescriptor {
                 size: 16,
@@ -291,16 +475,16 @@ mod tests {
 
         assert_eq!(buffer.value(), 1);
         assert_eq!(texture.value(), 2);
-        assert_eq!(device.submitted.len(), 1);
+        assert_eq!(device.submitted().len(), 1);
         assert!(matches!(
-            &device.submitted[0].commands()[0],
+            &device.submitted()[0].commands()[0],
             Command::WriteBuffer { offset: 4, .. }
         ));
     }
 
     #[test]
     fn texture_cache_uploads_only_new_revisions_and_reuses_same_dimensions() {
-        let mut device = RecordingDevice::default();
+        let mut device = MockGraphicsDevice::default();
         let mut cache = TextureResourceCache::new();
         let first = crate::render::ImageUpdate::new(
             crate::render::ImageId::new(7),
@@ -327,7 +511,75 @@ mod tests {
         assert_eq!(cache.upload_updates(&mut device, &[first]).unwrap(), 0);
         assert_eq!(cache.upload_updates(&mut device, &[newer]).unwrap(), 1);
         assert_eq!(cache.handle(crate::render::ImageId::new(7)), handle);
-        assert_eq!(device.submitted.len(), 2);
+        assert_eq!(device.submitted().len(), 2);
+    }
+
+    #[test]
+    fn texture_cache_keeps_old_texture_when_replacement_creation_fails() {
+        let image = crate::render::ImageId::new(18);
+        let mut device = MockGraphicsDevice::default();
+        let mut cache = TextureResourceCache::new();
+        let first = crate::render::ImageUpdate::new(
+            image,
+            crate::render::ImageRevision::new(1),
+            1,
+            1,
+            vec![1, 2, 3, 255],
+        )
+        .unwrap();
+        cache.upload_updates(&mut device, &[first]).unwrap();
+        let old_handle = cache.handle(image).unwrap();
+
+        device.fail_next_texture_creation = true;
+        let resized = crate::render::ImageUpdate::new(
+            image,
+            crate::render::ImageRevision::new(2),
+            2,
+            1,
+            vec![4, 5, 6, 255, 7, 8, 9, 255],
+        )
+        .unwrap();
+
+        assert_eq!(
+            cache.upload_updates(&mut device, &[resized]),
+            Err(DeviceError::InvalidResource)
+        );
+        assert_eq!(cache.handle(image), Some(old_handle));
+        assert!(device.textures.contains_key(&old_handle));
+    }
+
+    #[test]
+    fn texture_cache_keeps_old_texture_when_replacement_upload_fails() {
+        let image = crate::render::ImageId::new(19);
+        let mut device = MockGraphicsDevice::default();
+        let mut cache = TextureResourceCache::new();
+        let first = crate::render::ImageUpdate::new(
+            image,
+            crate::render::ImageRevision::new(1),
+            1,
+            1,
+            vec![1, 2, 3, 255],
+        )
+        .unwrap();
+        cache.upload_updates(&mut device, &[first]).unwrap();
+        let old_handle = cache.handle(image).unwrap();
+        device.fail_next_submission = true;
+        let resized = crate::render::ImageUpdate::new(
+            image,
+            crate::render::ImageRevision::new(2),
+            2,
+            1,
+            vec![4, 5, 6, 255, 7, 8, 9, 255],
+        )
+        .unwrap();
+
+        assert_eq!(
+            cache.upload_updates(&mut device, &[resized]),
+            Err(DeviceError::UnsupportedCommand)
+        );
+        assert_eq!(cache.handle(image), Some(old_handle));
+        assert!(device.textures.contains_key(&old_handle));
+        assert_eq!(device.textures.len(), 1);
     }
 }
 use std::collections::HashMap;

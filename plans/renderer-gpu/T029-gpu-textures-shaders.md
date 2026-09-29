@@ -249,9 +249,23 @@ Enquanto a migração estiver em curso, CPU e GPU devem continuar selecionáveis
   camadas, tiles progressivos, overlays, input, resize, atualização de config e
   encerramento.
 - Registrar golden data do `PreparedTileBatch` atual sem depender de `wgpu`.
+- Para overlays e envelopes, a posicao, origem, ancoragem e ordem observadas no
+  renderer CPU sao a referencia normativa. Uma diferenca de posicao no GPU e
+  uma divergencia de composicao a corrigir nos passos de migracao/conformidade;
+  nao deve ser aceita como uma convencao visual especifica do backend.
+- **Conformidade de overlays:** com a mesma configuracao e viewport, o GPU deve
+  usar as posicoes do CPU para overlays de texto, camadas, fila, workers e
+  envelope. Diferencas de posicao, ancoragem ou ordem sao falhas, ainda que os
+  pixels dos tiles estejam corretos.
 - Documentar quais diferenças CPU/GPU são toleradas e quais são bugs.
 
 **Saída:** uma suíte capaz de detectar nova divergência antes da extração.
+
+Os testes devem separar comportamento determinístico de comportamento dependente
+de plataforma. Viewport, envelopes, ordem de camadas, input normalizado,
+configuração, shutdown e sequência de frames devem ser cobertos com fakes e
+golden data. A abertura de janela, desenho efetivo, resize durante o gesto e
+qualidade visual ficam para uma validação HITL curta e explícita.
 
 ### Passo 1 — Introduzir `RenderFrame` e identidades estáveis
 
@@ -274,27 +288,48 @@ para a mesma cena, inclusive viewport reduzida e envelope.
 **Teste RED principal:** o controlador completo funciona com um target fake e
 produz a sequência esperada de resize, updates, render, eviction e recovery.
 
+Este passo não exige HITL para ser concluído. Uma execução visual CPU pode ser
+usada apenas como smoke test depois que o contrato estiver GREEN.
+
 ### Passo 3 — Extrair `ApplicationController`
 
 - Unificar configuração, canvas, agendamento, input, instrumentação, overlays e
   finalização no controlador.
 - Converter atualização da Config UI em `AppEvent::ConfigurationChanged`.
 - Fazer CPU e GPU receberem o mesmo `PreparedFrame`.
+- Representar no contrato comum a posição e o conteúdo dos textos de overlay
+  (preferencialmente como primitivas/listas de strings) e permitir que cada
+  renderer use um rasterizador de texto otimizado, reaproveitando ao máximo a
+  preparação comum.
 - Remover essas responsabilidades de `GpuWindowApp` e do loop CPU.
 
 **Teste RED principal:** uma sequência normalizada de eventos produz os mesmos
 efeitos e frames, independentemente do runtime e do target fake usados.
 
+O runtime falso deve cobrir resize contínuo, redraw, configuração e fechamento;
+nenhum desses casos deve depender de uma janela real.
+
 ### Passo 4 — Normalizar o runtime de janela
 
-- Transformar `GpuWindowApp` em adaptador `WinitRuntime` fino.
+- Usar `GpuWindowApp` como adaptador de ciclo de vida `winit`, encaminhando
+  callbacks normalizados ao `ApplicationController`.
 - Encaminhar `window_event`, `about_to_wait` e redraw ao controlador.
-- Restaurar a Config UI pelo canal comum e shutdown coordenado.
+- Preservar o canal comum de configuração e o sinal coordenado de shutdown.
+- A integração visual da Config UI no runtime GPU permanece na T035 do backlog;
+  este passo não deve abrir um segundo `EventLoop`.
 - Manter `MinifbRuntime` apenas como adaptador legado enquanto o target CPU
   precisar dele; preferir posteriormente um único runtime `winit` para ambos.
+- A composição e os recursos `wgpu` continuam específicos do backend e migram
+  para o destino GPU nos Passos 5–6; o adaptador de janela não deve duplicar a
+  preparação lógica comum.
 
-**Teste RED principal:** fake runtime cobre resize contínuo, redraw, fechamento
-da janela de renderer e fechamento da Config UI sem conhecer CPU/GPU.
+**Teste RED principal:** fake runtime cobre resize contínuo, input,
+configuração, redraw e fechamento do renderer; o sinal de shutdown da Config UI
+é verificado sem abrir uma janela real.
+
+HITL fica reservado para confirmar que o adaptador traduz corretamente os
+eventos reais da janela, especialmente resize durante o arrasto, redraw e
+encerramento coordenado.
 
 ### Passo 5 — Introduzir wrappers `GraphicsDevice`
 
@@ -307,6 +342,11 @@ da janela de renderer e fechamento da Config UI sem conhecer CPU/GPU.
 **Teste RED principal:** a composição de uma cena gera o mesmo command list no
 mock e no adaptador `wgpu`, sem exigir uma GPU nos testes unitários.
 
+Handles, descritores, cache, invalidação e ordem de comandos devem permanecer
+testáveis exclusivamente com `MockGraphicsDevice`. A criação real de device e
+surface é uma verificação opcional de integração, não um requisito do ciclo
+RED/GREEN.
+
 ### Passo 6 — Migrar o destino GPU para os contratos
 
 - Implementar `GpuRenderTarget<D: GraphicsDevice>`.
@@ -315,10 +355,24 @@ mock e no adaptador `wgpu`, sem exigir uma GPU nos testes unitários.
 - Integrar o envelope e o timing overlay ao modelo comum de imagens/revisões.
 - Manter instrumentação nas fronteiras lógicas e permitir métricas extras do
   adaptador.
+- Adotar `OverlayPrimitive` como representação definitiva de envelope, texto e
+  ferramentas de debug no frame comum; o adaptador pode rasterizar texto com
+  uma implementação otimizada, mas recebe do contrato comum ao menos posição e
+  conteúdo (ou uma lista de strings).
+- Detalhar a telemetria de composição, codificação, submissão, `poll` e
+  apresentação. Cada métrica deve ser avaliada quanto a custo e complexidade,
+  e a instrumentação deve poder ser desativada/removida em build de release
+  sem alterar o comportamento do renderer.
 
 **Teste RED principal:** frames sem mudança não criam nem enviam texturas ou
 buffers; mudança de posição atualiza somente instâncias; mudança de imagem
 atualiza somente a textura cuja revisão mudou.
+
+O comportamento de recursos deve ser fechado com `MockGraphicsDevice` antes da
+validação HITL. A validação manual deste passo fica limitada a uma cena GPU
+real: abrir, renderizar, redimensionar, usar pan/zoom, alternar overlays e
+fechar. Stalls, sincronização de driver, apresentação e qualidade dos shaders
+não devem ser simulados além do que o mock consegue afirmar.
 
 #### Plano operacional de diagnóstico e contenção de stalls GPU
 
@@ -347,9 +401,35 @@ atualiza somente a textura cuja revisão mudou.
 - Fazer CPU e GPU diferirem somente a partir de `RenderTarget::render` e dos
   adaptadores inevitáveis de apresentação.
 - Dividir ou remover `gpu_window.rs` após seus últimos consumidores migrarem.
+- Remover `encode_frame`, `GpuTextureStore`, `GpuTileTexture` e as demais
+  estruturas exclusivas do caminho de composição legado quando não houver mais
+  consumidores.
+- Remover os parâmetros de envelope/overlay e o callback de estágios de
+  `encode_frame` junto com o restante do caminho legado; a paridade passa a ser
+  garantida por `OverlayPrimitive` e pela telemetria do destino comum.
+- Preservar o renderer CPU como fallback de inicialização para máquinas sem os
+  recursos GPU, por meio da seleção de `RenderTarget`; nunca executar os dois
+  caminhos para o mesmo frame ou conteúdo.
+- Resolver a paridade de overlays, ferramentas de debug, posições, conteúdos e
+  alterações de configuração usando `OverlayPrimitive` como fonte de verdade.
 
 **Gate arquitetural:** busca estática e testes impedem imports de `wgpu`,
 `winit` ou `minifb` em `app_core`, `orchestrator` e contratos de renderização.
+
+O gate pode ser verificado automaticamente com busca de dependências, fake
+runtime e fake target. HITL serve apenas para confirmar que a experiência CPU e
+GPU continua equivalente nos fluxos principais.
+
+Os itens adicionais identificados no review externo fazem parte do plano total
+do T029. A prioridade será definida item a item durante a execução: validação
+de comandos, tipagem de erros e decomposição do adaptador entram nos Passos
+6–8; o desacoplamento final de vértices e a remoção dos tipos legados entram no
+Passo 7.
+
+O contrato de contexto WGPU deve usar um `WgpuContextError` específico do
+adaptador, convertido na fronteira portável quando necessário, com um campo
+genérico para preservar a causa específica como texto ou objeto pequeno. Não
+expor `Result<_, String>` diretamente nas APIs públicas de `WgpuContext`.
 
 ### Passo 8 — Conformidade, fallback e recuperação
 
@@ -359,9 +439,15 @@ atualiza somente a textura cuja revisão mudou.
 - Fazer a seleção distinguir destino (`cpu`, `gpu`) de API (`auto`, `gl`,
   `vulkan`, `dx12`, `metal`).
 - Expor capabilities e diagnóstico da implementação efetivamente escolhida.
+- Testar que o fallback CPU é selecionado quando os recursos GPU não estão
+  disponíveis e que não há submissão simultânea pelos dois caminhos.
 
 **Teste RED principal:** qualquer falha recuperável preserva o estado lógico da
 aplicação e troca/recria somente o adaptador afetado.
+
+Perda de surface/device, fallback e recriação de cache devem ser simulados com
+erros injetáveis. HITL é necessária somente para confirmar recuperação em um
+backend real quando a plataforma permitir provocar ou observar essa falha.
 
 ### Passo 9 — Preparar GPGPU sem acoplar apresentação
 
@@ -378,10 +464,19 @@ continua sendo tarefa própria e usa a suíte de conformidade.
 
 ### Trabalho adiado — backend Metal (antigo Passo 10)
 
+As quatro combinações devem ser cobertas primeiro com fake processor e fake
+target. Execução GPGPU real e medições de transferência são validações de
+hardware opcionais, não critérios para os testes unitários.
+
+### Passo 10 — Provar a substituição com Metal
+
 Este trabalho foi movido para o `BACKLOG` como T036. Não é requisito para
 concluir os passos 0–9 de T029: no momento não há uma máquina Mac disponível
 para compilar e validar o backend no macOS. A retomada depende de acesso a uma
 máquina Mac com toolchain Apple instalado.
+
+Compilação, contratos e seleção podem ser verificados sem hardware Metal; a
+execução visual e a integração com o device Metal exigem HITL em macOS.
 
 ## Estratégia TDD e pirâmide de testes
 
@@ -394,8 +489,16 @@ máquina Mac com toolchain Apple instalado.
 - **Integração sem hardware:** fake runtime + fake target + mock device.
 - **Integração com hardware:** opt-in, separada, nunca necessária para o ciclo
   unitário RED/GREEN.
-- **HIL:** somente quando o checkbox global for marcado pelo usuário. Enquanto
+- **HILT mínimo:** uma verificação por backend real cobrindo inicialização,
+  renderização, resize, pan/zoom, configuração, overlays e encerramento.
+- **HILT adicional:** shaders, apresentação, stalls, perda de device/surface e
+  Metal real somente quando a alteração tocar esses limites.
+- **HILT:** somente quando o checkbox global for marcado pelo usuário. Enquanto
   estiver desmarcado, a aplicação não será iniciada automaticamente.
+
+O objetivo é manter a maior parte da migração rápida, determinística e
+reproduzível. HITL não deve substituir testes de contrato nem ser usado para
+validar lógica que pode ser exercitada por fakes, mocks ou golden data.
 
 Cada passo registra no `TASKS.md` o teste que falhou no RED, os testes GREEN e
 o refactor realizado. Verificações pesadas e benchmarks só serão executados por

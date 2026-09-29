@@ -28,6 +28,8 @@ fn initial_view_parameters(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    fractal_explorer::app::initialize_window_title(std::env::args().nth(1).as_deref());
+    let _profiling_client = fractal_explorer::profiling::start();
     let output = std::sync::Arc::new(fractal_explorer::output::OutputService::start());
     let _output_scope = output.attach_to_current_thread();
     let mut config = AppConfig::load("config.toml").unwrap_or_default();
@@ -75,14 +77,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.orchestrator.workers,
         render_plan,
     );
-    if config.renderer.backend_kind()? == fractal_explorer::config::RendererBackend::Gpu {
-        fractal_explorer::gpu_window::run_window_with_state(Some(
-            fractal_explorer::gpu_window::GpuAppState::new(
-                canvas,
-                orchestrator,
-                config.renderer.clone(),
-            ),
-        ))?;
+    let renderer_factory =
+        fractal_explorer::renderer::RendererFactory::from_config(&config.renderer)?;
+    if renderer_factory.is_gpu() {
+        let (_renderer_updates, renderer_commands, renderer_closed) =
+            fractal_explorer::gpu_window::runtime_channels();
+        let renderer_state = fractal_explorer::gpu_window::GpuAppState::new(
+            canvas,
+            orchestrator,
+            config.renderer.clone(),
+        );
+        // winit requires the Windows event loop to be created on the main
+        // thread. The configuration UI cannot currently run concurrently
+        // with this native event loop; its shared channel remains available
+        // for the future single-runtime integration.
+        fractal_explorer::gpu_window::run_window_with_state_and_updates(
+            Some(renderer_state),
+            renderer_commands,
+            renderer_closed,
+        )?;
         return Ok(());
     }
     #[cfg(feature = "native-ui")]

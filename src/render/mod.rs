@@ -1,6 +1,7 @@
 pub mod cpu;
 pub mod device;
 pub mod gpu;
+pub mod graphics;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ImageId(u64);
@@ -261,6 +262,29 @@ impl RenderFrame {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreparedFrame {
+    frame: RenderFrame,
+    image_updates: Vec<ImageUpdate>,
+}
+
+impl PreparedFrame {
+    pub fn new(frame: RenderFrame, image_updates: Vec<ImageUpdate>) -> Self {
+        Self {
+            frame,
+            image_updates,
+        }
+    }
+
+    pub fn frame(&self) -> &RenderFrame {
+        &self.frame
+    }
+
+    pub fn image_updates(&self) -> &[ImageUpdate] {
+        &self.image_updates
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RenderCapabilities {
     pub partial_image_updates: bool,
@@ -350,12 +374,53 @@ impl<T: RenderTarget> RenderTargetSession<T> {
     }
 }
 
+/// Owns the backend-independent submission sequence for one render target.
+pub struct RenderTargetPipeline {
+    target: Box<dyn RenderTarget>,
+    viewport: Viewport,
+}
+
+impl RenderTargetPipeline {
+    pub fn create(
+        factory: &dyn RenderTargetFactory,
+        viewport: Viewport,
+    ) -> Result<Self, RenderError> {
+        Ok(Self {
+            target: factory.create(viewport)?,
+            viewport,
+        })
+    }
+
+    pub fn submit(&mut self, prepared: &PreparedFrame) -> Result<FrameOutcome, RenderError> {
+        if self.viewport != prepared.frame().viewport() {
+            self.target.resize(prepared.frame().viewport())?;
+            self.viewport = prepared.frame().viewport();
+        }
+        self.target.update_images(prepared.image_updates())?;
+        self.target.render(prepared.frame())
+    }
+
+    pub fn evict_images(&mut self, images: &[ImageId]) {
+        self.target.evict_images(images);
+    }
+
+    pub fn recover(&mut self, reason: SurfaceFailure) -> Result<(), RenderError> {
+        self.target.recover(reason)
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CpuRenderTargetFactory;
 
+impl CpuRenderTargetFactory {
+    pub fn create_cpu_target(&self, viewport: Viewport) -> cpu::CpuRenderTarget {
+        cpu::CpuRenderTarget::new(viewport)
+    }
+}
+
 impl RenderTargetFactory for CpuRenderTargetFactory {
     fn create(&self, viewport: Viewport) -> Result<Box<dyn RenderTarget>, RenderError> {
-        Ok(Box::new(cpu::CpuRenderTarget::new(viewport)))
+        Ok(Box::new(self.create_cpu_target(viewport)))
     }
 }
 
@@ -389,9 +454,9 @@ impl FrameBuilder {
 #[cfg(test)]
 mod tests {
     use super::{
-        FrameBuilder, FrameOutcome, ImageId, ImageRevision, ImageUpdate, RenderCapabilities,
-        RenderError, RenderFrame, RenderTarget, RenderTargetFactory, RenderTargetSession,
-        SurfaceFailure, TileDraw, Viewport,
+        FrameBuilder, FrameOutcome, ImageId, ImageRevision, ImageUpdate, PreparedFrame, Rect,
+        RenderCapabilities, RenderError, RenderFrame, RenderTarget, RenderTargetFactory,
+        RenderTargetPipeline, RenderTargetSession, SurfaceFailure, TileDraw, Viewport,
     };
 
     #[derive(Default)]
@@ -433,6 +498,56 @@ mod tests {
         }
     }
 
+    struct RecordingFactory {
+        target: std::sync::Arc<std::sync::Mutex<RecordingTarget>>,
+    }
+
+    impl RenderTargetFactory for RecordingFactory {
+        fn create(&self, _viewport: Viewport) -> Result<Box<dyn RenderTarget>, RenderError> {
+            Ok(Box::new(SharedRecordingTarget {
+                target: std::sync::Arc::clone(&self.target),
+            }))
+        }
+    }
+
+    struct SharedRecordingTarget {
+        target: std::sync::Arc<std::sync::Mutex<RecordingTarget>>,
+    }
+
+    impl RenderTarget for SharedRecordingTarget {
+        fn capabilities(&self) -> RenderCapabilities {
+            RenderCapabilities::default()
+        }
+
+        fn resize(&mut self, viewport: Viewport) -> Result<(), RenderError> {
+            self.target.lock().unwrap().resized.push(viewport);
+            Ok(())
+        }
+
+        fn update_images(&mut self, updates: &[ImageUpdate]) -> Result<(), RenderError> {
+            self.target.lock().unwrap().updated_images += updates.len();
+            Ok(())
+        }
+
+        fn render(&mut self, frame: &RenderFrame) -> Result<FrameOutcome, RenderError> {
+            self.target
+                .lock()
+                .unwrap()
+                .rendered_frames
+                .push(frame.frame_id());
+            Ok(FrameOutcome::submitted())
+        }
+
+        fn evict_images(&mut self, images: &[ImageId]) {
+            self.target.lock().unwrap().evicted_images += images.len();
+        }
+
+        fn recover(&mut self, reason: SurfaceFailure) -> Result<(), RenderError> {
+            self.target.lock().unwrap().recovered.push(reason);
+            Ok(())
+        }
+    }
+
     #[test]
     fn frame_references_stable_images_and_preserves_draw_order() {
         let frame = RenderFrame::new(7, Viewport::new(800, 600))
@@ -469,6 +584,27 @@ mod tests {
     }
 
     #[test]
+    fn prepared_frame_keeps_logical_frame_separate_from_image_updates() {
+        let frame = RenderFrame::new(4, Viewport::new(2, 1)).with_tile(
+            TileDraw::new(ImageId::new(7), ImageRevision::new(11), 0)
+                .with_destination(Rect::new(1, 0, 1, 1)),
+        );
+        let update = ImageUpdate::new(
+            ImageId::new(7),
+            ImageRevision::new(11),
+            1,
+            1,
+            vec![10, 20, 30, 255],
+        )
+        .unwrap();
+
+        let prepared = PreparedFrame::new(frame.clone(), vec![update.clone()]);
+
+        assert_eq!(prepared.frame(), &frame);
+        assert_eq!(prepared.image_updates(), &[update]);
+    }
+
+    #[test]
     fn render_target_contract_keeps_lifecycle_independent_of_backend() {
         let mut target = RecordingTarget::default();
         target.resize(Viewport::new(640, 480)).unwrap();
@@ -501,6 +637,36 @@ mod tests {
 
         assert_eq!(session.target().resized, vec![Viewport::new(640, 400)]);
         assert_eq!(session.target().rendered_frames, vec![3, 3]);
+    }
+
+    #[test]
+    fn render_target_pipeline_submits_prepared_frame_lifecycle_in_order() {
+        let target = std::sync::Arc::new(std::sync::Mutex::new(RecordingTarget::default()));
+        let factory = RecordingFactory {
+            target: std::sync::Arc::clone(&target),
+        };
+        let mut pipeline = RenderTargetPipeline::create(&factory, Viewport::new(320, 200)).unwrap();
+        let update = ImageUpdate::new(
+            ImageId::new(9),
+            ImageRevision::new(1),
+            1,
+            1,
+            vec![1, 2, 3, 255],
+        )
+        .unwrap();
+        let prepared =
+            PreparedFrame::new(RenderFrame::new(12, Viewport::new(640, 400)), vec![update]);
+
+        assert!(pipeline.submit(&prepared).unwrap().was_submitted());
+        pipeline.evict_images(&[ImageId::new(9)]);
+        pipeline.recover(SurfaceFailure::Lost).unwrap();
+
+        let target = target.lock().unwrap();
+        assert_eq!(target.resized, vec![Viewport::new(640, 400)]);
+        assert_eq!(target.updated_images, 1);
+        assert_eq!(target.rendered_frames, vec![12]);
+        assert_eq!(target.evicted_images, 1);
+        assert_eq!(target.recovered, vec![SurfaceFailure::Lost]);
     }
 
     #[test]
