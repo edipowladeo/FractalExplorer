@@ -3,16 +3,13 @@ use crate::app::{
     DefaultApplicationController,
 };
 use crate::gpu::{
-    debug_overlay_upload, debug_overlay_upload_with_rectangles, texture_keys_for_commands,
-    tile_commands_for_frame, PreparedTileBatch, TextureCache, TextureUpload, TileDrawCommand,
+    debug_overlay_upload, debug_overlay_upload_with_rectangles, PreparedTileBatch, TextureCache,
+    TextureUpload,
 };
 use crate::input::{InputEvent, ZoomDirection};
 use crate::render::gpu::GpuRenderTarget;
 use crate::render::graphics::wgpu::{
-    create_tile_pipeline, tile_vertices_for_commands, upload_tile_texture, write_tile_texture,
-    GpuTextureStore, GpuTileTexture, WgpuCompositionTexture, WgpuContext as GpuContext,
-    WgpuGraphicsDevice, WgpuPipeline, WgpuSubmissionMetrics, WgpuSurface, WgpuTextureLayout,
-    WgpuVertexBufferRing, GPU_VERTEX_BUFFER_RING_SIZE,
+    WgpuContext as GpuContext, WgpuGraphicsDevice, WgpuSubmissionMetrics, WgpuSurface,
 };
 use crate::render::{
     ImageId, ImageRevision, ImageUpdate, OverlayPrimitive, PreparedFrame, Rect,
@@ -27,62 +24,12 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-fn needs_batch_rebuild(previous: (u32, u32), next: (u32, u32)) -> bool {
-    previous != next
-}
-
 const GPU_FRAME_HISTORY_CAPACITY: usize = 8;
 const GPU_ENVELOPE_IMAGE_ID: ImageId = ImageId::new(u64::MAX - 1);
 const GPU_TEXT_OVERLAY_IMAGE_BASE: u64 = u64::MAX - 2;
 
 fn text_overlay_image_id(group: u64, line: usize) -> ImageId {
     ImageId::new(GPU_TEXT_OVERLAY_IMAGE_BASE - (group << 32) - line as u64)
-}
-
-fn format_gpu_frame_history(history: &VecDeque<(u64, Duration)>) -> String {
-    history
-        .iter()
-        .map(|(frame, duration)| format!("#{frame}:{:.3}ms", duration.as_secs_f64() * 1_000.0))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn format_gpu_frame_overlay_header(frame_number: u64, visible_tiles: usize) -> String {
-    format!("Frame #{frame_number}, tiles:{visible_tiles}")
-}
-
-fn format_gpu_overlay_text(state: &GpuAppState, visible_tiles: usize) -> String {
-    let debug = &state.config.debug;
-    let mut lines = Vec::new();
-    let frame_number = state.canvas.current_frame_number();
-    let common = crate::app::prepare_overlay_snapshot(
-        &state.canvas,
-        &state.orchestrator,
-        &state.config,
-        Some(state.cursor),
-    );
-
-    if debug.text_overlay_frames {
-        lines.push(format_gpu_frame_overlay_header(frame_number, visible_tiles));
-        let history = format_gpu_frame_history(&state.frame_timing_ring);
-        if !history.is_empty() {
-            lines.extend(history.lines().map(str::to_owned));
-        }
-    }
-
-    if debug.text_overlay_layers {
-        lines.extend(common.layer_lines);
-    }
-
-    if debug.text_overlay_queue {
-        lines.extend(common.queue_lines);
-    }
-
-    if debug.text_overlay_workers {
-        lines.extend(common.worker_lines);
-    }
-
-    lines.join("\n")
 }
 
 fn centered_bounds(width: usize, height: usize, ratio: f64) -> (i32, i32, i32, i32) {
@@ -94,33 +41,6 @@ fn centered_bounds(width: usize, height: usize, ratio: f64) -> (i32, i32, i32, i
     let right = (width - 1.0 - left as f64).round() as i32;
     let bottom = (height - 1.0 - top as f64).round() as i32;
     (left, top, right, bottom)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct EnvelopeCacheKey {
-    width: u32,
-    height: u32,
-    allocation: (i32, i32, i32, i32),
-    deallocation: (i32, i32, i32, i32),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct OverlayCacheKey {
-    width: u32,
-    height: u32,
-    content_hash: u64,
-}
-
-fn overlay_cache_key(upload: &crate::gpu::TextureUpload) -> OverlayCacheKey {
-    OverlayCacheKey {
-        width: upload.width,
-        height: upload.height,
-        content_hash: upload.key.content_hash,
-    }
-}
-
-fn overlay_needs_refresh(previous: Option<OverlayCacheKey>, next: OverlayCacheKey) -> bool {
-    previous != Some(next)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -587,21 +507,6 @@ pub struct GpuWindowApp {
     window: Option<Arc<Window>>,
     surface: Option<Arc<std::sync::Mutex<WgpuSurface<'static>>>>,
     render_target: Option<RenderTargetSession<GpuRenderTarget<WgpuGraphicsDevice>>>,
-    pipeline: Option<WgpuPipeline>,
-    tile_bind_group_layout: Option<WgpuTextureLayout>,
-    tile_vertex_ring: WgpuVertexBufferRing,
-    overlay_vertex_ring: WgpuVertexBufferRing,
-    overlay_texture: Option<GpuTileTexture>,
-    overlay_cache_key: Option<OverlayCacheKey>,
-    overlay_command: Option<TileDrawCommand>,
-    envelope_vertex_ring: WgpuVertexBufferRing,
-    envelope_texture: Option<GpuTileTexture>,
-    envelope_command: Option<TileDrawCommand>,
-    envelope_cache_key: Option<EnvelopeCacheKey>,
-    texture_store: Option<GpuTextureStore>,
-    tile_commands: Vec<crate::gpu::TileDrawCommand>,
-    surface_initialized: bool,
-    composition_texture: Option<WgpuCompositionTexture>,
     last_frame_finished_at: Option<Instant>,
     last_redraw_requested_at: Option<Instant>,
 }
@@ -612,10 +517,6 @@ impl GpuWindowApp {
     }
 
     pub fn with_state(state: Option<GpuAppState>) -> Self {
-        let ring_size = state
-            .as_ref()
-            .map(|state| state.config.gpu_vertex_buffer_ring_size)
-            .unwrap_or(GPU_VERTEX_BUFFER_RING_SIZE);
         let viewport = state
             .as_ref()
             .map(|state| Viewport::new(state.config.width as u32, state.config.height as u32))
@@ -629,38 +530,17 @@ impl GpuWindowApp {
             window: None,
             surface: None,
             render_target: None,
-            pipeline: None,
-            tile_bind_group_layout: None,
-            tile_vertex_ring: WgpuVertexBufferRing::new(ring_size),
-            overlay_vertex_ring: WgpuVertexBufferRing::new(ring_size),
-            overlay_texture: None,
-            overlay_cache_key: None,
-            overlay_command: None,
-            envelope_vertex_ring: WgpuVertexBufferRing::new(ring_size),
-            envelope_texture: None,
-            envelope_command: None,
-            envelope_cache_key: None,
-            texture_store: None,
-            tile_commands: Vec::new(),
-            surface_initialized: false,
-            composition_texture: None,
             last_frame_finished_at: None,
             last_redraw_requested_at: None,
         }
     }
 
     pub fn set_state(&mut self, state: GpuAppState) {
-        let ring_size = state.config.gpu_vertex_buffer_ring_size;
         self.app_controller = DefaultApplicationController::new(Viewport::new(
             state.config.width as u32,
             state.config.height as u32,
         ));
         self.state = Some(state);
-        self.tile_vertex_ring = WgpuVertexBufferRing::new(ring_size);
-        self.overlay_vertex_ring = WgpuVertexBufferRing::new(ring_size);
-        self.envelope_vertex_ring = WgpuVertexBufferRing::new(ring_size);
-        self.surface_initialized = false;
-        self.composition_texture = None;
         self.last_frame_finished_at = None;
         self.last_redraw_requested_at = None;
     }
@@ -714,29 +594,11 @@ impl GpuWindowApp {
         let Ok(mut surface) = surface.lock() else {
             return;
         };
-        let previous = surface.size();
         surface.resize(context, width, height);
-        if needs_batch_rebuild(previous, surface.size()) {
-            self.surface_initialized = false;
-            self.composition_texture = None;
-            self.tile_vertex_ring.reset();
-            self.overlay_vertex_ring.reset();
-            self.envelope_vertex_ring.reset();
-            self.envelope_texture = None;
-            self.envelope_command = None;
-            self.envelope_cache_key = None;
-        }
-    }
-
-    fn surface_size(&self) -> Option<(u32, u32)> {
-        self.surface
-            .as_ref()?
-            .lock()
-            .ok()
-            .map(|surface| surface.size())
     }
 }
 
+#[cfg(any())]
 impl GpuWindowApp {
     fn record_gpu_upload_stage(
         &mut self,
@@ -1049,8 +911,6 @@ impl ApplicationHandler for GpuWindowApp {
             adapter_device_type,
             surface_info.present_mode_description()
         );
-        let (pipeline, tile_bind_group_layout) =
-            create_tile_pipeline(&context, surface_info.format());
         let surface_size = surface_info.size();
         drop(surface_info);
         let mut graphics_device =
@@ -1075,9 +935,6 @@ impl ApplicationHandler for GpuWindowApp {
         self.context = Some(context);
         self.window = Some(window);
         self.surface = Some(surface);
-        self.pipeline = Some(pipeline);
-        self.tile_bind_group_layout = Some(tile_bind_group_layout);
-        self.texture_store = Some(GpuTextureStore::new());
     }
 
     fn window_event(
@@ -1475,7 +1332,7 @@ impl ApplicationHandler for GpuWindowApp {
                 (state.prepared_batch.take(), state.prepared_frame.clone())
             })
         };
-        if let Some((Some(batch), Some(frame))) = prepared {
+        if let Some((Some(_batch), Some(frame))) = prepared {
             let frame = self
                 .app_controller
                 .publish_and_prepare_frame(frame)
@@ -1488,21 +1345,6 @@ impl ApplicationHandler for GpuWindowApp {
                     crate::orchestrator::FrameEventKind::GpuBatchPreparationFinished,
                     "preparacao do batch GPU concluida",
                 );
-            }
-            if self.render_target.is_none() {
-                if let Some(state) = &mut self.state {
-                    state.canvas.record_frame_event(
-                        crate::orchestrator::FrameEventKind::GpuBatchUploadStarted,
-                        "upload do batch GPU iniciado",
-                    );
-                }
-                self.upload_batch(batch, tile_commands_for_frame(frame.frame()));
-                if let Some(state) = &mut self.state {
-                    state.canvas.record_frame_event(
-                        crate::orchestrator::FrameEventKind::GpuBatchUploadFinished,
-                        "upload do batch GPU concluido",
-                    );
-                }
             }
         }
         if actions.request_redraw {
@@ -1588,9 +1430,8 @@ fn signal_renderer_closed(renderer_closed: Option<&Arc<std::sync::atomic::Atomic
 mod tests {
     use super::{
         app_event_from_window_event, centered_bounds, format_gpu_event_loop_wait,
-        format_gpu_frame_history, format_gpu_frame_overlay_header, format_gpu_redraw_latency,
-        format_gpu_upload_stage, frame_tiles_from_batch, needs_batch_rebuild, overlay_cache_key,
-        overlay_needs_refresh, signal_renderer_closed, GpuFrameMetrics, PreparedTileBatch,
+        format_gpu_redraw_latency, format_gpu_upload_stage, frame_tiles_from_batch,
+        signal_renderer_closed, GpuFrameMetrics, PreparedTileBatch,
     };
     use crate::app::ApplicationController;
     use crate::geometry::ScreenPoint;
@@ -1907,66 +1748,6 @@ mod tests {
     }
 
     #[test]
-    fn gpu_upload_stage_events_are_distinct() {
-        let kinds = [
-            crate::orchestrator::FrameEventKind::GpuBatchTextureUpload,
-            crate::orchestrator::FrameEventKind::GpuBatchTextureRetention,
-            crate::orchestrator::FrameEventKind::GpuBatchVertexUpload,
-            crate::orchestrator::FrameEventKind::GpuBatchOverlayUpload,
-            crate::orchestrator::FrameEventKind::GpuBatchEnvelopeUpload,
-        ];
-        assert_eq!(kinds.len(), 5);
-    }
-
-    #[test]
-    fn overlay_cache_reuses_an_unchanged_image_and_refreshes_changed_content() {
-        let first = TextureUpload {
-            key: TextureKey {
-                tile: usize::MAX,
-                content_hash: 10,
-            },
-            width: 240,
-            height: 16,
-            rgba8: vec![0; 240 * 16 * 4],
-        };
-        let same = TextureUpload {
-            key: TextureKey {
-                tile: usize::MAX,
-                content_hash: 10,
-            },
-            width: 240,
-            height: 16,
-            rgba8: vec![255; 240 * 16 * 4],
-        };
-        let changed = TextureUpload {
-            key: TextureKey {
-                tile: usize::MAX,
-                content_hash: 11,
-            },
-            width: 240,
-            height: 32,
-            rgba8: vec![0; 240 * 32 * 4],
-        };
-        let first_key = overlay_cache_key(&first);
-
-        assert!(overlay_needs_refresh(None, first_key));
-        assert!(!overlay_needs_refresh(
-            Some(first_key),
-            overlay_cache_key(&same)
-        ));
-        assert!(overlay_needs_refresh(
-            Some(first_key),
-            overlay_cache_key(&changed)
-        ));
-    }
-
-    #[test]
-    fn resize_invalidates_vertices_only_when_surface_dimensions_change() {
-        assert!(!needs_batch_rebuild((800, 600), (800, 600)));
-        assert!(needs_batch_rebuild((800, 600), (1024, 768)));
-    }
-
-    #[test]
     fn gpu_state_resize_updates_the_logical_viewport_and_discards_prepared_frame() {
         let canvas = crate::TiledInfiniteCanvas::new(
             crate::geometry::ComplexPoint::new(-2.0, 1.0),
@@ -2113,49 +1894,6 @@ mod tests {
             frame_tile.revision().value(),
             batch.commands[0].texture.content_hash
         );
-    }
-
-    #[test]
-    fn frame_history_overlay_formats_one_line_per_ring_entry() {
-        let history = std::collections::VecDeque::from([
-            (7, Duration::from_micros(1_250)),
-            (8, Duration::from_micros(2_500)),
-        ]);
-        assert_eq!(format_gpu_frame_history(&history), "#7:1.250ms\n#8:2.500ms");
-    }
-
-    #[test]
-    fn frame_overlay_header_uses_frame_number_instead_of_tile_count() {
-        assert_eq!(
-            format_gpu_frame_overlay_header(1530, 84),
-            "Frame #1530, tiles:84"
-        );
-    }
-
-    #[test]
-    fn gpu_text_overlay_includes_each_enabled_overlay_group() {
-        let canvas = crate::TiledInfiniteCanvas::new(
-            crate::geometry::ComplexPoint::new(-2.0, 1.0),
-            8,
-            8,
-            0.01,
-            ScreenPoint::new(0, 0),
-            8.0,
-            0.5,
-        );
-        let orchestrator = crate::Orchestrator::with_worker_count(crate::Mandelbrot::new(32), 1);
-        let mut state = super::GpuAppState::new(
-            canvas,
-            orchestrator,
-            crate::config::RendererConfig::default(),
-        );
-        state.prepare_visible_batch();
-
-        let text = super::format_gpu_overlay_text(&state, 84);
-
-        assert!(text.contains("Frame #1, tiles:84"));
-        assert!(text.contains("Camada 0:"));
-        assert!(text.contains("Worker 0:"));
     }
 
     #[test]

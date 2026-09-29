@@ -28,7 +28,12 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   criação/submissão mantêm o cache anterior consistente. Cobertura de overlay
   inclui `reduced_viewport` mesmo com overlays globais desligados; o texto de
   workers, fila, camadas e frames usa âncoras CPU na composição comum.
-- Verificações: `cargo test --lib -- --test-threads=1` (198 passaram),
+- O estado ativo do compositor legado foi removido de `GpuWindowApp`: rings,
+  cache de texturas, comandos e upload por batch não participam mais do runtime.
+  Os eventos de telemetria exclusivos desse caminho e os testes de helpers
+  obsoletos também foram removidos; o destino comum permanece responsável por
+  uploads, composição, overlays e apresentação.
+- Verificações: `cargo test --lib -- --test-threads=1` (192 passaram),
   `cargo check --bin sprite-demo`, `cargo fmt -- --check` e `git diff --check`.
 - Validação HITL de inicialização/renderização executada em 2026-09-29:
   `cargo run --bin sprite-demo` iniciou sem erro, selecionou `Gl / Intel(R) HD
