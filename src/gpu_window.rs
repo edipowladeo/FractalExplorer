@@ -2,9 +2,9 @@ use crate::app::{
     prepare_canvas_common, reduce_effects, AppEvent, ApplicationController,
     DefaultApplicationController,
 };
+use crate::geometry::ScreenPoint;
 use crate::gpu::{
-    debug_overlay_upload, debug_overlay_upload_with_rectangles, PreparedTileBatch, TextureCache,
-    TextureUpload,
+    debug_overlay_upload_with_rectangles, PreparedTileBatch, TextureCache, TextureUpload,
 };
 use crate::input::{InputEvent, ZoomDirection};
 use crate::render::gpu::GpuRenderTarget;
@@ -13,7 +13,7 @@ use crate::render::graphics::wgpu::{
 };
 use crate::render::{
     ImageId, ImageRevision, ImageUpdate, OverlayPrimitive, PreparedFrame, Rect,
-    RenderTargetSession, TileDraw, Viewport,
+    RenderTargetSession, TextRun, TileDraw, Viewport,
 };
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -26,12 +26,6 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 const GPU_FRAME_HISTORY_CAPACITY: usize = 8;
 const GPU_ENVELOPE_IMAGE_ID: ImageId = ImageId::new(u64::MAX - 1);
-const GPU_TEXT_OVERLAY_IMAGE_BASE: u64 = u64::MAX - 2;
-
-fn text_overlay_image_id(group: u64, line: usize) -> ImageId {
-    ImageId::new(GPU_TEXT_OVERLAY_IMAGE_BASE - (group << 32) - line as u64)
-}
-
 fn centered_bounds(width: usize, height: usize, ratio: f64) -> (i32, i32, i32, i32) {
     assert!(ratio > 0.0, "viewport ratio must be positive");
     let width = width.max(1) as f64;
@@ -115,16 +109,18 @@ fn append_image_overlay(
 
 fn append_text_overlay_line(
     prepared: &PreparedFrame,
-    image: ImageId,
     text: &str,
     x: i32,
     y: i32,
-    fixed_width: Option<u32>,
 ) -> PreparedFrame {
-    let width = fixed_width.unwrap_or_else(|| (text.chars().count() as u32 * 6 + 4).max(4));
-    let upload = debug_overlay_upload(text, width, 11);
-    append_image_overlay(prepared, image, upload, Rect::new(x - 2, y - 2, width, 11))
-        .unwrap_or_else(|_| prepared.clone())
+    let frame = prepared
+        .frame()
+        .clone()
+        .with_overlay(OverlayPrimitive::Text(TextRun::new(
+            text,
+            ScreenPoint::new(x, y),
+        )));
+    PreparedFrame::new(frame, prepared.image_updates().to_vec())
 }
 
 fn submit_prepared_frame<T: crate::render::RenderTarget>(
@@ -500,14 +496,8 @@ impl GpuAppState {
                 let first_y =
                     height.saturating_sub(24 + snapshot.layer_lines.len() as u32 * 8 + 4) as i32;
                 for (line, text) in snapshot.layer_lines.iter().enumerate() {
-                    prepared = append_text_overlay_line(
-                        &prepared,
-                        text_overlay_image_id(1, line),
-                        text,
-                        8,
-                        first_y + line as i32 * 8,
-                        None,
-                    );
+                    prepared =
+                        append_text_overlay_line(&prepared, text, 8, first_y + line as i32 * 8);
                 }
                 self.canvas.record_frame_event(
                     crate::orchestrator::FrameEventKind::GpuLayerOverlayFinished,
@@ -522,14 +512,7 @@ impl GpuAppState {
                 let queue_started = Instant::now();
                 for (line, text) in snapshot.queue_lines.iter().enumerate() {
                     let x = width.saturating_sub(text.chars().count() as u32 * 6 + 8) as i32;
-                    prepared = append_text_overlay_line(
-                        &prepared,
-                        text_overlay_image_id(2, line),
-                        text,
-                        x,
-                        8 + line as i32 * 8,
-                        None,
-                    );
+                    prepared = append_text_overlay_line(&prepared, text, x, 8 + line as i32 * 8);
                 }
                 self.canvas.record_frame_event(
                     crate::orchestrator::FrameEventKind::GpuQueueOverlayFinished,
@@ -543,14 +526,7 @@ impl GpuAppState {
             if debug.text_overlay_workers {
                 let workers_started = Instant::now();
                 for (line, text) in snapshot.worker_lines.iter().enumerate() {
-                    prepared = append_text_overlay_line(
-                        &prepared,
-                        text_overlay_image_id(3, line),
-                        text,
-                        8,
-                        8 + line as i32 * 8,
-                        None,
-                    );
+                    prepared = append_text_overlay_line(&prepared, text, 8, 8 + line as i32 * 8);
                 }
                 self.canvas.record_frame_event(
                     crate::orchestrator::FrameEventKind::GpuWorkerOverlayFinished,
@@ -567,14 +543,7 @@ impl GpuAppState {
                 for (line, (frame, duration)) in self.frame_timing_ring.iter().enumerate() {
                     let text =
                         format!("Frame #{frame}, {:.3} ms", duration.as_secs_f64() * 1_000.0);
-                    prepared = append_text_overlay_line(
-                        &prepared,
-                        text_overlay_image_id(4, line),
-                        &text,
-                        x,
-                        8 + line as i32 * 8,
-                        Some(240),
-                    );
+                    prepared = append_text_overlay_line(&prepared, &text, x, 8 + line as i32 * 8);
                 }
                 self.canvas.record_frame_event(
                     crate::orchestrator::FrameEventKind::GpuFrameOverlayFinished,
@@ -1498,7 +1467,9 @@ mod tests {
             ImageId::new(usize::MAX as u64)
         );
         assert_eq!(prepared.frame().overlays().len(), 1);
-        let crate::render::OverlayPrimitive::Image(image) = &prepared.frame().overlays()[0];
+        let crate::render::OverlayPrimitive::Image(image) = &prepared.frame().overlays()[0] else {
+            panic!("expected image overlay");
+        };
         assert_eq!(image.image(), ImageId::new(usize::MAX as u64));
         assert_eq!(image.destination(), Rect::new(2, 1, 1, 1));
     }
@@ -1531,7 +1502,9 @@ mod tests {
 
         assert_eq!(prepared.frame().overlays().len(), 1);
         assert_eq!(prepared.image_updates().len(), 1);
-        let crate::render::OverlayPrimitive::Image(envelope) = &prepared.frame().overlays()[0];
+        let crate::render::OverlayPrimitive::Image(envelope) = &prepared.frame().overlays()[0] else {
+            panic!("expected image overlay");
+        };
         assert_eq!(envelope.image(), ImageId::new(u64::MAX - 1));
     }
 
@@ -1565,9 +1538,13 @@ mod tests {
         let prepared = state.append_debug_overlays(base);
 
         assert_eq!(prepared.frame().overlays().len(), 1);
-        let crate::render::OverlayPrimitive::Image(worker_line) = &prepared.frame().overlays()[0];
-        assert_eq!(worker_line.destination().x + 2, 8);
-        assert_eq!(worker_line.destination().y + 2, 8);
+        let crate::render::OverlayPrimitive::Text(worker_line) = &prepared.frame().overlays()[0]
+        else {
+            panic!("worker overlay should be represented as text");
+        };
+        assert_eq!(worker_line.origin(), ScreenPoint::new(8, 8));
+        assert_eq!(worker_line.text(), "Worker 0: ocioso");
+        assert!(prepared.image_updates().is_empty());
     }
 
     #[test]
