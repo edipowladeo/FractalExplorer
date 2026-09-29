@@ -40,6 +40,9 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - Os conversores de vértices baseados em `TileDrawCommand` também foram
   removidos; o adaptador mantém somente a conversão neutra por
   `TileVertexRect`, usada pelo caminho comum.
+- O gate arquitetural do Passo 7 passou: a busca não encontrou imports ou
+  referências de `wgpu`, `winit` ou `minifb` em `app`, `orchestrator` ou nos
+  contratos de renderização. O Passo 7 está concluído no escopo do T029.
 - Verificações: `cargo test --lib -- --test-threads=1` (191 passaram),
   `cargo check --bin sprite-demo`, `cargo fmt -- --check` e `git diff --check`.
 - Validação HITL de inicialização/renderização executada em 2026-09-29:
