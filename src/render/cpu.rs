@@ -140,7 +140,9 @@ impl RenderTarget for CpuRenderTarget {
             Self::draw_image(self.viewport, &mut self.framebuffer, image, tile);
         }
         for overlay in frame.overlays() {
-            let OverlayPrimitive::Image(tile) = overlay;
+            let OverlayPrimitive::Image(tile) = overlay else {
+                continue;
+            };
             let Some(image) = self.images.get(&tile.image()) else {
                 continue;
             };
