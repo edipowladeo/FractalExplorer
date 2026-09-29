@@ -76,6 +76,24 @@ fn format_gpu_redraw_latency(elapsed: Duration) -> String {
     .replace(" (event loop)", "")
 }
 
+fn format_gpu_preparation_stage(label: &str, elapsed: Duration) -> String {
+    format!(
+        "{label}: {:.3} ms (preparacao do frame GPU)",
+        elapsed.as_secs_f64() * 1_000.0
+    )
+}
+
+fn format_gpu_preparation_stage_with_detail(
+    label: &str,
+    elapsed: Duration,
+    detail: impl std::fmt::Display,
+) -> String {
+    format!(
+        "{label}: {:.3} ms ({detail}; preparacao do frame GPU)",
+        elapsed.as_secs_f64() * 1_000.0
+    )
+}
+
 fn append_image_overlay(
     prepared: &PreparedFrame,
     image: ImageId,
@@ -360,11 +378,25 @@ impl GpuAppState {
             }
         }
         let tiles = crate::app::collect_completed_canvas_tiles(&self.canvas, &self.config);
+        self.canvas.record_frame_event(
+            crate::orchestrator::FrameEventKind::GpuTilesCollected,
+            format_gpu_preparation_stage(
+                "coleta de tiles concluida",
+                preparation_started.elapsed(),
+            ),
+        );
         let references: Vec<_> = tiles
             .iter()
             .map(|prepared| (&prepared.tile_sprite, Arc::clone(&prepared.sprite)))
             .collect();
         let batch = crate::gpu::prepare_tile_batch(&mut self.texture_cache, &references);
+        self.canvas.record_frame_event(
+            crate::orchestrator::FrameEventKind::GpuBatchBuilt,
+            format_gpu_preparation_stage(
+                "montagem do batch concluida",
+                preparation_started.elapsed(),
+            ),
+        );
         self.canvas.record_frame_event(
             crate::orchestrator::FrameEventKind::TilesRasterized,
             GpuFrameMetrics::from_batch(&batch, preparation_started.elapsed()).description(),
@@ -374,6 +406,7 @@ impl GpuAppState {
             preparation_started.elapsed(),
         ));
         let frame_tiles = tiles.iter().map(|prepared| prepared.draw.clone()).collect();
+        let graphic_textures_started = Instant::now();
         let image_updates = batch
             .uploads
             .iter()
@@ -388,6 +421,14 @@ impl GpuAppState {
                 .ok()
             })
             .collect();
+        self.canvas.record_frame_event(
+            crate::orchestrator::FrameEventKind::GpuGraphicTexturesFinished,
+            format_gpu_preparation_stage_with_detail(
+                "texturas graficas de tiles concluidas",
+                graphic_textures_started.elapsed(),
+                format!("uploads={}", batch.uploads.len()),
+            ),
+        );
         let frame = controller.build_prepared_frame(
             Viewport::new(self.config.width as u32, self.config.height as u32),
             frame_tiles,
@@ -398,7 +439,7 @@ impl GpuAppState {
         self.prepared_batch = Some(batch);
     }
 
-    fn append_debug_overlays(&self, mut prepared: PreparedFrame) -> PreparedFrame {
+    fn append_debug_overlays(&mut self, mut prepared: PreparedFrame) -> PreparedFrame {
         let debug = &self.config.debug;
         let show_envelope = debug.should_show_allocation_envelope();
         let show_text = debug.overlays_enabled()
@@ -416,7 +457,14 @@ impl GpuAppState {
             return prepared;
         }
 
+        let overlays_started = Instant::now();
+        self.canvas.record_frame_event(
+            crate::orchestrator::FrameEventKind::GpuOverlaysStarted,
+            "construcao dos overlays GPU iniciada",
+        );
+
         if show_envelope {
+            let envelope_started = Instant::now();
             let rectangles = [
                 (self.allocation_bounds, [255, 0, 0, 255]),
                 (self.deallocation_bounds, [255, 255, 0, 255]),
@@ -430,9 +478,17 @@ impl GpuAppState {
             ) {
                 prepared = with_envelope;
             }
+            self.canvas.record_frame_event(
+                crate::orchestrator::FrameEventKind::GpuEnvelopeOverlayFinished,
+                format_gpu_preparation_stage(
+                    "overlay de envelope GPU concluido",
+                    envelope_started.elapsed(),
+                ),
+            );
         }
 
         if show_text {
+            let text_started = Instant::now();
             let snapshot = crate::app::prepare_overlay_snapshot(
                 &self.canvas,
                 &self.orchestrator,
@@ -440,6 +496,7 @@ impl GpuAppState {
                 Some(self.cursor),
             );
             if debug.text_overlay_layers && !snapshot.layer_lines.is_empty() {
+                let layer_started = Instant::now();
                 let first_y =
                     height.saturating_sub(24 + snapshot.layer_lines.len() as u32 * 8 + 4) as i32;
                 for (line, text) in snapshot.layer_lines.iter().enumerate() {
@@ -452,8 +509,17 @@ impl GpuAppState {
                         None,
                     );
                 }
+                self.canvas.record_frame_event(
+                    crate::orchestrator::FrameEventKind::GpuLayerOverlayFinished,
+                    format_gpu_preparation_stage_with_detail(
+                        "overlay de camadas concluido",
+                        layer_started.elapsed(),
+                        format!("linhas={}", snapshot.layer_lines.len()),
+                    ),
+                );
             }
             if debug.text_overlay_queue {
+                let queue_started = Instant::now();
                 for (line, text) in snapshot.queue_lines.iter().enumerate() {
                     let x = width.saturating_sub(text.chars().count() as u32 * 6 + 8) as i32;
                     prepared = append_text_overlay_line(
@@ -465,8 +531,17 @@ impl GpuAppState {
                         None,
                     );
                 }
+                self.canvas.record_frame_event(
+                    crate::orchestrator::FrameEventKind::GpuQueueOverlayFinished,
+                    format_gpu_preparation_stage_with_detail(
+                        "overlay de fila concluido",
+                        queue_started.elapsed(),
+                        format!("linhas={}", snapshot.queue_lines.len()),
+                    ),
+                );
             }
             if debug.text_overlay_workers {
+                let workers_started = Instant::now();
                 for (line, text) in snapshot.worker_lines.iter().enumerate() {
                     prepared = append_text_overlay_line(
                         &prepared,
@@ -477,8 +552,17 @@ impl GpuAppState {
                         None,
                     );
                 }
+                self.canvas.record_frame_event(
+                    crate::orchestrator::FrameEventKind::GpuWorkerOverlayFinished,
+                    format_gpu_preparation_stage_with_detail(
+                        "overlay de workers concluido",
+                        workers_started.elapsed(),
+                        format!("linhas={}", snapshot.worker_lines.len()),
+                    ),
+                );
             }
             if debug.text_overlay_frames {
+                let frames_started = Instant::now();
                 let x = width.saturating_sub(240) as i32;
                 for (line, (frame, duration)) in self.frame_timing_ring.iter().enumerate() {
                     let text =
@@ -492,8 +576,30 @@ impl GpuAppState {
                         Some(240),
                     );
                 }
+                self.canvas.record_frame_event(
+                    crate::orchestrator::FrameEventKind::GpuFrameOverlayFinished,
+                    format_gpu_preparation_stage_with_detail(
+                        "overlay de frames concluido",
+                        frames_started.elapsed(),
+                        format!("linhas={}", self.frame_timing_ring.len()),
+                    ),
+                );
             }
+            self.canvas.record_frame_event(
+                crate::orchestrator::FrameEventKind::GpuTextOverlayFinished,
+                format_gpu_preparation_stage(
+                    "overlays de texto GPU concluidos",
+                    text_started.elapsed(),
+                ),
+            );
         }
+        self.canvas.record_frame_event(
+            crate::orchestrator::FrameEventKind::GpuOverlaysFinished,
+            format_gpu_preparation_stage(
+                "construcao dos overlays GPU concluida",
+                overlays_started.elapsed(),
+            ),
+        );
         prepared
     }
 }
@@ -1009,15 +1115,28 @@ impl ApplicationHandler for GpuWindowApp {
                 format_gpu_event_loop_wait(elapsed),
             );
         }
+        let batch_preparation_started = Instant::now();
         let prepared = {
             let (state, controller) = (&mut self.state, &mut self.app_controller);
             state.as_mut().map(|state| {
                 state.refresh_allocation_bounds();
+                let canvas_preparation_started = Instant::now();
+                state.canvas.record_frame_event(
+                    crate::orchestrator::FrameEventKind::GpuCanvasPreparationStarted,
+                    "preparacao do canvas GPU iniciada",
+                );
                 controller.prepare_canvas(
                     &mut state.canvas,
                     &state.orchestrator,
                     state.allocation_bounds,
                     state.deallocation_bounds,
+                );
+                state.canvas.record_frame_event(
+                    crate::orchestrator::FrameEventKind::GpuCanvasPreparationFinished,
+                    format_gpu_preparation_stage(
+                        "preparacao do canvas GPU concluida",
+                        canvas_preparation_started.elapsed(),
+                    ),
                 );
                 controller.begin_tile_composition(&mut state.canvas);
                 state.prepare_visible_batch_after_canvas(controller);
@@ -1025,17 +1144,28 @@ impl ApplicationHandler for GpuWindowApp {
             })
         };
         if let Some((Some(_batch), Some(frame))) = prepared {
+            let publish_started = Instant::now();
             let frame = self
                 .app_controller
                 .publish_and_prepare_frame(frame)
                 .expect("GPU controller should prepare a published frame");
             if let Some(state) = &mut self.state {
                 state.prepared_frame = Some(frame.clone());
+                state.canvas.record_frame_event(
+                    crate::orchestrator::FrameEventKind::GpuFramePublished,
+                    format_gpu_preparation_stage(
+                        "frame GPU publicado no controlador comum",
+                        publish_started.elapsed(),
+                    ),
+                );
             }
             if let Some(state) = &mut self.state {
                 state.canvas.record_frame_event(
                     crate::orchestrator::FrameEventKind::GpuBatchPreparationFinished,
-                    "preparacao do batch GPU concluida",
+                    format_gpu_preparation_stage(
+                        "preparacao do batch GPU concluida",
+                        batch_preparation_started.elapsed(),
+                    ),
                 );
             }
         }
@@ -1122,6 +1252,7 @@ fn signal_renderer_closed(renderer_closed: Option<&Arc<std::sync::atomic::Atomic
 mod tests {
     use super::{
         app_event_from_window_event, centered_bounds, format_gpu_event_loop_wait,
+        format_gpu_preparation_stage, format_gpu_preparation_stage_with_detail,
         format_gpu_redraw_latency, format_gpu_upload_stage, frame_tiles_from_batch,
         signal_renderer_closed, GpuFrameMetrics, PreparedTileBatch,
     };
@@ -1234,6 +1365,18 @@ mod tests {
         assert_eq!(
             format_gpu_redraw_latency(Duration::from_micros(570)),
             "latencia entre request_redraw e RedrawRequested: 0.570 ms"
+        );
+        assert_eq!(
+            format_gpu_preparation_stage("coleta de tiles concluida", Duration::from_micros(570)),
+            "coleta de tiles concluida: 0.570 ms (preparacao do frame GPU)"
+        );
+        assert_eq!(
+            format_gpu_preparation_stage_with_detail(
+                "texturas graficas concluidas",
+                Duration::from_micros(570),
+                "uploads=2",
+            ),
+            "texturas graficas concluidas: 0.570 ms (uploads=2; preparacao do frame GPU)"
         );
     }
 
@@ -1378,7 +1521,7 @@ mod tests {
         config.debug.reduced_viewport = true;
         config.debug.show_allocation_envelope = false;
         config.debug.text_overlay_global = false;
-        let state = super::GpuAppState::new(canvas, orchestrator, config);
+        let mut state = super::GpuAppState::new(canvas, orchestrator, config);
         let base = crate::render::PreparedFrame::new(
             crate::render::RenderFrame::new(8, Viewport::new(8, 8)),
             Vec::new(),
@@ -1413,7 +1556,7 @@ mod tests {
         config.debug.text_overlay_layers = false;
         config.debug.text_overlay_queue = false;
         config.debug.show_allocation_envelope = false;
-        let state = super::GpuAppState::new(canvas, orchestrator, config);
+        let mut state = super::GpuAppState::new(canvas, orchestrator, config);
         let base = crate::render::PreparedFrame::new(
             crate::render::RenderFrame::new(9, Viewport::new(640, 400)),
             Vec::new(),
