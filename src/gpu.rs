@@ -8,9 +8,8 @@ use std::sync::Arc;
 
 pub use crate::render::graphics::wgpu::{
     create_tile_quad, tile_quad_vertices, tile_vertices_for_commands, tile_vertices_for_screen,
-    upload_tile_texture, write_tile_texture, GpuTextureStore, GpuTileTexture, TileVertex,
-    WgpuContext as GpuContext, TILE_FRAGMENT_SHADER, TILE_TEXTURE_FORMAT, TILE_VERTEX_LAYOUT,
-    TILE_VERTEX_SHADER,
+    TileVertex, WgpuContext as GpuContext, TILE_FRAGMENT_SHADER, TILE_TEXTURE_FORMAT,
+    TILE_VERTEX_LAYOUT, TILE_VERTEX_SHADER,
 };
 
 pub fn debug_overlay_upload(text: &str, width: u32, height: u32) -> TextureUpload {

@@ -33,6 +33,10 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   Os eventos de telemetria exclusivos desse caminho e os testes de helpers
   obsoletos também foram removidos; o destino comum permanece responsável por
   uploads, composição, overlays e apresentação.
+- `GpuTextureStore`, `GpuTileTexture`, os helpers de upload por textura e o
+  `encode_frame` legado foram retirados do adaptador público; os reexports de
+  compatibilidade correspondentes também foram eliminados. A composição ativa
+  continua concentrada em `WgpuGraphicsDevice` e `RenderTargetSession`.
 - Verificações: `cargo test --lib -- --test-threads=1` (192 passaram),
   `cargo check --bin sprite-demo`, `cargo fmt -- --check` e `git diff --check`.
 - Validação HITL de inicialização/renderização executada em 2026-09-29:

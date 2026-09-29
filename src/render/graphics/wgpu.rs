@@ -1,12 +1,11 @@
 //! `wgpu` implementation of the portable graphics-device resource contract.
 
 use crate::config::GpuBackend;
-use crate::gpu::{TextureKey, TextureUpload, TileDrawCommand};
+use crate::gpu::TileDrawCommand;
 use crate::render::device::{
     BufferDescriptor, BufferHandle, BufferUsage, Command, CommandList, DeviceError, GraphicsDevice,
     TextureDescriptor, TextureFormat, TextureHandle,
 };
-use crate::render::ImageUpdate;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
@@ -700,6 +699,7 @@ impl WgpuEncodedFrame {
     }
 }
 
+#[cfg(any())]
 pub fn encode_frame(
     context: &WgpuContext,
     frame: &WgpuSurfaceFrame,
@@ -1284,147 +1284,6 @@ impl GraphicsDevice for WgpuGraphicsDevice {
     fn destroy_texture(&mut self, texture: TextureHandle) {
         self.textures.remove(&texture);
     }
-}
-
-pub struct GpuTileTexture {
-    pub texture: wgpu::Texture,
-    pub view: wgpu::TextureView,
-    pub sampler: wgpu::Sampler,
-    pub bind_group: wgpu::BindGroup,
-    pub width: u32,
-    pub height: u32,
-}
-
-pub struct GpuTextureStore {
-    textures: HashMap<TextureKey, GpuTileTexture>,
-}
-
-impl GpuTextureStore {
-    pub fn new() -> Self {
-        Self {
-            textures: HashMap::new(),
-        }
-    }
-
-    pub fn upload(
-        &mut self,
-        context: &WgpuContext,
-        layout: &WgpuTextureLayout,
-        upload: TextureUpload,
-    ) {
-        let texture = upload_tile_texture(context, layout, &upload);
-        self.textures.insert(upload.key, texture);
-    }
-
-    pub fn upload_image_update(
-        &mut self,
-        context: &WgpuContext,
-        layout: &WgpuTextureLayout,
-        update: &ImageUpdate,
-    ) {
-        let (width, height) = update.dimensions();
-        self.upload(
-            context,
-            layout,
-            TextureUpload {
-                key: TextureKey {
-                    tile: update.image().value() as usize,
-                    content_hash: update.revision().value(),
-                },
-                width,
-                height,
-                rgba8: update.rgba8().to_vec(),
-            },
-        );
-    }
-
-    pub fn get(&self, key: &TextureKey) -> Option<&GpuTileTexture> {
-        self.textures.get(key)
-    }
-
-    pub fn retain_only(&mut self, keys: impl IntoIterator<Item = TextureKey>) {
-        let keys: std::collections::HashSet<_> = keys.into_iter().collect();
-        self.textures.retain(|key, _| keys.contains(key));
-    }
-
-    pub fn len(&self) -> usize {
-        self.textures.len()
-    }
-}
-
-pub fn upload_tile_texture(
-    context: &WgpuContext,
-    layout: &WgpuTextureLayout,
-    upload: &TextureUpload,
-) -> GpuTileTexture {
-    let texture = context.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("tile-texture"),
-        size: wgpu::Extent3d {
-            width: upload.width,
-            height: upload.height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: TILE_TEXTURE_FORMAT,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    write_tile_texture(context, &texture, upload);
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let sampler = context.device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("tile-sampler"),
-        mag_filter: wgpu::FilterMode::Nearest,
-        min_filter: wgpu::FilterMode::Nearest,
-        ..Default::default()
-    });
-    let bind_group = context
-        .device
-        .create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("tile-bind-group"),
-            layout: layout.as_raw(),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-        });
-    GpuTileTexture {
-        texture,
-        view,
-        sampler,
-        bind_group,
-        width: upload.width,
-        height: upload.height,
-    }
-}
-
-pub fn write_tile_texture(context: &WgpuContext, texture: &wgpu::Texture, upload: &TextureUpload) {
-    context.queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &upload.rgba8,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(4 * upload.width),
-            rows_per_image: Some(upload.height),
-        },
-        wgpu::Extent3d {
-            width: upload.width,
-            height: upload.height,
-            depth_or_array_layers: 1,
-        },
-    );
 }
 
 fn validate_commands(commands: &CommandList) -> Result<(), DeviceError> {
