@@ -57,6 +57,15 @@ A branch linear com 123 commits continuou retornando `mergeable: true` e
 Por isso o histórico foi dividido em PRs sequenciais, cada uma abaixo do limite,
 sem squash e sem perder os commits.
 
+PRs publicadas:
+
+- [PR #22](https://github.com/edipowladeo/FractalExplorer/pull/22): Parte 1,
+  82 commits, `rebaseable=true`.
+- [PR #23](https://github.com/edipowladeo/FractalExplorer/pull/23): Parte 2,
+  42 commits, `rebaseable=true`.
+
+O PR monolítico #20 foi fechado e substituído por essas duas PRs.
+
 ## Dicas para evitar recorrência
 
 - Criar a branch de trabalho a partir de `origin/master` atualizado.
