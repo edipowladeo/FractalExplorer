@@ -256,6 +256,8 @@ impl GpuAppState {
             .map_err(|_| "invalid renderer precision configuration".to_string())?;
         let viewport_changed =
             (self.config.width, self.config.height) != (next_config.width, next_config.height);
+        let envelope_visibility_changed = self.config.debug.should_show_allocation_envelope()
+            != next_config.debug.should_show_allocation_envelope();
         self.config = next_config;
         self.canvas
             .set_frame_dump_events(self.config.debug.frame_dump_events.clone());
@@ -272,6 +274,9 @@ impl GpuAppState {
         } else {
             self.prepared_batch = None;
             self.prepared_frame = None;
+        }
+        if envelope_visibility_changed {
+            self.cached_envelope = None;
         }
         Ok(())
     }
@@ -1506,6 +1511,48 @@ mod tests {
             panic!("expected image overlay");
         };
         assert_eq!(envelope.image(), ImageId::new(u64::MAX - 1));
+    }
+
+    #[test]
+    fn disabling_and_reenabling_allocation_envelope_reuploads_its_texture() {
+        let canvas = crate::TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-2.0, 1.0),
+            8,
+            8,
+            0.01,
+            ScreenPoint::new(0, 0),
+            8.0,
+            0.5,
+        );
+        let orchestrator = crate::Orchestrator::with_worker_count(crate::Mandelbrot::new(32), 1);
+        let mut config = crate::config::RendererConfig::default();
+        config.width = 8;
+        config.height = 8;
+        config.debug.show_allocation_envelope = true;
+        config.debug.text_overlay_global = true;
+        config.debug.text_overlay_workers = false;
+        config.debug.text_overlay_layers = false;
+        config.debug.text_overlay_queue = false;
+        config.debug.text_overlay_frames = false;
+        let mut state = super::GpuAppState::new(canvas, orchestrator, config.clone());
+        let first = crate::render::PreparedFrame::new(
+            crate::render::RenderFrame::new(8, Viewport::new(8, 8)),
+            Vec::new(),
+        );
+        assert_eq!(state.append_debug_overlays(first).image_updates().len(), 1);
+
+        config.debug.show_allocation_envelope = false;
+        state.apply_config(config.clone()).unwrap();
+        config.debug.show_allocation_envelope = true;
+        state.apply_config(config).unwrap();
+
+        let restored = crate::render::PreparedFrame::new(
+            crate::render::RenderFrame::new(9, Viewport::new(8, 8)),
+            Vec::new(),
+        );
+        let restored = state.append_debug_overlays(restored);
+        assert_eq!(restored.frame().overlays().len(), 1);
+        assert_eq!(restored.image_updates().len(), 1);
     }
 
     #[test]
