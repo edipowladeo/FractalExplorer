@@ -43,6 +43,14 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - O gate arquitetural do Passo 7 passou: a busca não encontrou imports ou
   referências de `wgpu`, `winit` ou `minifb` em `app`, `orchestrator` ou nos
   contratos de renderização. O Passo 7 está concluído no escopo do T029.
+- Instrumentação adicional do ciclo GPU separa texturas gráficas de tiles e
+  cada grupo de overlay. No HITL de 2026-09-29, uploads de tiles levaram
+  aproximadamente 0--0,004 ms, enquanto o overlay de envelope levou
+  aproximadamente 81--225 ms e explicou o intervalo de 198--225 ms antes da
+  publicação. A publicação GPU levou aproximadamente 1,3--1,5 ms. A regra
+  atual de `reduced_viewport` força o envelope mesmo quando
+  `show_allocation_envelope` e `text_overlay_global` estão desligados; essa
+  decisão deve ser revista antes de otimizar o caminho.
 - Verificações: `cargo test --lib -- --test-threads=1` (191 passaram),
   `cargo check --bin sprite-demo`, `cargo fmt -- --check` e `git diff --check`.
 - Validação HITL de inicialização/renderização executada em 2026-09-29:
