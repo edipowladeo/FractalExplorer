@@ -1,8 +1,12 @@
 use super::device::{CommandList, DeviceError, GraphicsDevice, TextureResourceCache};
 use super::{
-    FrameOutcome, ImageId, ImageUpdate, RenderCapabilities, RenderError, RenderFrame, RenderTarget,
-    SurfaceFailure, Viewport,
+    FontAtlas, FrameOutcome, ImageId, ImageUpdate, RenderCapabilities, RenderError, RenderFrame,
+    RenderTarget, SurfaceFailure, Viewport,
 };
+
+struct TextAtlasResource {
+    handle: super::device::TextureHandle,
+}
 
 /// Backend-independent GPU render target.
 ///
@@ -12,14 +16,18 @@ pub struct GpuRenderTarget<D> {
     device: D,
     viewport: Viewport,
     textures: TextureResourceCache,
+    font_atlas: FontAtlas,
+    text_atlas: Option<TextAtlasResource>,
 }
 
-impl<D> GpuRenderTarget<D> {
+impl<D: super::device::GraphicsDevice> GpuRenderTarget<D> {
     pub fn new(device: D, viewport: Viewport) -> Self {
         Self {
             device,
             viewport,
             textures: TextureResourceCache::new(),
+            font_atlas: FontAtlas::debug(),
+            text_atlas: None,
         }
     }
 
@@ -33,6 +41,30 @@ impl<D> GpuRenderTarget<D> {
 
     pub fn textures(&self) -> &TextureResourceCache {
         &self.textures
+    }
+
+    fn ensure_text_atlas(
+        &mut self,
+        commands: &mut CommandList,
+    ) -> Result<super::device::TextureHandle, DeviceError> {
+        if let Some(atlas) = &self.text_atlas {
+            return Ok(atlas.handle);
+        }
+        let (width, height) = self.font_atlas.dimensions();
+        let mut rgba8 = Vec::with_capacity(self.font_atlas.pixels().len() * 4);
+        for alpha in self.font_atlas.pixels() {
+            rgba8.extend_from_slice(&[255, 255, 255, *alpha]);
+        }
+        let handle = self
+            .device
+            .create_texture(super::device::TextureDescriptor {
+                width,
+                height,
+                format: super::device::TextureFormat::Rgba8,
+            })?;
+        commands.write_texture(handle, width, height, rgba8);
+        self.text_atlas = Some(TextAtlasResource { handle });
+        Ok(handle)
     }
 }
 
@@ -100,6 +132,28 @@ impl<D: GraphicsDevice> RenderTarget for GpuRenderTarget<D> {
                 tile.opacity(),
             );
         }
+        let text_atlas = frame
+            .overlays()
+            .iter()
+            .any(|overlay| matches!(overlay, super::OverlayPrimitive::Text(_)));
+        if text_atlas {
+            let atlas = self
+                .ensure_text_atlas(&mut commands)
+                .map_err(|_| RenderError::BackendUnavailable("GPU text atlas creation failed"))?;
+            for overlay in frame.overlays() {
+                let super::OverlayPrimitive::Text(run) = overlay else {
+                    continue;
+                };
+                for placement in self.font_atlas.layout(run) {
+                    commands.draw_text(
+                        atlas,
+                        placement.destination(),
+                        placement.source(),
+                        f32::from(placement.color()[3]) / 255.0,
+                    );
+                }
+            }
+        }
         commands.present();
         self.device
             .submit(commands)
@@ -125,12 +179,14 @@ fn map_device_error(_error: DeviceError) -> RenderError {
 #[cfg(test)]
 mod tests {
     use super::GpuRenderTarget;
+    use crate::geometry::ScreenPoint;
     use crate::render::device::{
         BufferDescriptor, BufferHandle, Command, CommandList, DeviceError, GraphicsDevice,
         TextureDescriptor, TextureHandle,
     };
     use crate::render::{
-        ImageId, ImageRevision, ImageUpdate, Rect, RenderFrame, RenderTarget, TileDraw, Viewport,
+        ImageId, ImageRevision, ImageUpdate, Rect, RenderFrame, RenderTarget, TextRun, TileDraw,
+        Viewport,
     };
 
     #[derive(Default)]
@@ -201,6 +257,37 @@ mod tests {
             target.device().submitted[1].commands()[1],
             Command::Present
         ));
+    }
+
+    #[test]
+    fn gpu_target_uploads_text_atlas_once_and_draws_text_quads() {
+        let viewport = Viewport::new(80, 40);
+        let mut target = GpuRenderTarget::new(MockDevice::default(), viewport);
+        let frame = RenderFrame::new(0, viewport).with_overlay(
+            super::super::OverlayPrimitive::Text(TextRun::new("C", ScreenPoint::new(4, 8))),
+        );
+
+        target.render(&frame).unwrap();
+        target.render(&frame).unwrap();
+
+        let submissions = &target.device().submitted;
+        assert_eq!(submissions.len(), 2);
+        assert!(matches!(
+            submissions[0].commands()[0],
+            Command::WriteTexture { .. }
+        ));
+        assert!(
+            submissions[0]
+                .commands()
+                .iter()
+                .any(|command| matches!(command, Command::DrawText { .. }))
+        );
+        assert!(
+            submissions[1]
+                .commands()
+                .iter()
+                .all(|command| !matches!(command, Command::WriteTexture { .. }))
+        );
     }
 
     #[test]
@@ -281,10 +368,12 @@ mod tests {
         let Command::WriteTexture { texture, .. } = submissions[0].commands()[0] else {
             panic!("first submission must upload the image")
         };
-        assert!(submissions[1]
-            .commands()
-            .iter()
-            .all(|command| !matches!(command, Command::WriteTexture { .. })));
+        assert!(
+            submissions[1]
+                .commands()
+                .iter()
+                .all(|command| !matches!(command, Command::WriteTexture { .. }))
+        );
         let Command::DrawTexture {
             texture: first_texture,
             x: 1,
