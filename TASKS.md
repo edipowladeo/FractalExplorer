@@ -50,6 +50,12 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   sprite-demo`, `cargo fmt --all` e `git diff --check`. O próximo gate HITL só
   é necessário quando a remoção estrutural dos tipos legados ou a recuperação/
   seleção de fallback alterar o comportamento visual/runtime.
+- **Passo 7 — vértices desacoplados:** a conversão do `CommandList` agora usa
+  `TileVertexRect`, sem fabricar `TileDrawCommand`/`TextureKey` para calcular
+  vértices. RED/GREEN cobriu posição, tamanho e opacidade; a suíte completa
+  passou com 198 testes, além de `cargo check --bin sprite-demo`, `cargo fmt
+  --all -- --check` e `git diff --check`. A remoção dos helpers e tipos legados
+  restantes continua até o próximo gate funcional.
 
 ### T029 — Renderização modular com destinos plugáveis
 
