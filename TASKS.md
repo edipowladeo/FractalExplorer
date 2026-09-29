@@ -30,9 +30,17 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   workers, fila, camadas e frames usa âncoras CPU na composição comum.
 - Verificações: `cargo test --lib -- --test-threads=1` (197 passaram),
   `cargo check --bin sprite-demo`, `cargo fmt -- --check` e `git diff --check`.
-- Validação visual HITL não foi executada conforme instrução do usuário. O
-  passo 6 segue em andamento: instrumentação detalhada no adaptador e demais
-  critérios do plano ainda precisam ser fechados; não marcar T029 como DONE.
+- Validação HITL de inicialização/renderização executada em 2026-09-29:
+  `cargo run --bin sprite-demo` iniciou sem erro, selecionou `Gl / Intel(R) HD
+  Graphics 2500 (IntegratedGpu)` em modo `Immediate` e produziu o primeiro
+  frame (`Frame #1`, dump por `slow_frame`). O aviso de carregamento do
+  PSReadline pertence ao console PowerShell e não ao projeto.
+- O log ainda mostra avisos Rust para `uses_persistent_composition` e eventos
+  de telemetria do compositor legado não consumidos. Eles serão tratados na
+  remoção do caminho legado e na telemetria detalhada dos Passos 6–7; não
+  impediram o smoke test. A validação visual de resize, pan/zoom, overlays,
+  envelope e fechamento ainda precisa ser confirmada pelo usuário.
+- O passo 6 segue em andamento e T029 não deve ser marcado como DONE.
 
 ### T029 — Renderização modular com destinos plugáveis
 
