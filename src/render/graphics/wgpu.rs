@@ -94,47 +94,70 @@ pub fn tile_quad_vertices() -> [TileVertex; 6] {
     ]
 }
 
+#[derive(Clone, Copy)]
+pub struct TileVertexRect {
+    pub position: crate::geometry::ScreenPoint,
+    pub size: (u32, u32),
+    pub opacity: f32,
+}
+
+fn tile_vertices_for_rect(
+    rect: TileVertexRect,
+    screen_width: u32,
+    screen_height: u32,
+) -> [TileVertex; 6] {
+    let x0 = rect.position.x as f32 / screen_width as f32 * 2.0 - 1.0;
+    let y0 = 1.0 - rect.position.y as f32 / screen_height as f32 * 2.0;
+    let x1 = (rect.position.x as f32 + rect.size.0 as f32) / screen_width as f32 * 2.0 - 1.0;
+    let y1 = 1.0 - (rect.position.y as f32 + rect.size.1 as f32) / screen_height as f32 * 2.0;
+    [
+        TileVertex {
+            position: [x0, y1],
+            uv: [0.0, 1.0],
+            opacity: rect.opacity,
+        },
+        TileVertex {
+            position: [x1, y1],
+            uv: [1.0, 1.0],
+            opacity: rect.opacity,
+        },
+        TileVertex {
+            position: [x1, y0],
+            uv: [1.0, 0.0],
+            opacity: rect.opacity,
+        },
+        TileVertex {
+            position: [x0, y1],
+            uv: [0.0, 1.0],
+            opacity: rect.opacity,
+        },
+        TileVertex {
+            position: [x1, y0],
+            uv: [1.0, 0.0],
+            opacity: rect.opacity,
+        },
+        TileVertex {
+            position: [x0, y0],
+            uv: [0.0, 0.0],
+            opacity: rect.opacity,
+        },
+    ]
+}
+
 pub fn tile_vertices_for_screen(
     command: TileDrawCommand,
     screen_width: u32,
     screen_height: u32,
 ) -> [TileVertex; 6] {
-    let x0 = command.position.x as f32 / screen_width as f32 * 2.0 - 1.0;
-    let y0 = 1.0 - command.position.y as f32 / screen_height as f32 * 2.0;
-    let x1 = (command.position.x as f32 + command.size.0 as f32) / screen_width as f32 * 2.0 - 1.0;
-    let y1 = 1.0 - (command.position.y as f32 + command.size.1 as f32) / screen_height as f32 * 2.0;
-    [
-        TileVertex {
-            position: [x0, y1],
-            uv: [0.0, 1.0],
+    tile_vertices_for_rect(
+        TileVertexRect {
+            position: command.position,
+            size: command.size,
             opacity: 1.0,
         },
-        TileVertex {
-            position: [x1, y1],
-            uv: [1.0, 1.0],
-            opacity: 1.0,
-        },
-        TileVertex {
-            position: [x1, y0],
-            uv: [1.0, 0.0],
-            opacity: 1.0,
-        },
-        TileVertex {
-            position: [x0, y1],
-            uv: [0.0, 1.0],
-            opacity: 1.0,
-        },
-        TileVertex {
-            position: [x1, y0],
-            uv: [1.0, 0.0],
-            opacity: 1.0,
-        },
-        TileVertex {
-            position: [x0, y0],
-            uv: [0.0, 0.0],
-            opacity: 1.0,
-        },
-    ]
+        screen_width,
+        screen_height,
+    )
 }
 
 pub fn tile_vertices_for_commands(
@@ -145,6 +168,17 @@ pub fn tile_vertices_for_commands(
     commands
         .iter()
         .flat_map(|command| tile_vertices_for_screen(*command, screen_width, screen_height))
+        .collect()
+}
+
+pub fn tile_vertices_for_rects(
+    rects: &[TileVertexRect],
+    screen_width: u32,
+    screen_height: u32,
+) -> Vec<TileVertex> {
+    rects
+        .iter()
+        .flat_map(|rect| tile_vertices_for_rect(*rect, screen_width, screen_height))
         .collect()
 }
 
@@ -1425,45 +1459,29 @@ fn render_vertices_for_commands(
         .iter()
         .filter_map(|command| match command {
             Command::DrawTexture {
-                texture,
+                texture: _,
                 x,
                 y,
                 width,
                 height,
                 opacity_bits,
-            } => Some((
-                TileDrawCommand {
-                    texture: TextureKey {
-                        tile: texture.value() as usize,
-                        content_hash: 0,
-                    },
-                    position: crate::geometry::ScreenPoint::new(*x, *y),
-                    size: (*width, *height),
-                },
-                f32::from_bits(*opacity_bits),
-            )),
+            } => Some(TileVertexRect {
+                position: crate::geometry::ScreenPoint::new(*x, *y),
+                size: (*width, *height),
+                opacity: f32::from_bits(*opacity_bits),
+            }),
             _ => None,
         })
         .collect::<Vec<_>>();
-    let commands = draws
-        .iter()
-        .map(|(command, _)| *command)
-        .collect::<Vec<_>>();
-    let mut vertices = tile_vertices_for_commands(&commands, screen_width, screen_height);
-    for (quad, (_, opacity)) in vertices.chunks_exact_mut(6).zip(draws) {
-        for vertex in quad {
-            vertex.opacity = opacity;
-        }
-    }
-    vertices
+    tile_vertices_for_rects(&draws, screen_width, screen_height)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         next_vertex_buffer_slot, render_vertices_for_commands, select_present_mode,
-        surface_load_op, surface_usage, validate_commands, vertex_buffer_capacity,
-        vertex_buffer_needs_recreation, WgpuContextError,
+        surface_load_op, surface_usage, tile_vertices_for_rects, validate_commands,
+        vertex_buffer_capacity, vertex_buffer_needs_recreation, TileVertexRect, WgpuContextError,
     };
     use crate::render::device::{CommandList, DeviceError, TextureHandle};
 
@@ -1567,6 +1585,20 @@ mod tests {
         commands.present();
 
         let vertices = render_vertices_for_commands(&commands, 16, 16);
+
+        assert_eq!(vertices.len(), 6);
+        assert!(vertices.iter().all(|vertex| vertex.opacity == 0.375));
+    }
+
+    #[test]
+    fn neutral_vertex_rects_preserve_position_size_and_opacity() {
+        let rects = [TileVertexRect {
+            position: crate::geometry::ScreenPoint::new(2, 3),
+            size: (4, 5),
+            opacity: 0.375,
+        }];
+
+        let vertices = tile_vertices_for_rects(&rects, 16, 16);
 
         assert_eq!(vertices.len(), 6);
         assert!(vertices.iter().all(|vertex| vertex.opacity == 0.375));
