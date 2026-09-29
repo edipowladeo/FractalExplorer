@@ -505,6 +505,7 @@ impl TileDraw {
 #[derive(Debug, Clone, PartialEq)]
 pub enum OverlayPrimitive {
     Image(TileDraw),
+    Text(TextRun),
 }
 
 #[derive(Debug, Clone, PartialEq)]

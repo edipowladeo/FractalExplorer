@@ -72,17 +72,17 @@ impl<D: GraphicsDevice> RenderTarget for GpuRenderTarget<D> {
             .tiles()
             .iter()
             .map(|tile| tile.image())
-            .chain(frame.overlays().iter().map(|overlay| {
-                let super::OverlayPrimitive::Image(tile) = overlay;
-                tile.image()
+            .chain(frame.overlays().iter().filter_map(|overlay| match overlay {
+                super::OverlayPrimitive::Image(tile) => Some(tile.image()),
+                super::OverlayPrimitive::Text(_) => None,
             }))
             .collect();
         for tile in frame
             .tiles()
             .iter()
-            .chain(frame.overlays().iter().map(|overlay| {
-                let super::OverlayPrimitive::Image(tile) = overlay;
-                tile
+            .chain(frame.overlays().iter().filter_map(|overlay| match overlay {
+                super::OverlayPrimitive::Image(tile) => Some(tile),
+                super::OverlayPrimitive::Text(_) => None,
             }))
         {
             let Some(texture) = self.textures.handle(tile.image()) else {
