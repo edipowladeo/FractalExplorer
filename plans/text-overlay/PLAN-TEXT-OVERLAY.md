@@ -196,6 +196,14 @@ novo `WriteTexture` no frame seguinte.
 
 Registrar separadamente:
 
+Status: CONCLUÍDO. O `GpuRenderTarget` registra glifos preparados, draw calls
+de texto, uploads do atlas e bytes de vértices estimados pelo layout atual de
+quads. As métricas são zeradas em frames sem texto e só são publicadas após
+uma submissão bem-sucedida.
+
+Verificação: testes confirmam o upload único do atlas, a contagem de glifos e
+draw calls, os bytes de vértices e a limpeza das métricas sem texto.
+
 - caracteres/placements preparados;
 - bytes de vértices enviados;
 - uploads do atlas;
