@@ -66,6 +66,14 @@ impl<D: super::device::GraphicsDevice> GpuRenderTarget<D> {
         self.text_atlas = Some(TextAtlasResource { handle });
         Ok(handle)
     }
+
+    /// Drops only the backend resource; the logical atlas remains available for
+    /// rebuilding the texture without laying out the text again.
+    fn invalidate_text_atlas(&mut self) {
+        if let Some(atlas) = self.text_atlas.take() {
+            self.device.destroy_texture(atlas.handle);
+        }
+    }
 }
 
 impl<D: GraphicsDevice> RenderTarget for GpuRenderTarget<D> {
@@ -167,6 +175,7 @@ impl<D: GraphicsDevice> RenderTarget for GpuRenderTarget<D> {
     }
 
     fn recover(&mut self, _reason: SurfaceFailure) -> Result<(), RenderError> {
+        self.invalidate_text_atlas();
         Ok(())
     }
 }
@@ -185,8 +194,8 @@ mod tests {
         TextureDescriptor, TextureHandle,
     };
     use crate::render::{
-        ImageId, ImageRevision, ImageUpdate, Rect, RenderFrame, RenderTarget, TextRun, TileDraw,
-        Viewport,
+        ImageId, ImageRevision, ImageUpdate, Rect, RenderFrame, RenderTarget, SurfaceFailure,
+        TextRun, TileDraw, Viewport,
     };
 
     #[derive(Default)]
@@ -194,6 +203,7 @@ mod tests {
         next: u64,
         submitted: Vec<CommandList>,
         resized: Vec<Viewport>,
+        destroyed_textures: Vec<TextureHandle>,
     }
 
     impl GraphicsDevice for MockDevice {
@@ -224,7 +234,9 @@ mod tests {
         }
 
         fn destroy_buffer(&mut self, _buffer: BufferHandle) {}
-        fn destroy_texture(&mut self, _texture: TextureHandle) {}
+        fn destroy_texture(&mut self, texture: TextureHandle) {
+            self.destroyed_textures.push(texture);
+        }
     }
 
     #[test]
@@ -287,6 +299,34 @@ mod tests {
                 .commands()
                 .iter()
                 .all(|command| !matches!(command, Command::WriteTexture { .. }))
+        );
+    }
+
+    #[test]
+    fn gpu_target_recreates_text_atlas_after_surface_recovery() {
+        let viewport = Viewport::new(80, 40);
+        let mut target = GpuRenderTarget::new(MockDevice::default(), viewport);
+        let frame = RenderFrame::new(0, viewport).with_overlay(
+            super::super::OverlayPrimitive::Text(TextRun::new("C", ScreenPoint::new(4, 8))),
+        );
+
+        target.render(&frame).unwrap();
+        target.recover(SurfaceFailure::Lost).unwrap();
+        target.render(&frame).unwrap();
+
+        assert_eq!(target.device().destroyed_textures.len(), 1);
+        let submissions = &target.device().submitted;
+        assert!(
+            submissions[0]
+                .commands()
+                .iter()
+                .any(|command| matches!(command, Command::WriteTexture { .. }))
+        );
+        assert!(
+            submissions[1]
+                .commands()
+                .iter()
+                .any(|command| matches!(command, Command::WriteTexture { .. }))
         );
     }
 
