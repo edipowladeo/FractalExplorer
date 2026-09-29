@@ -153,6 +153,83 @@ pub fn tile_vertices_for_rects(
         .collect()
 }
 
+fn text_vertices_for_rect(
+    rect: TileVertexRect,
+    source: crate::render::UvRect,
+    screen_width: u32,
+    screen_height: u32,
+) -> [TileVertex; 6] {
+    let x0 = rect.position.x as f32 / screen_width.max(1) as f32 * 2.0 - 1.0;
+    let y0 = 1.0 - rect.position.y as f32 / screen_height.max(1) as f32 * 2.0;
+    let x1 = (rect.position.x as f32 + rect.size.0 as f32) / screen_width.max(1) as f32 * 2.0 - 1.0;
+    let y1 =
+        1.0 - (rect.position.y as f32 + rect.size.1 as f32) / screen_height.max(1) as f32 * 2.0;
+    [
+        TileVertex {
+            position: [x0, y1],
+            uv: [source.left, source.bottom],
+            opacity: rect.opacity,
+        },
+        TileVertex {
+            position: [x1, y1],
+            uv: [source.right, source.bottom],
+            opacity: rect.opacity,
+        },
+        TileVertex {
+            position: [x1, y0],
+            uv: [source.right, source.top],
+            opacity: rect.opacity,
+        },
+        TileVertex {
+            position: [x0, y1],
+            uv: [source.left, source.bottom],
+            opacity: rect.opacity,
+        },
+        TileVertex {
+            position: [x1, y0],
+            uv: [source.right, source.top],
+            opacity: rect.opacity,
+        },
+        TileVertex {
+            position: [x0, y0],
+            uv: [source.left, source.top],
+            opacity: rect.opacity,
+        },
+    ]
+}
+
+/// Converts laid-out glyphs into the six vertices consumed by the textured
+/// pipeline. The atlas remains a single texture; only these vertices change
+/// when the text content or position changes.
+pub fn text_vertices_for_placements(
+    placements: &[crate::render::GlyphPlacement],
+    viewport: crate::render::Viewport,
+) -> Vec<TileVertex> {
+    let screen_width = viewport.width().max(1) as f32;
+    let screen_height = viewport.height().max(1) as f32;
+    placements
+        .iter()
+        .flat_map(|placement| {
+            text_vertices_for_rect(
+                TileVertexRect {
+                    position: crate::geometry::ScreenPoint::new(
+                        placement.destination().x,
+                        placement.destination().y,
+                    ),
+                    size: (
+                        placement.destination().width,
+                        placement.destination().height,
+                    ),
+                    opacity: f32::from(placement.color()[3]) / 255.0,
+                },
+                placement.source(),
+                screen_width as u32,
+                screen_height as u32,
+            )
+        })
+        .collect()
+}
+
 pub const GPU_VERTEX_BUFFER_RING_SIZE: usize = 3;
 
 fn vertex_buffer_capacity(current: usize, required: usize) -> usize {
@@ -733,7 +810,9 @@ impl WgpuGraphicsDevice {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                Command::DrawTexture { texture, .. } => Some(*texture),
+                Command::DrawTexture { texture, .. } | Command::DrawText { texture, .. } => {
+                    Some(*texture)
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -1040,6 +1119,21 @@ impl GraphicsDevice for WgpuGraphicsDevice {
                         return Err(DeviceError::InvalidResource);
                     }
                 }
+                Command::DrawText {
+                    texture,
+                    width,
+                    height,
+                    opacity_bits,
+                    ..
+                } => {
+                    if !self.textures.contains_key(texture)
+                        || *width == 0
+                        || *height == 0
+                        || !(0.0..=1.0).contains(&f32::from_bits(*opacity_bits))
+                    {
+                        return Err(DeviceError::InvalidResource);
+                    }
+                }
                 Command::Present => {}
             }
         }
@@ -1088,7 +1182,7 @@ impl GraphicsDevice for WgpuGraphicsDevice {
                         },
                     );
                 }
-                Command::DrawTexture { .. } => {}
+                Command::DrawTexture { .. } | Command::DrawText { .. } => {}
                 Command::Present => {}
             }
         }
@@ -1122,7 +1216,7 @@ fn validate_commands(commands: &CommandList) -> Result<(), DeviceError> {
             Command::WriteBuffer { .. } | Command::WriteTexture { .. } if drawing_started => {
                 return Err(DeviceError::UnsupportedCommand);
             }
-            Command::DrawTexture { .. } => drawing_started = true,
+            Command::DrawTexture { .. } | Command::DrawText { .. } => drawing_started = true,
             Command::Present => presented = true,
             Command::WriteBuffer { .. } | Command::WriteTexture { .. } => {}
         }
@@ -1138,36 +1232,86 @@ fn render_vertices_for_commands(
     screen_width: u32,
     screen_height: u32,
 ) -> Vec<TileVertex> {
-    let draws = commands
+    commands
         .commands()
         .iter()
-        .filter_map(|command| match command {
+        .flat_map(|command| match command {
             Command::DrawTexture {
-                texture: _,
                 x,
                 y,
                 width,
                 height,
                 opacity_bits,
-            } => Some(TileVertexRect {
-                position: crate::geometry::ScreenPoint::new(*x, *y),
-                size: (*width, *height),
-                opacity: f32::from_bits(*opacity_bits),
-            }),
-            _ => None,
+                ..
+            } => tile_vertices_for_rects(
+                &[TileVertexRect {
+                    position: crate::geometry::ScreenPoint::new(*x, *y),
+                    size: (*width, *height),
+                    opacity: f32::from_bits(*opacity_bits),
+                }],
+                screen_width,
+                screen_height,
+            ),
+            Command::DrawText {
+                x,
+                y,
+                width,
+                height,
+                source,
+                opacity_bits,
+                ..
+            } => text_vertices_for_rect(
+                TileVertexRect {
+                    position: crate::geometry::ScreenPoint::new(*x, *y),
+                    size: (*width, *height),
+                    opacity: f32::from_bits(*opacity_bits),
+                },
+                *source,
+                screen_width,
+                screen_height,
+            )
+            .to_vec(),
+            _ => Vec::new(),
         })
-        .collect::<Vec<_>>();
-    tile_vertices_for_rects(&draws, screen_width, screen_height)
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        next_vertex_buffer_slot, render_vertices_for_commands, select_present_mode,
-        surface_load_op, surface_usage, tile_vertices_for_rects, validate_commands,
-        vertex_buffer_capacity, vertex_buffer_needs_recreation, TileVertexRect, WgpuContextError,
+        TileVertexRect, WgpuContextError, next_vertex_buffer_slot, render_vertices_for_commands,
+        select_present_mode, surface_load_op, surface_usage, text_vertices_for_placements,
+        tile_vertices_for_rects, validate_commands, vertex_buffer_capacity,
+        vertex_buffer_needs_recreation,
     };
     use crate::render::device::{CommandList, DeviceError, TextureHandle};
+    use crate::render::{GlyphId, GlyphPlacement, Rect, UvRect, Viewport};
+
+    #[test]
+    fn text_placements_become_six_vertices_with_atlas_uvs() {
+        let placements = [GlyphPlacement::new(
+            GlyphId::new(7),
+            Rect::new(10, 20, 5, 7),
+            UvRect {
+                left: 0.25,
+                top: 0.5,
+                right: 0.5,
+                bottom: 0.75,
+            },
+            [255, 255, 255, 128],
+            0,
+        )];
+
+        let vertices = text_vertices_for_placements(&placements, Viewport::new(100, 100));
+
+        assert_eq!(vertices.len(), 6);
+        assert!((vertices[0].position[0] + 0.8).abs() < f32::EPSILON);
+        assert!((vertices[0].position[1] - 0.46).abs() < 0.00001);
+        assert_eq!(vertices[0].uv, [0.25, 0.75]);
+        assert_eq!(vertices[0].opacity, 128.0 / 255.0);
+        assert_eq!(vertices[2].position, [-0.7, 0.6]);
+        assert_eq!(vertices[2].uv, [0.5, 0.5]);
+    }
 
     #[test]
     fn surface_policy_prefers_non_vsync_modes_and_falls_back_to_supported_modes() {

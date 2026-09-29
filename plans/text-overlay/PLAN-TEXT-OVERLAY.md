@@ -1,0 +1,291 @@
+# Plano: otimizar overlay para receber texto
+
+## Objetivo
+
+Permitir que os overlays recebam texto sem rasterizar cada linha para RGBA nem
+enviar uma textura nova ao GPU a cada quadro. O conteúdo textual deve continuar
+sendo atualizado por quadro quando necessário, mas a conversão de caracteres
+para textura e o upload de pixels devem acontecer apenas quando a fonte, o
+tamanho ou o conjunto de glifos mudar.
+
+## Diagnóstico atual
+
+- `gpu_window.rs` chama `append_text_overlay_line` para cada linha do overlay.
+- `append_text_overlay_line` calcula dimensões, chama `debug_overlay_upload` e
+  cria um `ImageUpdate` com o bitmap completo da linha.
+- O caminho atual representa texto como `OverlayPrimitive::Image`, portanto
+  cada linha é tratada como uma textura independente.
+- Mesmo com revisão por hash, a rasterização CPU, a alocação do `Vec<u8>` e a
+  preparação das atualizações acontecem durante a preparação do frame.
+- A geometria também é reconstruída como um quad por linha.
+
+## Alternativas
+
+### A. Atlas de glifos persistente + comandos de texto (recomendada)
+
+Nota de desempenho: o overlay de retângulo de envelope de alocação está
+extremamente lento no caminho GPU; a geração do bitmap pode consumir dezenas
+ou centenas de milissegundos por frame. Ele precisa ser otimizado
+separadamente. `show_allocation_envelope` controla sua visibilidade
+independentemente de `reduced_viewport`, que continua apenas alterando a área
+de trabalho.
+
+Manter no renderer uma textura atlas com os glifos da fonte bitmap usada hoje.
+O overlay passa apenas uma lista de caracteres/glifos, posição, cor, escala e
+camada. Um buffer de instâncias ou vértices referencia regiões do atlas. O
+atlas é criado uma vez e só recebe upload quando um glifo ainda não existente
+for requisitado.
+
+Vantagens:
+
+- elimina a rasterização de cada string e o upload de uma imagem por linha;
+- preserva a fonte atual e permite atualizar somente posições/conteúdo;
+- permite agrupar todas as linhas em uma chamada de desenho;
+- torna o custo por quadro aproximadamente proporcional ao número de
+  caracteres, não à área dos bitmaps.
+
+Cuidados:
+
+- definir contrato de ciclo de vida para o atlas quando o device/surface for
+  recriado;
+- decidir se o texto será ASCII limitado, Unicode com fallback ou uma fonte
+  real no futuro;
+- separar comandos de texto do contrato genérico de imagens para não forçar
+  backends que não suportam GPU text.
+
+### B. Uma textura bitmap única para todos os overlays
+
+Rasterizar todas as linhas em um único bitmap e enviar no máximo uma textura
+por quadro.
+
+É uma melhoria intermediária simples, reduzindo a quantidade de updates e
+draw calls, mas ainda paga a rasterização, alocação e upload de toda a área a
+cada atualização. Deve ser usada apenas como baseline de medição ou fallback.
+
+### C. Instâncias de glifos com atlas fixo
+
+Variação mais explícita de A: gerar uma tabela fixa para os caracteres aceitos
+(`glyph()` atual), criar o atlas no startup e enviar somente instâncias por
+quadro. É a opção mais previsível para os overlays de diagnóstico atuais e
+evita a complexidade de um atlas dinâmico.
+
+### D. Renderizar texto fora do pipeline GPU
+
+Usar a janela/UI nativa para desenhar texto. Pode reduzir o trabalho do
+renderer, mas mistura dois sistemas de composição e não é adequado enquanto o
+overlay precisa acompanhar exatamente o frame GPU, o viewport e o backend
+atual.
+
+## Recomendação registrada
+
+Implementar primeiro atlas persistente + quads de glifos gerados no backend
+GPU, mantendo a API de texto independente do backend. Deixar instancing como
+uma otimização interna posterior, ativada somente se as métricas mostrarem que
+o upload ou a geração dos vértices é relevante.
+
+Essa ordem foi escolhida porque:
+
+- o maior ganho vem de eliminar a rasterização RGBA e o `ImageUpdate` por
+  linha, não de eliminar a duplicação de vértices;
+- quads são mais simples de integrar ao pipeline existente de vértices e
+  texturas;
+- quads são mais fáceis de portar para o renderer CPU e outros backends;
+- trocar a fonte depende principalmente do atlas e das métricas dos glifos,
+  não de quads versus instâncias;
+- a API pode ser preservada se o backend GPU migrar de quads para instâncias
+  no futuro.
+
+Instancing permanece como a alternativa de maior eficiência para muitos
+caracteres. A eventual migração deve trocar somente a representação interna
+de `TextRun`, sem alterar layout, fonte ou chamadas dos overlays.
+
+## Passos completos de implementação
+
+### 1. Definir o contrato de texto
+
+Introduzir no módulo de renderização tipos independentes de GPU, por exemplo:
+
+- `GlyphId` ou índice de glifo;
+- `GlyphMetrics`, com UV, tamanho, avanço e offset;
+- `TextRun`/`TextOverlay`, com texto ou glifos, posição, cor, escala e camada;
+- uma coleção de `GlyphPlacement` pronta para ser desenhada.
+
+O contrato não deve expor `wgpu`, bind groups, vertex buffers ou instancing.
+Também deve permitir que o renderer CPU trate cada placement como um quad.
+
+### 2. Isolar a fonte e o atlas
+
+Criar uma estrutura de atlas persistente contendo:
+
+- pixels ou textura do atlas;
+- métricas por glifo;
+- mapeamento de caractere para `GlyphId`;
+- avanço horizontal e offsets de cada glifo;
+- fallback para caractere desconhecido.
+
+Na primeira versão, reutilizar a fonte bitmap já fornecida por
+`renderer::glyph`. O conjunto inicial pode continuar limitado aos caracteres
+suportados hoje. A API deve permitir substituir o atlas sem alterar o
+pipeline de desenho.
+
+### 3. Implementar o layout CPU
+
+Converter cada string em placements:
+
+1. mapear o caractere para um `GlyphId`;
+2. ignorar ou substituir caracteres sem glifo;
+3. posicionar o glifo usando avanço e offsets da fonte;
+4. tratar quebra de linha;
+5. calcular dimensões do `TextRun`;
+6. produzir o retângulo de destino e o retângulo UV.
+
+O layout deve ser testável sem GPU e não deve criar um bitmap RGBA.
+
+### 4. Adicionar a preparação de texto aos overlays
+
+Substituir gradualmente `append_text_overlay_line` para produzir um
+`TextRun`, em vez de chamar `debug_overlay_upload`.
+
+Nesta etapa:
+
+- `OverlayPrimitive::Image` continua sendo usado para envelopes e bitmaps;
+- texto deixa de gerar `ImageUpdate`;
+- todas as linhas podem ser agregadas em uma lista de placements;
+- a ordem das camadas e o posicionamento atuais devem ser preservados.
+
+### 5. Implementar o backend GPU com quads
+
+Criar um pipeline de texto que:
+
+1. mantém o atlas como textura persistente;
+2. usa um sampler apropriado para a fonte bitmap;
+3. gera seis vértices por glifo, com posição e UV;
+4. reutiliza um vertex buffer com capacidade crescente;
+5. escreve somente os vértices necessários ao frame;
+6. executa uma chamada de desenho para todos os placements do overlay.
+
+O buffer deve ser separado do buffer dos tiles para que o texto não force
+recriação ou reupload das texturas de fractais.
+
+### 6. Implementar o caminho CPU e o fallback — CONCLUÍDO
+
+Adicionar suporte equivalente no renderer CPU ou, enquanto ele não existir,
+um fallback controlado para o caminho de imagem antigo. O fallback deve ser
+explícito e não deve ser usado pelo backend GPU otimizado.
+
+Isso preserva testes headless e reduz o risco de quebrar configurações sem
+janela ou sem pipeline de texto.
+
+Implementado no `CpuRenderTarget`: o atlas lógico persistente é usado para
+layout e composição alfa dos placements diretamente no framebuffer, incluindo
+escala, clipping ao viewport e sobreposição sobre tiles. O backend CPU não
+converte texto em `ImageUpdate`.
+
+Verificação: RED confirmou que o texto era ignorado; GREEN e REFACTOR passaram
+nos testes do renderer CPU e na suíte completa. A validação visual permanece
+reservada ao HITL final.
+
+### 7. Tratar o ciclo de vida do device — CONCLUÍDO
+
+Garantir que o atlas e o pipeline sejam recriados quando o device ou a
+surface forem recriados. O estado lógico da fonte deve ficar separado do
+recurso GPU para que a textura possa ser reconstruída sem relayout do texto.
+
+Implementado no fluxo de `recover`: o recurso GPU do atlas é destruído e
+invalidado, enquanto o `FontAtlas` lógico permanece no target. O próximo frame
+textual recria a textura e faz um único upload, sem alterar o layout. Resize
+normal da surface não invalida o atlas, pois a textura continua válida.
+
+Verificação: teste de recuperação confirmou destruição do recurso antigo e
+novo `WriteTexture` no frame seguinte.
+
+### 8. Adicionar métricas
+
+Registrar separadamente:
+
+Status: CONCLUÍDO. O `GpuRenderTarget` registra glifos preparados, draw calls
+de texto, uploads do atlas e bytes de vértices estimados pelo layout atual de
+quads. As métricas são zeradas em frames sem texto e só são publicadas após
+uma submissão bem-sucedida.
+
+Verificação: testes confirmam o upload único do atlas, a contagem de glifos e
+draw calls, os bytes de vértices e a limpeza das métricas sem texto.
+
+- caracteres/placements preparados;
+- bytes de vértices enviados;
+- uploads do atlas;
+- uploads do buffer de texto;
+- draw calls de texto;
+- tempo de layout;
+- tempo de preparação do pipeline de texto.
+
+As métricas devem permitir comparar o caminho antigo, quads e uma futura
+implementação com instancing.
+
+### 9. Avaliar instancing
+
+Depois dos quads estarem estáveis, medir com overlays representativos. Migrar
+para instancing somente se houver evidência de que:
+
+- o upload do vertex buffer é relevante;
+- a geração dos seis vértices por glifo domina a preparação;
+- o número de caracteres é alto o suficiente para justificar a complexidade.
+
+Na migração, manter o mesmo `TextRun`, atlas, layout e testes. Alterar apenas
+o adaptador GPU para enviar uma instância por glifo e reutilizar um quad
+unitário.
+
+## Sequência TDD
+
+### RED
+
+- Testar que a preparação de uma linha textual produz comandos de glifo e
+  nenhum `ImageUpdate`.
+- Testar posicionamento, avanço fixo de 6 pixels, quebras de linha e
+  caracteres sem glifo.
+- Testar que duas preparações consecutivas reutilizam o atlas e não criam
+  uploads de glifos novamente.
+- Instrumentar contadores esperados: uploads de atlas, instâncias e draw
+  calls.
+
+### GREEN
+
+- Implementar o contrato mínimo de texto, atlas fixo e geração de instâncias.
+- Ligar primeiro um único grupo de overlay, mantendo os demais no caminho
+  antigo até a cobertura estar estável.
+- Implementar o pipeline WGPU e o fallback.
+
+### REFACTOR
+
+- Extrair a política de layout de texto do backend.
+- Consolidar métricas e remover alocações por linha.
+- Revisar nomes, ownership e ciclo de vida do atlas junto com a recriação do
+  device.
+
+## Critérios de aceitação
+
+- Nenhuma linha textual usa `debug_overlay_upload` no caminho GPU otimizado.
+- Em frames com conteúdo textual estável, não há `ImageUpdate` de texto nem
+  upload de pixels do atlas.
+- Todas as linhas atuais continuam visualmente legíveis e no mesmo
+  posicionamento.
+- O conteúdo alterado aparece no frame seguinte sem recriar a textura do
+  atlas.
+- Testes unitários cobrem layout, cache/atlas e comandos gerados.
+- Métricas registram instâncias, uploads e draw calls para comparação antes e
+  depois.
+
+## Questões para decisão antes da implementação
+
+1. O conjunto atual de caracteres ASCII da função `glyph()` é suficiente para
+   os overlays, ou precisamos de UTF-8 completo desde o início?
+2. A prioridade é minimizar uploads, draw calls ou latência CPU de preparação?
+3. O contrato genérico deve expor `TextRun` para todos os backends ou o texto
+   pode ser uma capacidade opcional específica do GPU?
+4. Devemos preservar o caminho de imagem como fallback para testes/headless?
+
+## Verificação manual
+
+Após RED, GREEN e REFACTOR com testes passando, iniciar `cargo run --bin
+sprite-demo` no worktree para validação visual do usuário, conforme o HIL
+global do repositório.

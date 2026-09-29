@@ -178,7 +178,7 @@ impl RendererDebugConfig {
     }
 
     pub fn should_show_allocation_envelope(&self) -> bool {
-        self.reduced_viewport || (self.overlays_enabled() && self.show_allocation_envelope)
+        self.overlays_enabled() && self.show_allocation_envelope
     }
 }
 
@@ -346,13 +346,13 @@ mod tests {
     }
 
     #[test]
-    fn reduced_viewport_forces_the_debug_envelope() {
+    fn reduced_viewport_does_not_force_the_debug_envelope() {
         let mut debug = super::RendererDebugConfig::default();
         debug.reduced_viewport = true;
         debug.show_allocation_envelope = false;
         debug.text_overlay_global = false;
 
-        assert!(debug.should_show_allocation_envelope());
+        assert!(!debug.should_show_allocation_envelope());
     }
 
     #[test]

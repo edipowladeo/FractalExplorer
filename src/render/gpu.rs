@@ -1,8 +1,42 @@
 use super::device::{CommandList, DeviceError, GraphicsDevice, TextureResourceCache};
 use super::{
-    FrameOutcome, ImageId, ImageUpdate, RenderCapabilities, RenderError, RenderFrame, RenderTarget,
-    SurfaceFailure, Viewport,
+    FontAtlas, FrameOutcome, ImageId, ImageUpdate, RenderCapabilities, RenderError, RenderFrame,
+    RenderTarget, SurfaceFailure, Viewport,
 };
+
+struct TextAtlasResource {
+    handle: super::device::TextureHandle,
+}
+
+const TEXT_QUAD_VERTEX_COUNT: usize = 6;
+const TEXT_VERTEX_SIZE_BYTES: usize = 24;
+
+/// Counters for one successfully submitted text frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TextRenderMetrics {
+    glyphs_prepared: usize,
+    vertex_bytes: usize,
+    atlas_uploads: usize,
+    draw_calls: usize,
+}
+
+impl TextRenderMetrics {
+    pub const fn glyphs_prepared(self) -> usize {
+        self.glyphs_prepared
+    }
+
+    pub const fn vertex_bytes(self) -> usize {
+        self.vertex_bytes
+    }
+
+    pub const fn atlas_uploads(self) -> usize {
+        self.atlas_uploads
+    }
+
+    pub const fn draw_calls(self) -> usize {
+        self.draw_calls
+    }
+}
 
 /// Backend-independent GPU render target.
 ///
@@ -12,14 +46,20 @@ pub struct GpuRenderTarget<D> {
     device: D,
     viewport: Viewport,
     textures: TextureResourceCache,
+    font_atlas: FontAtlas,
+    text_atlas: Option<TextAtlasResource>,
+    text_metrics: TextRenderMetrics,
 }
 
-impl<D> GpuRenderTarget<D> {
+impl<D: super::device::GraphicsDevice> GpuRenderTarget<D> {
     pub fn new(device: D, viewport: Viewport) -> Self {
         Self {
             device,
             viewport,
             textures: TextureResourceCache::new(),
+            font_atlas: FontAtlas::debug(),
+            text_atlas: None,
+            text_metrics: TextRenderMetrics::default(),
         }
     }
 
@@ -33,6 +73,42 @@ impl<D> GpuRenderTarget<D> {
 
     pub fn textures(&self) -> &TextureResourceCache {
         &self.textures
+    }
+
+    pub const fn text_metrics(&self) -> TextRenderMetrics {
+        self.text_metrics
+    }
+
+    fn ensure_text_atlas(
+        &mut self,
+        commands: &mut CommandList,
+    ) -> Result<(super::device::TextureHandle, bool), DeviceError> {
+        if let Some(atlas) = &self.text_atlas {
+            return Ok((atlas.handle, false));
+        }
+        let (width, height) = self.font_atlas.dimensions();
+        let mut rgba8 = Vec::with_capacity(self.font_atlas.pixels().len() * 4);
+        for alpha in self.font_atlas.pixels() {
+            rgba8.extend_from_slice(&[255, 255, 255, *alpha]);
+        }
+        let handle = self
+            .device
+            .create_texture(super::device::TextureDescriptor {
+                width,
+                height,
+                format: super::device::TextureFormat::Rgba8,
+            })?;
+        commands.write_texture(handle, width, height, rgba8);
+        self.text_atlas = Some(TextAtlasResource { handle });
+        Ok((handle, true))
+    }
+
+    /// Drops only the backend resource; the logical atlas remains available for
+    /// rebuilding the texture without laying out the text again.
+    fn invalidate_text_atlas(&mut self) {
+        if let Some(atlas) = self.text_atlas.take() {
+            self.device.destroy_texture(atlas.handle);
+        }
     }
 }
 
@@ -72,20 +148,70 @@ impl<D: GraphicsDevice> RenderTarget for GpuRenderTarget<D> {
             .tiles()
             .iter()
             .map(|tile| tile.image())
-            .chain(frame.overlays().iter().map(|overlay| {
-                let super::OverlayPrimitive::Image(tile) = overlay;
-                tile.image()
+            .chain(frame.overlays().iter().filter_map(|overlay| match overlay {
+                super::OverlayPrimitive::Image(tile) => Some(tile.image()),
+                super::OverlayPrimitive::Text(_) => None,
             }))
             .collect();
+        let text_atlas = frame
+            .overlays()
+            .iter()
+            .any(|overlay| matches!(overlay, super::OverlayPrimitive::Text(_)));
+        let mut text_metrics = TextRenderMetrics::default();
+        let text_draws = if text_atlas {
+            let (atlas, atlas_uploaded) = self
+                .ensure_text_atlas(&mut commands)
+                .map_err(|_| RenderError::BackendUnavailable("GPU text atlas creation failed"))?;
+            text_metrics.atlas_uploads = usize::from(atlas_uploaded);
+            let placements = frame
+                .overlays()
+                .iter()
+                .filter_map(|overlay| {
+                    let super::OverlayPrimitive::Text(run) = overlay else {
+                        return None;
+                    };
+                    Some(self.font_atlas.layout(run))
+                })
+                .flatten()
+                .collect::<Vec<_>>();
+            text_metrics.glyphs_prepared = placements.len();
+            text_metrics.draw_calls = placements.len();
+            text_metrics.vertex_bytes = placements
+                .len()
+                .saturating_mul(TEXT_QUAD_VERTEX_COUNT)
+                .saturating_mul(TEXT_VERTEX_SIZE_BYTES);
+            Some((atlas, placements))
+        } else {
+            None
+        };
+
         for tile in frame
             .tiles()
             .iter()
-            .chain(frame.overlays().iter().map(|overlay| {
-                let super::OverlayPrimitive::Image(tile) = overlay;
-                tile
+            .chain(frame.overlays().iter().filter_map(|overlay| match overlay {
+                super::OverlayPrimitive::Image(tile) => Some(tile),
+                super::OverlayPrimitive::Text(_) => None,
             }))
         {
             let Some(texture) = self.textures.handle(tile.image()) else {
+                let resource_kind = if frame
+                    .tiles()
+                    .iter()
+                    .any(|candidate| candidate.image() == tile.image())
+                {
+                    "tile"
+                } else {
+                    "image_overlay"
+                };
+                crate::print_local!(
+                    "GPU frame rejeitado: frame_id={} unknown_image={} kind={} revision={} tiles={} overlays={}",
+                    frame.frame_id(),
+                    tile.image().value(),
+                    resource_kind,
+                    tile.revision().value(),
+                    frame.tiles().len(),
+                    frame.overlays().len(),
+                );
                 return Err(RenderError::InvalidFrame(
                     "frame references an unknown image",
                 ));
@@ -100,11 +226,22 @@ impl<D: GraphicsDevice> RenderTarget for GpuRenderTarget<D> {
                 tile.opacity(),
             );
         }
+        if let Some((atlas, placements)) = text_draws {
+            for placement in placements {
+                commands.draw_text(
+                    atlas,
+                    placement.destination(),
+                    placement.source(),
+                    f32::from(placement.color()[3]) / 255.0,
+                );
+            }
+        }
         commands.present();
         self.device
             .submit(commands)
             .map_err(|_| RenderError::BackendUnavailable("GPU command submission failed"))?;
         self.textures.retain_only(&mut self.device, &images);
+        self.text_metrics = text_metrics;
         Ok(FrameOutcome::submitted())
     }
 
@@ -113,6 +250,7 @@ impl<D: GraphicsDevice> RenderTarget for GpuRenderTarget<D> {
     }
 
     fn recover(&mut self, _reason: SurfaceFailure) -> Result<(), RenderError> {
+        self.invalidate_text_atlas();
         Ok(())
     }
 }
@@ -124,13 +262,15 @@ fn map_device_error(_error: DeviceError) -> RenderError {
 
 #[cfg(test)]
 mod tests {
-    use super::GpuRenderTarget;
+    use super::{GpuRenderTarget, TextRenderMetrics};
+    use crate::geometry::ScreenPoint;
     use crate::render::device::{
         BufferDescriptor, BufferHandle, Command, CommandList, DeviceError, GraphicsDevice,
         TextureDescriptor, TextureHandle,
     };
     use crate::render::{
-        ImageId, ImageRevision, ImageUpdate, Rect, RenderFrame, RenderTarget, TileDraw, Viewport,
+        ImageId, ImageRevision, ImageUpdate, Rect, RenderFrame, RenderTarget, SurfaceFailure,
+        TextRun, TileDraw, Viewport,
     };
 
     #[derive(Default)]
@@ -138,6 +278,7 @@ mod tests {
         next: u64,
         submitted: Vec<CommandList>,
         resized: Vec<Viewport>,
+        destroyed_textures: Vec<TextureHandle>,
     }
 
     impl GraphicsDevice for MockDevice {
@@ -168,7 +309,9 @@ mod tests {
         }
 
         fn destroy_buffer(&mut self, _buffer: BufferHandle) {}
-        fn destroy_texture(&mut self, _texture: TextureHandle) {}
+        fn destroy_texture(&mut self, texture: TextureHandle) {
+            self.destroyed_textures.push(texture);
+        }
     }
 
     #[test]
@@ -201,6 +344,115 @@ mod tests {
             target.device().submitted[1].commands()[1],
             Command::Present
         ));
+    }
+
+    #[test]
+    fn gpu_target_uploads_text_atlas_once_and_draws_text_quads() {
+        let viewport = Viewport::new(80, 40);
+        let mut target = GpuRenderTarget::new(MockDevice::default(), viewport);
+        let frame = RenderFrame::new(0, viewport).with_overlay(
+            super::super::OverlayPrimitive::Text(TextRun::new("C", ScreenPoint::new(4, 8))),
+        );
+
+        target.render(&frame).unwrap();
+        assert_eq!(target.text_metrics().atlas_uploads(), 1);
+        target.render(&frame).unwrap();
+
+        assert_eq!(target.text_metrics().glyphs_prepared(), 1);
+        assert_eq!(target.text_metrics().draw_calls(), 1);
+        assert_eq!(target.text_metrics().atlas_uploads(), 0);
+        assert_eq!(target.text_metrics().vertex_bytes(), 144);
+        let submissions = &target.device().submitted;
+        assert_eq!(submissions.len(), 2);
+        assert!(matches!(
+            submissions[0].commands()[0],
+            Command::WriteTexture { .. }
+        ));
+        assert!(
+            submissions[0]
+                .commands()
+                .iter()
+                .any(|command| matches!(command, Command::DrawText { .. }))
+        );
+        assert!(
+            submissions[1]
+                .commands()
+                .iter()
+                .all(|command| !matches!(command, Command::WriteTexture { .. }))
+        );
+    }
+
+    #[test]
+    fn gpu_target_clears_text_metrics_when_frame_has_no_text() {
+        let viewport = Viewport::new(80, 40);
+        let mut target = GpuRenderTarget::new(MockDevice::default(), viewport);
+        let text = RenderFrame::new(0, viewport).with_overlay(
+            super::super::OverlayPrimitive::Text(TextRun::new("C", ScreenPoint::new(4, 8))),
+        );
+
+        target.render(&text).unwrap();
+        target.render(&RenderFrame::new(1, viewport)).unwrap();
+
+        assert_eq!(target.text_metrics(), TextRenderMetrics::default());
+    }
+
+    #[test]
+    fn gpu_target_submits_tiles_and_text_in_one_frame() {
+        let viewport = Viewport::new(80, 40);
+        let image = ImageId::new(7);
+        let mut target = GpuRenderTarget::new(MockDevice::default(), viewport);
+        target
+            .update_images(&[ImageUpdate::new(
+                image,
+                ImageRevision::new(1),
+                1,
+                1,
+                vec![10, 20, 30, 255],
+            )
+            .unwrap()])
+            .unwrap();
+        let frame = RenderFrame::new(0, viewport)
+            .with_tile(TileDraw::new(image, ImageRevision::new(1), 0))
+            .with_overlay(super::super::OverlayPrimitive::Text(TextRun::new(
+                "C",
+                ScreenPoint::new(4, 8),
+            )));
+
+        target.render(&frame).unwrap();
+
+        let commands = target.device().submitted.last().unwrap().commands();
+        assert!(matches!(commands[0], Command::WriteTexture { .. }));
+        assert!(matches!(commands[1], Command::DrawTexture { .. }));
+        assert!(matches!(commands[2], Command::DrawText { .. }));
+        assert!(matches!(commands[3], Command::Present));
+    }
+
+    #[test]
+    fn gpu_target_recreates_text_atlas_after_surface_recovery() {
+        let viewport = Viewport::new(80, 40);
+        let mut target = GpuRenderTarget::new(MockDevice::default(), viewport);
+        let frame = RenderFrame::new(0, viewport).with_overlay(
+            super::super::OverlayPrimitive::Text(TextRun::new("C", ScreenPoint::new(4, 8))),
+        );
+
+        target.render(&frame).unwrap();
+        target.recover(SurfaceFailure::Lost).unwrap();
+        target.render(&frame).unwrap();
+
+        assert_eq!(target.device().destroyed_textures.len(), 1);
+        let submissions = &target.device().submitted;
+        assert!(
+            submissions[0]
+                .commands()
+                .iter()
+                .any(|command| matches!(command, Command::WriteTexture { .. }))
+        );
+        assert!(
+            submissions[1]
+                .commands()
+                .iter()
+                .any(|command| matches!(command, Command::WriteTexture { .. }))
+        );
     }
 
     #[test]
@@ -281,10 +533,12 @@ mod tests {
         let Command::WriteTexture { texture, .. } = submissions[0].commands()[0] else {
             panic!("first submission must upload the image")
         };
-        assert!(submissions[1]
-            .commands()
-            .iter()
-            .all(|command| !matches!(command, Command::WriteTexture { .. })));
+        assert!(
+            submissions[1]
+                .commands()
+                .iter()
+                .all(|command| !matches!(command, Command::WriteTexture { .. }))
+        );
         let Command::DrawTexture {
             texture: first_texture,
             x: 1,

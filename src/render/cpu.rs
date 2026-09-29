@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use super::{
-    FrameOutcome, ImageId, ImageRevision, ImageUpdate, OverlayPrimitive, RenderCapabilities,
-    RenderError, RenderFrame, RenderTarget, SurfaceFailure, TileDraw, Viewport,
+    FontAtlas, FrameOutcome, GlyphPlacement, ImageId, ImageRevision, ImageUpdate, OverlayPrimitive,
+    RenderCapabilities, RenderError, RenderFrame, RenderTarget, SurfaceFailure, TileDraw, Viewport,
 };
 
 #[derive(Debug, Clone)]
@@ -17,6 +17,7 @@ pub struct CpuRenderTarget {
     viewport: Viewport,
     framebuffer: Vec<u8>,
     images: HashMap<ImageId, StoredImage>,
+    font_atlas: FontAtlas,
     preserve_previous_frame: bool,
     clear_color: [u8; 4],
 }
@@ -27,6 +28,7 @@ impl CpuRenderTarget {
             framebuffer: vec![0; framebuffer_len(viewport)],
             viewport,
             images: HashMap::new(),
+            font_atlas: FontAtlas::debug(),
             preserve_previous_frame: false,
             clear_color: [0, 0, 0, 0],
         }
@@ -91,6 +93,69 @@ impl CpuRenderTarget {
             }
         }
     }
+
+    fn draw_text(
+        viewport: Viewport,
+        framebuffer: &mut [u8],
+        atlas: &FontAtlas,
+        placement: GlyphPlacement,
+    ) {
+        let destination = placement.destination();
+        if destination.width == 0 || destination.height == 0 {
+            return;
+        }
+        let source = placement.source();
+        let (atlas_width, atlas_height) = atlas.dimensions();
+        if atlas_width == 0 || atlas_height == 0 {
+            return;
+        }
+        let source_left = (source.left * atlas_width as f32).floor() as u32;
+        let source_top = (source.top * atlas_height as f32).floor() as u32;
+        let source_right = (source.right * atlas_width as f32).ceil() as u32;
+        let source_bottom = (source.bottom * atlas_height as f32).ceil() as u32;
+        let source_width = source_right.saturating_sub(source_left).max(1);
+        let source_height = source_bottom.saturating_sub(source_top).max(1);
+        let color = placement.color();
+
+        for target_y in 0..destination.height {
+            for target_x in 0..destination.width {
+                let screen_x = destination.x + target_x as i32;
+                let screen_y = destination.y + target_y as i32;
+                if screen_x < 0
+                    || screen_y < 0
+                    || screen_x as u32 >= viewport.width()
+                    || screen_y as u32 >= viewport.height()
+                {
+                    continue;
+                }
+
+                let source_x =
+                    source_left + target_x.saturating_mul(source_width) / destination.width;
+                let source_y =
+                    source_top + target_y.saturating_mul(source_height) / destination.height;
+                let atlas_index = (source_y.min(atlas_height - 1) * atlas_width
+                    + source_x.min(atlas_width - 1)) as usize;
+                let coverage = atlas.pixels()[atlas_index] as u16;
+                let alpha = coverage * color[3] as u16 / 255;
+                if alpha == 0 {
+                    continue;
+                }
+
+                let target = ((screen_y as u32 * viewport.width() + screen_x as u32) * 4) as usize;
+                Self::blend_pixel(&mut framebuffer[target..target + 4], color, alpha);
+            }
+        }
+    }
+
+    fn blend_pixel(destination: &mut [u8], color: [u8; 4], alpha: u16) {
+        let inverse_alpha = 255 - alpha;
+        for channel in 0..3 {
+            destination[channel] = ((color[channel] as u16 * alpha
+                + destination[channel] as u16 * inverse_alpha)
+                / 255) as u8;
+        }
+        destination[3] = (alpha + destination[3] as u16 * inverse_alpha / 255) as u8;
+    }
 }
 
 impl RenderTarget for CpuRenderTarget {
@@ -140,14 +205,27 @@ impl RenderTarget for CpuRenderTarget {
             Self::draw_image(self.viewport, &mut self.framebuffer, image, tile);
         }
         for overlay in frame.overlays() {
-            let OverlayPrimitive::Image(tile) = overlay;
-            let Some(image) = self.images.get(&tile.image()) else {
-                continue;
-            };
-            if image.revision != tile.revision() {
-                continue;
+            match overlay {
+                OverlayPrimitive::Image(tile) => {
+                    let Some(image) = self.images.get(&tile.image()) else {
+                        continue;
+                    };
+                    if image.revision != tile.revision() {
+                        continue;
+                    }
+                    Self::draw_image(self.viewport, &mut self.framebuffer, image, tile);
+                }
+                OverlayPrimitive::Text(run) => {
+                    for placement in self.font_atlas.layout(run) {
+                        Self::draw_text(
+                            self.viewport,
+                            &mut self.framebuffer,
+                            &self.font_atlas,
+                            placement,
+                        );
+                    }
+                }
             }
-            Self::draw_image(self.viewport, &mut self.framebuffer, image, tile);
         }
         Ok(FrameOutcome::submitted())
     }
@@ -174,7 +252,7 @@ fn framebuffer_len(viewport: Viewport) -> usize {
 mod tests {
     use crate::render::{
         ImageId, ImageRevision, ImageUpdate, OverlayPrimitive, Rect, RenderFrame, RenderTarget,
-        TileDraw, Viewport,
+        ScreenPoint, TextRun, TileDraw, Viewport,
     };
 
     use super::CpuRenderTarget;
@@ -238,6 +316,34 @@ mod tests {
         target.render(&frame).unwrap();
 
         assert_eq!(target.pixel_rgba8(0, 0), Some([200, 210, 220, 255]));
+    }
+
+    #[test]
+    fn cpu_target_composes_text_overlay_from_the_font_atlas() {
+        let mut target = CpuRenderTarget::new(Viewport::new(5, 7));
+        let text = TextRun::new("C", ScreenPoint::new(0, 0)).with_color([200, 100, 50, 255]);
+        let frame =
+            RenderFrame::new(0, Viewport::new(5, 7)).with_overlay(OverlayPrimitive::Text(text));
+
+        target.render(&frame).unwrap();
+
+        assert_eq!(target.pixel_rgba8(1, 0), Some([200, 100, 50, 255]));
+        assert_eq!(target.pixel_rgba8(0, 0), Some([0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn cpu_target_scales_and_blends_text_overlay_pixels() {
+        let mut target = CpuRenderTarget::new(Viewport::new(10, 14));
+        let text = TextRun::new("C", ScreenPoint::new(0, 0))
+            .with_scale(2)
+            .with_color([200, 100, 50, 128]);
+        let frame =
+            RenderFrame::new(0, Viewport::new(10, 14)).with_overlay(OverlayPrimitive::Text(text));
+
+        target.render(&frame).unwrap();
+
+        assert_eq!(target.pixel_rgba8(2, 0), Some([100, 50, 25, 128]));
+        assert_eq!(target.pixel_rgba8(0, 0), Some([0, 0, 0, 0]));
     }
 
     #[test]

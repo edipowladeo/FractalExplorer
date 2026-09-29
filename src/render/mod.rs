@@ -3,6 +3,9 @@ pub mod device;
 pub mod gpu;
 pub mod graphics;
 
+use crate::geometry::ScreenPoint;
+use std::collections::BTreeMap;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ImageId(u64);
 
@@ -83,6 +86,293 @@ impl UvRect {
         right: 1.0,
         bottom: 1.0,
     };
+}
+
+/// Stable identifier for a glyph in a font atlas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GlyphId(u16);
+
+impl GlyphId {
+    pub const fn new(value: u16) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u16 {
+        self.0
+    }
+}
+
+/// Backend-independent metrics describing one glyph in an atlas.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlyphMetrics {
+    source: UvRect,
+    size: (u32, u32),
+    bearing: (i32, i32),
+    advance: i32,
+}
+
+impl GlyphMetrics {
+    pub const fn new(source: UvRect, size: (u32, u32), bearing: (i32, i32), advance: i32) -> Self {
+        Self {
+            source,
+            size,
+            bearing,
+            advance,
+        }
+    }
+
+    pub const fn source(self) -> UvRect {
+        self.source
+    }
+
+    pub const fn size(self) -> (u32, u32) {
+        self.size
+    }
+
+    pub const fn bearing(self) -> (i32, i32) {
+        self.bearing
+    }
+
+    pub const fn advance(self) -> i32 {
+        self.advance
+    }
+}
+
+/// A backend-independent bitmap font atlas.
+///
+/// The atlas stores one alpha byte per pixel. Backends decide how to upload
+/// and sample those pixels, while layout code only consumes glyph IDs and
+/// metrics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FontAtlas {
+    width: u32,
+    height: u32,
+    line_height: u32,
+    missing_advance: i32,
+    pixels: Vec<u8>,
+    glyphs: BTreeMap<char, (GlyphId, GlyphMetrics)>,
+}
+
+const DEBUG_FONT_CHARACTERS: &[char] = &[
+    'C', '#', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'x', 'y', 'p', 'z', 'o', 'a', 'm',
+    'd', 'e', 't', 'i', 'l', 's', '*', ':', '=', '.', '-', ' ',
+];
+
+impl FontAtlas {
+    /// Builds a tightly packed, fixed-cell atlas from 5x7 bitmap glyphs.
+    pub fn from_bitmap_glyphs(glyphs: &[(char, [u8; 7])]) -> Self {
+        let cell_width = 6usize;
+        let cell_height = 7usize;
+        let atlas_width = glyphs.len().max(1) * cell_width;
+        let height = cell_height;
+        let mut pixels = vec![0; atlas_width * height];
+        let mut entries = BTreeMap::new();
+
+        for (index, &(character, bitmap)) in glyphs.iter().enumerate() {
+            let left = index * cell_width;
+            for (row, bits) in bitmap.iter().enumerate() {
+                for column in 0..5 {
+                    if bits & (1 << (4 - column)) != 0 {
+                        pixels[row * atlas_width + left + column] = 255;
+                    }
+                }
+            }
+
+            let atlas_width = atlas_width as f32;
+            let source = UvRect {
+                left: left as f32 / atlas_width,
+                top: 0.0,
+                right: (left + 5) as f32 / atlas_width,
+                bottom: 1.0,
+            };
+            entries.insert(
+                character,
+                (
+                    GlyphId::new(index as u16),
+                    GlyphMetrics::new(source, (5, 7), (0, 0), cell_width as i32),
+                ),
+            );
+        }
+
+        Self {
+            width: atlas_width as u32,
+            height: height as u32,
+            line_height: cell_height as u32,
+            missing_advance: cell_width as i32,
+            pixels,
+            glyphs: entries,
+        }
+    }
+
+    /// Builds the bitmap font currently used by diagnostic overlays.
+    pub fn debug() -> Self {
+        let glyphs = DEBUG_FONT_CHARACTERS
+            .iter()
+            .filter_map(|&character| {
+                crate::renderer::glyph(character).map(|glyph| (character, glyph))
+            })
+            .collect::<Vec<_>>();
+        Self::from_bitmap_glyphs(&glyphs)
+    }
+
+    pub const fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
+    pub fn glyph(&self, character: char) -> Option<(GlyphId, GlyphMetrics)> {
+        self.glyphs.get(&character).copied()
+    }
+
+    /// Lays out a text run without rasterizing or touching backend resources.
+    pub fn layout(&self, run: &TextRun) -> Vec<GlyphPlacement> {
+        let scale = run.scale().min(i32::MAX as u32) as i32;
+        let line_height = self.line_height.saturating_mul(run.scale());
+        let line_height = line_height.min(i32::MAX as u32) as i32;
+        let missing_advance = self.missing_advance.saturating_mul(scale);
+        let mut pen_x = run.origin().x;
+        let mut pen_y = run.origin().y;
+        let mut placements = Vec::with_capacity(run.text().chars().count());
+
+        for character in run.text().chars() {
+            if character == '\n' {
+                pen_x = run.origin().x;
+                pen_y = pen_y.saturating_add(line_height);
+                continue;
+            }
+
+            let Some((glyph, metrics)) = self.glyph(character) else {
+                pen_x = pen_x.saturating_add(missing_advance);
+                continue;
+            };
+            let (width, height) = metrics.size();
+            let (bearing_x, bearing_y) = metrics.bearing();
+            let destination = Rect::new(
+                pen_x.saturating_add(bearing_x.saturating_mul(scale)),
+                pen_y.saturating_add(bearing_y.saturating_mul(scale)),
+                width.saturating_mul(run.scale()),
+                height.saturating_mul(run.scale()),
+            );
+            placements.push(GlyphPlacement::new(
+                glyph,
+                destination,
+                metrics.source(),
+                run.color(),
+                run.layer(),
+            ));
+            pen_x = pen_x.saturating_add(metrics.advance().saturating_mul(scale));
+        }
+
+        placements
+    }
+}
+
+/// A backend-independent request to lay out one piece of text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextRun {
+    text: String,
+    origin: ScreenPoint,
+    color: [u8; 4],
+    scale: u32,
+    layer: u32,
+}
+
+impl TextRun {
+    pub fn new(text: impl Into<String>, origin: ScreenPoint) -> Self {
+        Self {
+            text: text.into(),
+            origin,
+            color: [255, 255, 255, 255],
+            scale: 1,
+            layer: 0,
+        }
+    }
+
+    pub fn with_color(mut self, color: [u8; 4]) -> Self {
+        self.color = color;
+        self
+    }
+
+    pub fn with_scale(mut self, scale: u32) -> Self {
+        self.scale = scale.max(1);
+        self
+    }
+
+    pub fn with_layer(mut self, layer: u32) -> Self {
+        self.layer = layer;
+        self
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub const fn origin(&self) -> ScreenPoint {
+        self.origin
+    }
+
+    pub const fn color(&self) -> [u8; 4] {
+        self.color
+    }
+
+    pub const fn scale(&self) -> u32 {
+        self.scale
+    }
+
+    pub const fn layer(&self) -> u32 {
+        self.layer
+    }
+}
+
+/// One laid-out glyph ready for a backend to draw.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlyphPlacement {
+    glyph: GlyphId,
+    destination: Rect,
+    source: UvRect,
+    color: [u8; 4],
+    layer: u32,
+}
+
+impl GlyphPlacement {
+    pub const fn new(
+        glyph: GlyphId,
+        destination: Rect,
+        source: UvRect,
+        color: [u8; 4],
+        layer: u32,
+    ) -> Self {
+        Self {
+            glyph,
+            destination,
+            source,
+            color,
+            layer,
+        }
+    }
+
+    pub const fn glyph(self) -> GlyphId {
+        self.glyph
+    }
+
+    pub const fn destination(self) -> Rect {
+        self.destination
+    }
+
+    pub const fn source(self) -> UvRect {
+        self.source
+    }
+
+    pub const fn color(self) -> [u8; 4] {
+        self.color
+    }
+
+    pub const fn layer(self) -> u32 {
+        self.layer
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +505,7 @@ impl TileDraw {
 #[derive(Debug, Clone, PartialEq)]
 pub enum OverlayPrimitive {
     Image(TileDraw),
+    Text(TextRun),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -454,10 +745,12 @@ impl FrameBuilder {
 #[cfg(test)]
 mod tests {
     use super::{
-        FrameBuilder, FrameOutcome, ImageId, ImageRevision, ImageUpdate, PreparedFrame, Rect,
-        RenderCapabilities, RenderError, RenderFrame, RenderTarget, RenderTargetFactory,
-        RenderTargetPipeline, RenderTargetSession, SurfaceFailure, TileDraw, Viewport,
+        FontAtlas, FrameBuilder, FrameOutcome, GlyphId, GlyphMetrics, GlyphPlacement, ImageId,
+        ImageRevision, ImageUpdate, PreparedFrame, Rect, RenderCapabilities, RenderError,
+        RenderFrame, RenderTarget, RenderTargetFactory, RenderTargetPipeline, RenderTargetSession,
+        SurfaceFailure, TextRun, TileDraw, UvRect, Viewport,
     };
+    use crate::geometry::ScreenPoint;
 
     #[derive(Default)]
     struct RecordingTarget {
@@ -697,5 +990,109 @@ mod tests {
         assert_eq!(first.viewport(), Viewport::new(320, 200));
         assert!(first.tiles().is_empty());
         assert_eq!(second.tiles().len(), 1);
+    }
+
+    #[test]
+    fn text_run_keeps_backend_independent_layout_configuration() {
+        let run = TextRun::new("FPS: 60", ScreenPoint::new(4, 8))
+            .with_color([10, 20, 30, 255])
+            .with_scale(2)
+            .with_layer(7);
+
+        assert_eq!(run.text(), "FPS: 60");
+        assert_eq!(run.origin(), ScreenPoint::new(4, 8));
+        assert_eq!(run.color(), [10, 20, 30, 255]);
+        assert_eq!(run.scale(), 2);
+        assert_eq!(run.layer(), 7);
+    }
+
+    #[test]
+    fn glyph_contract_keeps_metrics_and_placement_separate() {
+        let source = UvRect {
+            left: 0.1,
+            top: 0.2,
+            right: 0.3,
+            bottom: 0.4,
+        };
+        let metrics = GlyphMetrics::new(source, (5, 7), (1, -2), 6);
+        let placement = GlyphPlacement::new(
+            GlyphId::new(12),
+            Rect::new(4, 8, 5, 7),
+            source,
+            [255, 255, 255, 255],
+            7,
+        );
+
+        assert_eq!(GlyphId::new(12).value(), 12);
+        assert_eq!(metrics.source(), source);
+        assert_eq!(metrics.size(), (5, 7));
+        assert_eq!(metrics.bearing(), (1, -2));
+        assert_eq!(metrics.advance(), 6);
+        assert_eq!(placement.glyph(), GlyphId::new(12));
+        assert_eq!(placement.destination(), Rect::new(4, 8, 5, 7));
+        assert_eq!(placement.source(), source);
+        assert_eq!(placement.color(), [255, 255, 255, 255]);
+        assert_eq!(placement.layer(), 7);
+    }
+
+    #[test]
+    fn font_atlas_lays_out_bitmap_glyphs_and_exposes_metrics() {
+        let atlas = FontAtlas::from_bitmap_glyphs(&[
+            ('A', [0b01110, 0b10001, 0b11111, 0b10001, 0b10001, 0, 0]),
+            ('B', [0b11110, 0b10001, 0b11110, 0b10001, 0b11110, 0, 0]),
+        ]);
+
+        assert_eq!(atlas.dimensions(), (12, 7));
+        assert_eq!(atlas.pixels().len(), 12 * 7);
+
+        let (a_id, a_metrics) = atlas.glyph('A').expect("A must be in the atlas");
+        let (b_id, b_metrics) = atlas.glyph('B').expect("B must be in the atlas");
+        assert_eq!(a_id, GlyphId::new(0));
+        assert_eq!(b_id, GlyphId::new(1));
+        assert_eq!(a_metrics.size(), (5, 7));
+        assert_eq!(a_metrics.advance(), 6);
+        assert_eq!(a_metrics.source().left, 0.0);
+        assert_eq!(a_metrics.source().right, 5.0 / 12.0);
+        assert_eq!(b_metrics.source().left, 6.0 / 12.0);
+        assert_eq!(atlas.pixels()[1], 255);
+        assert_eq!(atlas.pixels()[5], 0);
+        assert!(atlas.glyph('?').is_none());
+    }
+
+    #[test]
+    fn debug_font_atlas_contains_overlay_characters() {
+        let atlas = FontAtlas::debug();
+
+        assert!(atlas.glyph('0').is_some());
+        assert!(atlas.glyph(':').is_some());
+        assert!(atlas.glyph(' ').is_some());
+        assert!(atlas.glyph('A').is_none());
+    }
+
+    #[test]
+    fn text_layout_emits_scaled_placements_and_skips_unknown_pixels() {
+        let atlas = FontAtlas::from_bitmap_glyphs(&[
+            ('A', [0b01110, 0b10001, 0b11111, 0b10001, 0b10001, 0, 0]),
+            ('B', [0b11110, 0b10001, 0b11110, 0b10001, 0b11110, 0, 0]),
+        ]);
+        let run = TextRun::new("A?B\nA", ScreenPoint::new(10, 20))
+            .with_color([10, 20, 30, 255])
+            .with_scale(2)
+            .with_layer(9);
+
+        let placements = atlas.layout(&run);
+
+        assert_eq!(placements.len(), 3);
+        assert_eq!(placements[0].glyph(), GlyphId::new(0));
+        assert_eq!(placements[0].destination(), Rect::new(10, 20, 10, 14));
+        assert_eq!(placements[1].glyph(), GlyphId::new(1));
+        assert_eq!(placements[1].destination(), Rect::new(34, 20, 10, 14));
+        assert_eq!(placements[2].glyph(), GlyphId::new(0));
+        assert_eq!(placements[2].destination(), Rect::new(10, 34, 10, 14));
+        assert!(
+            placements
+                .iter()
+                .all(|placement| placement.color() == [10, 20, 30, 255] && placement.layer() == 9)
+        );
     }
 }
