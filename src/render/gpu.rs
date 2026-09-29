@@ -126,6 +126,24 @@ impl<D: GraphicsDevice> RenderTarget for GpuRenderTarget<D> {
             }))
         {
             let Some(texture) = self.textures.handle(tile.image()) else {
+                let resource_kind = if frame
+                    .tiles()
+                    .iter()
+                    .any(|candidate| candidate.image() == tile.image())
+                {
+                    "tile"
+                } else {
+                    "image_overlay"
+                };
+                crate::print_local!(
+                    "GPU frame rejeitado: frame_id={} unknown_image={} kind={} revision={} tiles={} overlays={}",
+                    frame.frame_id(),
+                    tile.image().value(),
+                    resource_kind,
+                    tile.revision().value(),
+                    frame.tiles().len(),
+                    frame.overlays().len(),
+                );
                 return Err(RenderError::InvalidFrame(
                     "frame references an unknown image",
                 ));
