@@ -17,7 +17,7 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ## TODO
 
-### T029 — checkpoint atual do passo 6
+### T029 — checkpoint atual do passo 7
 
 - O `GpuWindowApp` agora compartilha contexto/superfície WGPU com
   `WgpuGraphicsDevice` e submete `PreparedFrame` via `RenderTargetSession`;
@@ -28,28 +28,27 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   criação/submissão mantêm o cache anterior consistente. Cobertura de overlay
   inclui `reduced_viewport` mesmo com overlays globais desligados; o texto de
   workers, fila, camadas e frames usa âncoras CPU na composição comum.
-- Verificações: `cargo test --lib -- --test-threads=1` (197 passaram),
+- Verificações: `cargo test --lib -- --test-threads=1` (198 passaram),
   `cargo check --bin sprite-demo`, `cargo fmt -- --check` e `git diff --check`.
 - Validação HITL de inicialização/renderização executada em 2026-09-29:
   `cargo run --bin sprite-demo` iniciou sem erro, selecionou `Gl / Intel(R) HD
   Graphics 2500 (IntegratedGpu)` em modo `Immediate` e produziu o primeiro
   frame (`Frame #1`, dump por `slow_frame`). O aviso de carregamento do
   PSReadline pertence ao console PowerShell e não ao projeto.
-- O log ainda mostra avisos Rust para `uses_persistent_composition` e eventos
-  de telemetria do compositor legado não consumidos. Eles serão tratados na
-  remoção do caminho legado e na telemetria detalhada dos Passos 6–7; não
-  impediram o smoke test. A validação visual de resize, pan/zoom, overlays,
-  envelope e fechamento ainda precisa ser confirmada pelo usuário.
-- O passo 6 segue em andamento e T029 não deve ser marcado como DONE.
+- HITL adicional confirmado pelo usuário em 2026-09-29: resize, pan/zoom,
+  overlays, envelope e fechamento foram considerados OK. O Passo 6 está
+  funcionalmente concluído; a remoção estrutural do caminho legado permanece
+  no Passo 7 e não reabre este gate.
 - **Passo 6 — erros e telemetria do destino comum:** `WgpuContext` agora
   retorna `WgpuContextError` tipado em inicialização, criação de surface e
   `poll`, preservando operação e causa textual. `WgpuGraphicsDevice` expõe
   métricas de aquisição, composição, codificação, apresentação e `poll` para o
   runtime comum, sem reativar o compositor legado. RED/GREEN cobriu o contrato
   de erro; a suíte completa passou com 197 testes, além de `cargo check --bin
-  sprite-demo`, `cargo fmt --all` e `git diff --check`. O próximo gate HITL só
-  é necessário quando a remoção estrutural dos tipos legados ou a recuperação/
-  seleção de fallback alterar o comportamento visual/runtime.
+  sprite-demo`, `cargo fmt --all` e `git diff --check`. Com o HITL confirmado,
+  o próximo gate manual só será necessário se a remoção estrutural dos tipos
+  legados ou a recuperação/seleção de fallback alterar o comportamento
+  visual/runtime.
 - **Passo 7 — vértices desacoplados:** a conversão do `CommandList` agora usa
   `TileVertexRect`, sem fabricar `TileDrawCommand`/`TextureKey` para calcular
   vértices. RED/GREEN cobriu posição, tamanho e opacidade; a suíte completa
