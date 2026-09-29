@@ -56,7 +56,7 @@ pub enum DeviceError {
     UnsupportedCommand,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     WriteBuffer {
         buffer: BufferHandle,
@@ -77,10 +77,19 @@ pub enum Command {
         height: u32,
         opacity_bits: u32,
     },
+    DrawText {
+        texture: TextureHandle,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        source: crate::render::UvRect,
+        opacity_bits: u32,
+    },
     Present,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct CommandList {
     commands: Vec<Command>,
 }
@@ -128,6 +137,24 @@ impl CommandList {
             y,
             width,
             height,
+            opacity_bits: opacity.to_bits(),
+        });
+    }
+
+    pub fn draw_text(
+        &mut self,
+        texture: TextureHandle,
+        destination: crate::render::Rect,
+        source: crate::render::UvRect,
+        opacity: f32,
+    ) {
+        self.commands.push(Command::DrawText {
+            texture,
+            x: destination.x,
+            y: destination.y,
+            width: destination.width,
+            height: destination.height,
+            source,
             opacity_bits: opacity.to_bits(),
         });
     }
@@ -353,6 +380,21 @@ impl GraphicsDevice for MockGraphicsDevice {
                     }
                 }
                 Command::DrawTexture {
+                    texture,
+                    width,
+                    height,
+                    opacity_bits,
+                    ..
+                } => {
+                    if !self.textures.contains_key(texture)
+                        || *width == 0
+                        || *height == 0
+                        || !(0.0..=1.0).contains(&f32::from_bits(*opacity_bits))
+                    {
+                        return Err(DeviceError::InvalidResource);
+                    }
+                }
+                Command::DrawText {
                     texture,
                     width,
                     height,
