@@ -37,7 +37,10 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   `encode_frame` legado foram retirados do adaptador público; os reexports de
   compatibilidade correspondentes também foram eliminados. A composição ativa
   continua concentrada em `WgpuGraphicsDevice` e `RenderTargetSession`.
-- Verificações: `cargo test --lib -- --test-threads=1` (192 passaram),
+- Os conversores de vértices baseados em `TileDrawCommand` também foram
+  removidos; o adaptador mantém somente a conversão neutra por
+  `TileVertexRect`, usada pelo caminho comum.
+- Verificações: `cargo test --lib -- --test-threads=1` (191 passaram),
   `cargo check --bin sprite-demo`, `cargo fmt -- --check` e `git diff --check`.
 - Validação HITL de inicialização/renderização executada em 2026-09-29:
   `cargo run --bin sprite-demo` iniciou sem erro, selecionou `Gl / Intel(R) HD
