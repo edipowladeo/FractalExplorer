@@ -351,12 +351,9 @@ RED/GREEN.
 - Integrar o envelope e o timing overlay ao modelo comum de imagens/revisões.
 - Manter instrumentação nas fronteiras lógicas e permitir métricas extras do
   adaptador.
-- Garantir que CPU e GPU consumam o mesmo `OverlayPrimitive` para envelope,
-  texto e ferramentas de debug. Alterações nessas ferramentas devem passar
-  pelo caminho comum de configuração/frame, sem depender do backend escolhido.
-- Preservar a equivalência funcional entre os destinos para posições,
-  conteúdos, overlays e ferramentas de debug; o renderer CPU será o fallback
-  para máquinas sem suporte aos recursos GPU.
+- A decisão sobre a representação final de envelope e overlays entre o caminho
+  legado e o contrato comum permanece aberta; fechá-la antes da remoção do
+  caminho legado no Passo 7.
 
 **Teste RED principal:** frames sem mudança não criam nem enviam texturas ou
 buffers; mudança de posição atualiza somente instâncias; mudança de imagem
@@ -401,8 +398,9 @@ não devem ser simulados além do que o mock consegue afirmar.
 - Preservar o renderer CPU como fallback de inicialização para máquinas sem os
   recursos GPU, por meio da seleção de `RenderTarget`; nunca executar os dois
   caminhos para o mesmo frame ou conteúdo.
-- Fazer overlays, ferramentas de debug e suas alterações passarem pelo modelo
-  comum, sem duplicar essa lógica nos adaptadores.
+- Resolver a paridade de overlays, ferramentas de debug, posições, conteúdos e
+  alterações de configuração conforme a decisão registrada em
+  `revisao-idependente-26-09-28/open-questions.md`.
 
 **Gate arquitetural:** busca estática e testes impedem imports de `wgpu`,
 `winit` ou `minifb` em `app_core`, `orchestrator` e contratos de renderização.
