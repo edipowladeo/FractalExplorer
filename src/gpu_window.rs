@@ -4,7 +4,8 @@ use crate::app::{
 };
 use crate::geometry::ScreenPoint;
 use crate::gpu::{
-    debug_overlay_upload_with_rectangles, PreparedTileBatch, TextureCache, TextureUpload,
+    debug_overlay_upload_with_rectangles, PreparedTileBatch, TextureCache, TextureKey,
+    TextureUpload,
 };
 use crate::input::{InputEvent, ZoomDirection};
 use crate::render::gpu::GpuRenderTarget;
@@ -96,15 +97,24 @@ fn append_image_overlay(
 ) -> Result<PreparedFrame, crate::render::ImageUpdateError> {
     let revision = ImageRevision::new(upload.key.content_hash);
     let update = ImageUpdate::new(image, revision, upload.width, upload.height, upload.rgba8)?;
-    let frame = prepared
+    let frame = append_image_overlay_reference(prepared, image, revision, destination);
+    let mut updates = prepared.image_updates().to_vec();
+    updates.push(update);
+    Ok(PreparedFrame::new(frame, updates))
+}
+
+fn append_image_overlay_reference(
+    prepared: &PreparedFrame,
+    image: ImageId,
+    revision: ImageRevision,
+    destination: Rect,
+) -> crate::render::RenderFrame {
+    prepared
         .frame()
         .clone()
         .with_overlay(OverlayPrimitive::Image(
             TileDraw::new(image, revision, 0).with_destination(destination),
-        ));
-    let mut updates = prepared.image_updates().to_vec();
-    updates.push(update);
-    Ok(PreparedFrame::new(frame, updates))
+        ))
 }
 
 fn append_text_overlay_line(
@@ -205,8 +215,23 @@ pub struct GpuAppState {
     pub frame_timing_ring: VecDeque<(u64, Duration)>,
     allocation_bounds: (i32, i32, i32, i32),
     deallocation_bounds: (i32, i32, i32, i32),
+    cached_envelope: Option<CachedEnvelope>,
     cursor: crate::geometry::ScreenPoint,
     left_button_down: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EnvelopeGeometry {
+    width: u32,
+    height: u32,
+    allocation_bounds: (i32, i32, i32, i32),
+    deallocation_bounds: (i32, i32, i32, i32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CachedEnvelope {
+    geometry: EnvelopeGeometry,
+    texture: TextureKey,
 }
 
 impl GpuAppState {
@@ -236,6 +261,7 @@ impl GpuAppState {
             frame_timing_ring: VecDeque::with_capacity(GPU_FRAME_HISTORY_CAPACITY),
             allocation_bounds,
             deallocation_bounds,
+            cached_envelope: None,
             cursor: crate::geometry::ScreenPoint::new(0, 0),
             left_button_down: false,
         }
@@ -246,6 +272,7 @@ impl GpuAppState {
         self.config.height = viewport.height().max(1) as usize;
         self.prepared_batch = None;
         self.prepared_frame = None;
+        self.cached_envelope = None;
     }
 
     pub fn apply_config(
@@ -461,18 +488,41 @@ impl GpuAppState {
 
         if show_envelope {
             let envelope_started = Instant::now();
+            let geometry = EnvelopeGeometry {
+                width,
+                height,
+                allocation_bounds: self.allocation_bounds,
+                deallocation_bounds: self.deallocation_bounds,
+            };
             let rectangles = [
                 (self.allocation_bounds, [255, 0, 0, 255]),
                 (self.deallocation_bounds, [255, 255, 0, 255]),
             ];
-            let upload = debug_overlay_upload_with_rectangles("", width, height, &rectangles);
-            if let Ok(with_envelope) = append_image_overlay(
-                &prepared,
-                GPU_ENVELOPE_IMAGE_ID,
-                upload,
-                Rect::new(0, 0, width, height),
-            ) {
-                prepared = with_envelope;
+            let destination = Rect::new(0, 0, width, height);
+            if let Some(cached) = self
+                .cached_envelope
+                .filter(|cached| cached.geometry == geometry)
+            {
+                let frame = append_image_overlay_reference(
+                    &prepared,
+                    GPU_ENVELOPE_IMAGE_ID,
+                    ImageRevision::new(cached.texture.content_hash),
+                    destination,
+                );
+                prepared = PreparedFrame::new(frame, prepared.image_updates().to_vec());
+            } else {
+                let upload =
+                    debug_overlay_upload_with_rectangles("", width, height, &rectangles);
+                let texture = upload.key;
+                if let Ok(with_envelope) = append_image_overlay(
+                    &prepared,
+                    GPU_ENVELOPE_IMAGE_ID,
+                    upload,
+                    destination,
+                ) {
+                    prepared = with_envelope;
+                    self.cached_envelope = Some(CachedEnvelope { geometry, texture });
+                }
             }
             self.canvas.record_frame_event(
                 crate::orchestrator::FrameEventKind::GpuEnvelopeOverlayFinished,
@@ -1475,7 +1525,7 @@ mod tests {
     }
 
     #[test]
-    fn reduced_viewport_keeps_its_envelope_in_the_common_frame() {
+    fn reduced_viewport_can_hide_its_envelope_in_the_common_frame() {
         let canvas = crate::TiledInfiniteCanvas::new(
             crate::geometry::ComplexPoint::new(-2.0, 1.0),
             8,
@@ -1500,12 +1550,59 @@ mod tests {
 
         let prepared = state.append_debug_overlays(base);
 
-        assert_eq!(prepared.frame().overlays().len(), 1);
-        assert_eq!(prepared.image_updates().len(), 1);
-        let crate::render::OverlayPrimitive::Image(envelope) = &prepared.frame().overlays()[0] else {
-            panic!("expected image overlay");
-        };
-        assert_eq!(envelope.image(), ImageId::new(u64::MAX - 1));
+        assert!(prepared.frame().overlays().is_empty());
+        assert!(prepared.image_updates().is_empty());
+    }
+
+    #[test]
+    fn allocation_envelope_reuses_its_upload_when_geometry_is_unchanged() {
+        let canvas = crate::TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-2.0, 1.0),
+            8,
+            8,
+            0.01,
+            ScreenPoint::new(0, 0),
+            8.0,
+            0.5,
+        );
+        let orchestrator = crate::Orchestrator::with_worker_count(crate::Mandelbrot::new(32), 1);
+        let mut config = crate::config::RendererConfig::default();
+        config.width = 8;
+        config.height = 8;
+        config.debug.show_allocation_envelope = true;
+        config.debug.text_overlay_global = true;
+        config.debug.text_overlay_workers = false;
+        config.debug.text_overlay_layers = false;
+        config.debug.text_overlay_queue = false;
+        config.debug.text_overlay_frames = false;
+        let mut state = super::GpuAppState::new(canvas, orchestrator, config);
+        let first = crate::render::PreparedFrame::new(
+            crate::render::RenderFrame::new(8, Viewport::new(8, 8)),
+            Vec::new(),
+        );
+        let second = crate::render::PreparedFrame::new(
+            crate::render::RenderFrame::new(9, Viewport::new(8, 8)),
+            Vec::new(),
+        );
+
+        let first = state.append_debug_overlays(first);
+        let second = state.append_debug_overlays(second);
+
+        assert_eq!(first.frame().overlays().len(), 1);
+        assert_eq!(first.image_updates().len(), 1);
+        assert_eq!(second.frame().overlays().len(), 1);
+        assert!(second.image_updates().is_empty());
+
+        state.resize_viewport(Viewport::new(10, 8));
+        state.refresh_allocation_bounds();
+        let resized = crate::render::PreparedFrame::new(
+            crate::render::RenderFrame::new(10, Viewport::new(10, 8)),
+            Vec::new(),
+        );
+        let resized = state.append_debug_overlays(resized);
+
+        assert_eq!(resized.frame().overlays().len(), 1);
+        assert_eq!(resized.image_updates().len(), 1);
     }
 
     #[test]
