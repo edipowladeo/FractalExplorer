@@ -23,6 +23,13 @@ tamanho ou o conjunto de glifos mudar.
 
 ### A. Atlas de glifos persistente + comandos de texto (recomendada)
 
+Nota de desempenho: o overlay de retângulo de envelope de alocação está
+extremamente lento no caminho GPU; a geração do bitmap pode consumir dezenas
+ou centenas de milissegundos por frame. Ele precisa ser otimizado
+separadamente. `show_allocation_envelope` controla sua visibilidade
+independentemente de `reduced_viewport`, que continua apenas alterando a área
+de trabalho.
+
 Manter no renderer uma textura atlas com os glifos da fonte bitmap usada hoje.
 O overlay passa apenas uma lista de caracteres/glifos, posição, cor, escala e
 camada. Um buffer de instâncias ou vértices referencia regiões do atlas. O
