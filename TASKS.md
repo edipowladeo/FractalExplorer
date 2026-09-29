@@ -41,6 +41,15 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
   impediram o smoke test. A validação visual de resize, pan/zoom, overlays,
   envelope e fechamento ainda precisa ser confirmada pelo usuário.
 - O passo 6 segue em andamento e T029 não deve ser marcado como DONE.
+- **Passo 6 — erros e telemetria do destino comum:** `WgpuContext` agora
+  retorna `WgpuContextError` tipado em inicialização, criação de surface e
+  `poll`, preservando operação e causa textual. `WgpuGraphicsDevice` expõe
+  métricas de aquisição, composição, codificação, apresentação e `poll` para o
+  runtime comum, sem reativar o compositor legado. RED/GREEN cobriu o contrato
+  de erro; a suíte completa passou com 197 testes, além de `cargo check --bin
+  sprite-demo`, `cargo fmt --all` e `git diff --check`. O próximo gate HITL só
+  é necessário quando a remoção estrutural dos tipos legados ou a recuperação/
+  seleção de fallback alterar o comportamento visual/runtime.
 
 ### T029 — Renderização modular com destinos plugáveis
 
