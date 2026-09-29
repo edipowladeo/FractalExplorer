@@ -147,13 +147,15 @@ impl GlyphMetrics {
 pub struct FontAtlas {
     width: u32,
     height: u32,
+    line_height: u32,
+    missing_advance: i32,
     pixels: Vec<u8>,
     glyphs: BTreeMap<char, (GlyphId, GlyphMetrics)>,
 }
 
 const DEBUG_FONT_CHARACTERS: &[char] = &[
-    'C', '#', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'x', 'y', 'p', 'z', 'o', 'a',
-    'm', 'd', 'e', 't', 'i', 'l', 's', '*', ':', '=', '.', '-', ' ',
+    'C', '#', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'x', 'y', 'p', 'z', 'o', 'a', 'm',
+    'd', 'e', 't', 'i', 'l', 's', '*', ':', '=', '.', '-', ' ',
 ];
 
 impl FontAtlas {
@@ -195,6 +197,8 @@ impl FontAtlas {
         Self {
             width: atlas_width as u32,
             height: height as u32,
+            line_height: cell_height as u32,
+            missing_advance: cell_width as i32,
             pixels,
             glyphs: entries,
         }
@@ -204,7 +208,9 @@ impl FontAtlas {
     pub fn debug() -> Self {
         let glyphs = DEBUG_FONT_CHARACTERS
             .iter()
-            .filter_map(|&character| crate::renderer::glyph(character).map(|glyph| (character, glyph)))
+            .filter_map(|&character| {
+                crate::renderer::glyph(character).map(|glyph| (character, glyph))
+            })
             .collect::<Vec<_>>();
         Self::from_bitmap_glyphs(&glyphs)
     }
@@ -219,6 +225,48 @@ impl FontAtlas {
 
     pub fn glyph(&self, character: char) -> Option<(GlyphId, GlyphMetrics)> {
         self.glyphs.get(&character).copied()
+    }
+
+    /// Lays out a text run without rasterizing or touching backend resources.
+    pub fn layout(&self, run: &TextRun) -> Vec<GlyphPlacement> {
+        let scale = run.scale().min(i32::MAX as u32) as i32;
+        let line_height = self.line_height.saturating_mul(run.scale());
+        let line_height = line_height.min(i32::MAX as u32) as i32;
+        let missing_advance = self.missing_advance.saturating_mul(scale);
+        let mut pen_x = run.origin().x;
+        let mut pen_y = run.origin().y;
+        let mut placements = Vec::with_capacity(run.text().chars().count());
+
+        for character in run.text().chars() {
+            if character == '\n' {
+                pen_x = run.origin().x;
+                pen_y = pen_y.saturating_add(line_height);
+                continue;
+            }
+
+            let Some((glyph, metrics)) = self.glyph(character) else {
+                pen_x = pen_x.saturating_add(missing_advance);
+                continue;
+            };
+            let (width, height) = metrics.size();
+            let (bearing_x, bearing_y) = metrics.bearing();
+            let destination = Rect::new(
+                pen_x.saturating_add(bearing_x.saturating_mul(scale)),
+                pen_y.saturating_add(bearing_y.saturating_mul(scale)),
+                width.saturating_mul(run.scale()),
+                height.saturating_mul(run.scale()),
+            );
+            placements.push(GlyphPlacement::new(
+                glyph,
+                destination,
+                metrics.source(),
+                run.color(),
+                run.layer(),
+            ));
+            pen_x = pen_x.saturating_add(metrics.advance().saturating_mul(scale));
+        }
+
+        placements
     }
 }
 
@@ -1018,5 +1066,32 @@ mod tests {
         assert!(atlas.glyph(':').is_some());
         assert!(atlas.glyph(' ').is_some());
         assert!(atlas.glyph('A').is_none());
+    }
+
+    #[test]
+    fn text_layout_emits_scaled_placements_and_skips_unknown_pixels() {
+        let atlas = FontAtlas::from_bitmap_glyphs(&[
+            ('A', [0b01110, 0b10001, 0b11111, 0b10001, 0b10001, 0, 0]),
+            ('B', [0b11110, 0b10001, 0b11110, 0b10001, 0b11110, 0, 0]),
+        ]);
+        let run = TextRun::new("A?B\nA", ScreenPoint::new(10, 20))
+            .with_color([10, 20, 30, 255])
+            .with_scale(2)
+            .with_layer(9);
+
+        let placements = atlas.layout(&run);
+
+        assert_eq!(placements.len(), 3);
+        assert_eq!(placements[0].glyph(), GlyphId::new(0));
+        assert_eq!(placements[0].destination(), Rect::new(10, 20, 10, 14));
+        assert_eq!(placements[1].glyph(), GlyphId::new(1));
+        assert_eq!(placements[1].destination(), Rect::new(34, 20, 10, 14));
+        assert_eq!(placements[2].glyph(), GlyphId::new(0));
+        assert_eq!(placements[2].destination(), Rect::new(10, 34, 10, 14));
+        assert!(
+            placements
+                .iter()
+                .all(|placement| placement.color() == [10, 20, 30, 255] && placement.layer() == 9)
+        );
     }
 }
