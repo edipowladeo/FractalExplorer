@@ -275,6 +275,13 @@ impl GpuAppState {
         self.cached_envelope = None;
     }
 
+    fn invalidate_gpu_resources(&mut self) {
+        self.texture_cache = TextureCache::default();
+        self.prepared_batch = None;
+        self.prepared_frame = None;
+        self.cached_envelope = None;
+    }
+
     pub fn apply_config(
         &mut self,
         next_config: crate::config::RendererConfig,
@@ -974,6 +981,9 @@ impl ApplicationHandler for GpuWindowApp {
                             crate::print_local!(
                                 "Falha ao submeter frame pelo destino GPU: {error:?}"
                             );
+                            if let Some(state) = &mut self.state {
+                                state.invalidate_gpu_resources();
+                            }
                         }
                     }
                     return;
@@ -1650,6 +1660,42 @@ mod tests {
         let restored = state.append_debug_overlays(restored);
         assert_eq!(restored.frame().overlays().len(), 1);
         assert_eq!(restored.image_updates().len(), 1);
+    }
+
+    #[test]
+    fn invalidating_gpu_resources_forces_the_next_envelope_upload() {
+        let canvas = crate::TiledInfiniteCanvas::new(
+            crate::geometry::ComplexPoint::new(-2.0, 1.0),
+            8,
+            8,
+            0.01,
+            ScreenPoint::new(0, 0),
+            8.0,
+            0.5,
+        );
+        let orchestrator = crate::Orchestrator::with_worker_count(crate::Mandelbrot::new(32), 1);
+        let mut config = crate::config::RendererConfig::default();
+        config.width = 8;
+        config.height = 8;
+        config.debug.show_allocation_envelope = true;
+        config.debug.text_overlay_workers = false;
+        config.debug.text_overlay_layers = false;
+        config.debug.text_overlay_queue = false;
+        config.debug.text_overlay_frames = false;
+        let mut state = super::GpuAppState::new(canvas, orchestrator, config);
+        let first = crate::render::PreparedFrame::new(
+            crate::render::RenderFrame::new(8, Viewport::new(8, 8)),
+            Vec::new(),
+        );
+        assert_eq!(state.append_debug_overlays(first).image_updates().len(), 1);
+
+        state.invalidate_gpu_resources();
+
+        let next = crate::render::PreparedFrame::new(
+            crate::render::RenderFrame::new(9, Viewport::new(8, 8)),
+            Vec::new(),
+        );
+        assert_eq!(state.append_debug_overlays(next).image_updates().len(), 1);
     }
 
     #[test]
