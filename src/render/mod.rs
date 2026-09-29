@@ -4,6 +4,7 @@ pub mod gpu;
 pub mod graphics;
 
 use crate::geometry::ScreenPoint;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ImageId(u64);
@@ -134,6 +135,90 @@ impl GlyphMetrics {
 
     pub const fn advance(self) -> i32 {
         self.advance
+    }
+}
+
+/// A backend-independent bitmap font atlas.
+///
+/// The atlas stores one alpha byte per pixel. Backends decide how to upload
+/// and sample those pixels, while layout code only consumes glyph IDs and
+/// metrics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FontAtlas {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+    glyphs: BTreeMap<char, (GlyphId, GlyphMetrics)>,
+}
+
+const DEBUG_FONT_CHARACTERS: &[char] = &[
+    'C', '#', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'x', 'y', 'p', 'z', 'o', 'a',
+    'm', 'd', 'e', 't', 'i', 'l', 's', '*', ':', '=', '.', '-', ' ',
+];
+
+impl FontAtlas {
+    /// Builds a tightly packed, fixed-cell atlas from 5x7 bitmap glyphs.
+    pub fn from_bitmap_glyphs(glyphs: &[(char, [u8; 7])]) -> Self {
+        let cell_width = 6usize;
+        let cell_height = 7usize;
+        let atlas_width = glyphs.len().max(1) * cell_width;
+        let height = cell_height;
+        let mut pixels = vec![0; atlas_width * height];
+        let mut entries = BTreeMap::new();
+
+        for (index, &(character, bitmap)) in glyphs.iter().enumerate() {
+            let left = index * cell_width;
+            for (row, bits) in bitmap.iter().enumerate() {
+                for column in 0..5 {
+                    if bits & (1 << (4 - column)) != 0 {
+                        pixels[row * atlas_width + left + column] = 255;
+                    }
+                }
+            }
+
+            let atlas_width = atlas_width as f32;
+            let source = UvRect {
+                left: left as f32 / atlas_width,
+                top: 0.0,
+                right: (left + 5) as f32 / atlas_width,
+                bottom: 1.0,
+            };
+            entries.insert(
+                character,
+                (
+                    GlyphId::new(index as u16),
+                    GlyphMetrics::new(source, (5, 7), (0, 0), cell_width as i32),
+                ),
+            );
+        }
+
+        Self {
+            width: atlas_width as u32,
+            height: height as u32,
+            pixels,
+            glyphs: entries,
+        }
+    }
+
+    /// Builds the bitmap font currently used by diagnostic overlays.
+    pub fn debug() -> Self {
+        let glyphs = DEBUG_FONT_CHARACTERS
+            .iter()
+            .filter_map(|&character| crate::renderer::glyph(character).map(|glyph| (character, glyph)))
+            .collect::<Vec<_>>();
+        Self::from_bitmap_glyphs(&glyphs)
+    }
+
+    pub const fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
+    pub fn glyph(&self, character: char) -> Option<(GlyphId, GlyphMetrics)> {
+        self.glyphs.get(&character).copied()
     }
 }
 
@@ -611,9 +696,9 @@ impl FrameBuilder {
 #[cfg(test)]
 mod tests {
     use super::{
-        FrameBuilder, FrameOutcome, GlyphId, GlyphMetrics, GlyphPlacement, ImageId, ImageRevision,
-        ImageUpdate, PreparedFrame, Rect, RenderCapabilities, RenderError, RenderFrame,
-        RenderTarget, RenderTargetFactory, RenderTargetPipeline, RenderTargetSession,
+        FontAtlas, FrameBuilder, FrameOutcome, GlyphId, GlyphMetrics, GlyphPlacement, ImageId,
+        ImageRevision, ImageUpdate, PreparedFrame, Rect, RenderCapabilities, RenderError,
+        RenderFrame, RenderTarget, RenderTargetFactory, RenderTargetPipeline, RenderTargetSession,
         SurfaceFailure, TextRun, TileDraw, UvRect, Viewport,
     };
     use crate::geometry::ScreenPoint;
@@ -899,5 +984,39 @@ mod tests {
         assert_eq!(placement.source(), source);
         assert_eq!(placement.color(), [255, 255, 255, 255]);
         assert_eq!(placement.layer(), 7);
+    }
+
+    #[test]
+    fn font_atlas_lays_out_bitmap_glyphs_and_exposes_metrics() {
+        let atlas = FontAtlas::from_bitmap_glyphs(&[
+            ('A', [0b01110, 0b10001, 0b11111, 0b10001, 0b10001, 0, 0]),
+            ('B', [0b11110, 0b10001, 0b11110, 0b10001, 0b11110, 0, 0]),
+        ]);
+
+        assert_eq!(atlas.dimensions(), (12, 7));
+        assert_eq!(atlas.pixels().len(), 12 * 7);
+
+        let (a_id, a_metrics) = atlas.glyph('A').expect("A must be in the atlas");
+        let (b_id, b_metrics) = atlas.glyph('B').expect("B must be in the atlas");
+        assert_eq!(a_id, GlyphId::new(0));
+        assert_eq!(b_id, GlyphId::new(1));
+        assert_eq!(a_metrics.size(), (5, 7));
+        assert_eq!(a_metrics.advance(), 6);
+        assert_eq!(a_metrics.source().left, 0.0);
+        assert_eq!(a_metrics.source().right, 5.0 / 12.0);
+        assert_eq!(b_metrics.source().left, 6.0 / 12.0);
+        assert_eq!(atlas.pixels()[1], 255);
+        assert_eq!(atlas.pixels()[5], 0);
+        assert!(atlas.glyph('?').is_none());
+    }
+
+    #[test]
+    fn debug_font_atlas_contains_overlay_characters() {
+        let atlas = FontAtlas::debug();
+
+        assert!(atlas.glyph('0').is_some());
+        assert!(atlas.glyph(':').is_some());
+        assert!(atlas.glyph(' ').is_some());
+        assert!(atlas.glyph('A').is_none());
     }
 }
