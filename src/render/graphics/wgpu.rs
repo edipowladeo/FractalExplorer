@@ -1,7 +1,6 @@
 //! `wgpu` implementation of the portable graphics-device resource contract.
 
 use crate::config::GpuBackend;
-use crate::gpu::TileDrawCommand;
 use crate::render::device::{
     BufferDescriptor, BufferHandle, BufferUsage, Command, CommandList, DeviceError, GraphicsDevice,
     TextureDescriptor, TextureFormat, TextureHandle,
@@ -141,33 +140,6 @@ fn tile_vertices_for_rect(
             opacity: rect.opacity,
         },
     ]
-}
-
-pub fn tile_vertices_for_screen(
-    command: TileDrawCommand,
-    screen_width: u32,
-    screen_height: u32,
-) -> [TileVertex; 6] {
-    tile_vertices_for_rect(
-        TileVertexRect {
-            position: command.position,
-            size: command.size,
-            opacity: 1.0,
-        },
-        screen_width,
-        screen_height,
-    )
-}
-
-pub fn tile_vertices_for_commands(
-    commands: &[TileDrawCommand],
-    screen_width: u32,
-    screen_height: u32,
-) -> Vec<TileVertex> {
-    commands
-        .iter()
-        .flat_map(|command| tile_vertices_for_screen(*command, screen_width, screen_height))
-        .collect()
 }
 
 pub fn tile_vertices_for_rects(

@@ -7,9 +7,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub use crate::render::graphics::wgpu::{
-    create_tile_quad, tile_quad_vertices, tile_vertices_for_commands, tile_vertices_for_screen,
-    TileVertex, WgpuContext as GpuContext, TILE_FRAGMENT_SHADER, TILE_TEXTURE_FORMAT,
-    TILE_VERTEX_LAYOUT, TILE_VERTEX_SHADER,
+    create_tile_quad, tile_quad_vertices, TileVertex, WgpuContext as GpuContext,
+    TILE_FRAGMENT_SHADER, TILE_TEXTURE_FORMAT, TILE_VERTEX_LAYOUT, TILE_VERTEX_SHADER,
 };
 
 pub fn debug_overlay_upload(text: &str, width: u32, height: u32) -> TextureUpload {
@@ -418,22 +417,6 @@ mod tests {
         ];
 
         assert_eq!(texture_keys_for_commands(&commands), vec![first, second]);
-    }
-
-    #[test]
-    fn tile_vertices_for_commands_concatenate_six_vertices_per_tile() {
-        let command = TileDrawCommand {
-            texture: TextureKey {
-                tile: 1,
-                content_hash: 2,
-            },
-            position: ScreenPoint::new(0, 0),
-            size: (10, 10),
-        };
-        assert_eq!(
-            tile_vertices_for_commands(&[command, command], 100, 100).len(),
-            12
-        );
     }
 
     #[test]
