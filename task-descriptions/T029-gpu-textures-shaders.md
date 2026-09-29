@@ -351,6 +351,12 @@ RED/GREEN.
 - Integrar o envelope e o timing overlay ao modelo comum de imagens/revisões.
 - Manter instrumentação nas fronteiras lógicas e permitir métricas extras do
   adaptador.
+- Garantir que CPU e GPU consumam o mesmo `OverlayPrimitive` para envelope,
+  texto e ferramentas de debug. Alterações nessas ferramentas devem passar
+  pelo caminho comum de configuração/frame, sem depender do backend escolhido.
+- Preservar a equivalência funcional entre os destinos para posições,
+  conteúdos, overlays e ferramentas de debug; o renderer CPU será o fallback
+  para máquinas sem suporte aos recursos GPU.
 
 **Teste RED principal:** frames sem mudança não criam nem enviam texturas ou
 buffers; mudança de posição atualiza somente instâncias; mudança de imagem
@@ -389,6 +395,14 @@ não devem ser simulados além do que o mock consegue afirmar.
 - Fazer CPU e GPU diferirem somente a partir de `RenderTarget::render` e dos
   adaptadores inevitáveis de apresentação.
 - Dividir ou remover `gpu_window.rs` após seus últimos consumidores migrarem.
+- Remover `encode_frame`, `GpuTextureStore`, `GpuTileTexture` e as demais
+  estruturas exclusivas do caminho de composição legado quando não houver mais
+  consumidores.
+- Preservar o renderer CPU como fallback de inicialização para máquinas sem os
+  recursos GPU, por meio da seleção de `RenderTarget`; nunca executar os dois
+  caminhos para o mesmo frame ou conteúdo.
+- Fazer overlays, ferramentas de debug e suas alterações passarem pelo modelo
+  comum, sem duplicar essa lógica nos adaptadores.
 
 **Gate arquitetural:** busca estática e testes impedem imports de `wgpu`,
 `winit` ou `minifb` em `app_core`, `orchestrator` e contratos de renderização.
@@ -396,6 +410,12 @@ não devem ser simulados além do que o mock consegue afirmar.
 O gate pode ser verificado automaticamente com busca de dependências, fake
 runtime e fake target. HITL serve apenas para confirmar que a experiência CPU e
 GPU continua equivalente nos fluxos principais.
+
+Os itens adicionais identificados no review externo fazem parte do plano total
+do T029. A prioridade será definida item a item durante a execução: validação
+de comandos, tipagem de erros e decomposição do adaptador entram nos Passos
+6–8; o desacoplamento final de vértices e a remoção dos tipos legados entram no
+Passo 7.
 
 ### Passo 8 — Conformidade, fallback e recuperação
 
@@ -405,6 +425,8 @@ GPU continua equivalente nos fluxos principais.
 - Fazer a seleção distinguir destino (`cpu`, `gpu`) de API (`auto`, `gl`,
   `vulkan`, `dx12`, `metal`).
 - Expor capabilities e diagnóstico da implementação efetivamente escolhida.
+- Testar que o fallback CPU é selecionado quando os recursos GPU não estão
+  disponíveis e que não há submissão simultânea pelos dois caminhos.
 
 **Teste RED principal:** qualquer falha recuperável preserva o estado lógico da
 aplicação e troca/recria somente o adaptador afetado.
