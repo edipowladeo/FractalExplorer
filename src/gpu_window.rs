@@ -9,10 +9,9 @@ use crate::gpu::{
 use crate::input::{InputEvent, ZoomDirection};
 use crate::render::gpu::GpuRenderTarget;
 use crate::render::graphics::wgpu::{
-    create_composition_texture, create_tile_pipeline, encode_frame, tile_vertices_for_commands,
-    upload_tile_texture, write_tile_texture, GpuTextureStore, GpuTileTexture,
-    WgpuCompositionTexture, WgpuContext as GpuContext, WgpuFrameStage, WgpuGraphicsDevice,
-    WgpuPipeline, WgpuSurface, WgpuSurfaceAcquire, WgpuSurfaceFormat, WgpuTextureLayout,
+    create_tile_pipeline, tile_vertices_for_commands, upload_tile_texture, write_tile_texture,
+    GpuTextureStore, GpuTileTexture, WgpuCompositionTexture, WgpuContext as GpuContext,
+    WgpuGraphicsDevice, WgpuPipeline, WgpuSubmissionMetrics, WgpuSurface, WgpuTextureLayout,
     WgpuVertexBufferRing, GPU_VERTEX_BUFFER_RING_SIZE,
 };
 use crate::render::{
@@ -30,10 +29,6 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 fn needs_batch_rebuild(previous: (u32, u32), next: (u32, u32)) -> bool {
     previous != next
-}
-
-fn uses_persistent_composition(preserve_previous_frame: bool) -> bool {
-    preserve_previous_frame
 }
 
 const GPU_FRAME_HISTORY_CAPACITY: usize = 8;
@@ -740,26 +735,6 @@ impl GpuWindowApp {
             .ok()
             .map(|surface| surface.size())
     }
-
-    fn ensure_composition_texture(
-        &mut self,
-        context: &GpuContext,
-        layout: &WgpuTextureLayout,
-        format: WgpuSurfaceFormat,
-        width: u32,
-        height: u32,
-    ) {
-        let needs_recreation = self
-            .composition_texture
-            .as_ref()
-            .is_none_or(|texture| texture.size() != (width, height));
-        if needs_recreation {
-            self.composition_texture = Some(create_composition_texture(
-                context, layout, format, width, height,
-            ));
-            self.surface_initialized = false;
-        }
-    }
 }
 
 impl GpuWindowApp {
@@ -1196,13 +1171,46 @@ impl ApplicationHandler for GpuWindowApp {
                             .expect("common GPU target checked above"),
                         &prepared,
                     );
+                    let metrics = self.render_target.as_mut().and_then(|target| {
+                        target.target_mut().device_mut().take_submission_metrics()
+                    });
                     match result {
                         Ok(outcome) if outcome.was_submitted() => {
                             if let Some(state) = &mut self.state {
+                                if let Some(metrics) = metrics {
+                                    record_gpu_submission_metrics(state, metrics);
+                                }
                                 state.canvas.record_frame_event(
                                     crate::orchestrator::FrameEventKind::GpuCommandsSubmitted,
                                     "comandos do frame submetidos pelo destino GPU",
                                 );
+                                state.canvas.record_frame_event(
+                                    crate::orchestrator::FrameEventKind::GpuDevicePollStarted,
+                                    "poll do device GPU iniciado",
+                                );
+                            }
+                            let poll_result = self.context.as_ref().map(|context| {
+                                let started = Instant::now();
+                                let result = context.poll_device();
+                                (started.elapsed(), result)
+                            });
+                            if let Some(state) = &mut self.state {
+                                if let Some((elapsed, result)) = poll_result {
+                                    let description = match result {
+                                        Ok(status) => format!(
+                                            "poll do device GPU concluido: {status} ({:.3} ms)",
+                                            elapsed.as_secs_f64() * 1_000.0
+                                        ),
+                                        Err(error) => format!(
+                                            "poll do device GPU falhou: {error} ({:.3} ms)",
+                                            elapsed.as_secs_f64() * 1_000.0
+                                        ),
+                                    };
+                                    state.canvas.record_frame_event(
+                                        crate::orchestrator::FrameEventKind::GpuDevicePollFinished,
+                                        description,
+                                    );
+                                }
                                 state.canvas.record_frame_event(
                                     crate::orchestrator::FrameEventKind::OverlaysDrawn,
                                     "overlays incluidos no frame comum",
@@ -1229,6 +1237,7 @@ impl ApplicationHandler for GpuWindowApp {
                     }
                     return;
                 }
+                /* LEGACY GPU COMPOSITOR DISABLED DURING COMMON TARGET MIGRATION
                 let preserve_previous_frame = self
                     .state
                     .as_ref()
@@ -1425,6 +1434,7 @@ impl ApplicationHandler for GpuWindowApp {
                         }
                     }
                 }
+                */
             }
             _ => {}
         }
@@ -1508,6 +1518,53 @@ impl ApplicationHandler for GpuWindowApp {
             }
         }
     }
+}
+
+fn record_gpu_submission_metrics(state: &mut GpuAppState, metrics: WgpuSubmissionMetrics) {
+    state.canvas.record_frame_event(
+        crate::orchestrator::FrameEventKind::GpuSurfaceAcquireStarted,
+        "aquisicao da superficie GPU iniciada",
+    );
+    state.canvas.record_frame_event(
+        crate::orchestrator::FrameEventKind::GpuSurfaceAcquireFinished,
+        format_gpu_upload_stage(
+            "aquisicao da superficie GPU concluida",
+            metrics.surface_acquire,
+            "destino GPU comum",
+        ),
+    );
+    state.canvas.record_frame_event(
+        crate::orchestrator::FrameEventKind::GpuCompositionPassStarted,
+        "passe de composicao GPU iniciado",
+    );
+    state.canvas.record_frame_event(
+        crate::orchestrator::FrameEventKind::GpuCompositionPassFinished,
+        format_gpu_upload_stage(
+            "passe de composicao GPU concluido",
+            metrics.composition_encoding,
+            "destino GPU comum",
+        ),
+    );
+    state.canvas.record_frame_event(
+        crate::orchestrator::FrameEventKind::GpuCommandEncodingFinished,
+        format_gpu_upload_stage(
+            "codificacao de comandos GPU concluida",
+            metrics.command_encoding + metrics.presentation_encoding,
+            "destino GPU comum",
+        ),
+    );
+    state.canvas.record_frame_event(
+        crate::orchestrator::FrameEventKind::GpuSurfacePresentPassStarted,
+        "passe de apresentacao da superficie GPU iniciado",
+    );
+    state.canvas.record_frame_event(
+        crate::orchestrator::FrameEventKind::GpuSurfacePresentPassFinished,
+        format_gpu_upload_stage(
+            "passe de apresentacao da superficie GPU concluido",
+            metrics.presentation,
+            "destino GPU comum",
+        ),
+    );
 }
 
 fn app_event_from_window_event(event: &WindowEvent) -> Option<AppEvent> {
@@ -1907,12 +1964,6 @@ mod tests {
     fn resize_invalidates_vertices_only_when_surface_dimensions_change() {
         assert!(!needs_batch_rebuild((800, 600), (800, 600)));
         assert!(needs_batch_rebuild((800, 600), (1024, 768)));
-    }
-
-    #[test]
-    fn persistent_composition_is_used_only_when_frame_preservation_is_enabled() {
-        assert!(super::uses_persistent_composition(true));
-        assert!(!super::uses_persistent_composition(false));
     }
 
     #[test]
