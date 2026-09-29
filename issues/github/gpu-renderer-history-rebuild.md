@@ -45,14 +45,23 @@ mensagens e seu conteúdo foram preservados.
 
 ## O que resolveu o problema
 
-O problema era a presença de merges na história publicada da branch, não
-conflito de código. A nova branch tem a mesma árvore final e os mesmos 122
-passos de conteúdo, mas uma cadeia linear de pais. Isso remove a condição que
-fazia o GitHub informar `rebaseable: false`.
+A investigação final mostrou duas condições distintas:
+
+1. os merges antigos explicavam a topologia problemática e justificavam a
+   reconstrução linear;
+2. o bloqueio persistente do rebase no PR veio do limite do GitHub para
+   `Rebase and merge`: uma PR com mais de 100 commits não pode usar esse método.
+
+A branch linear com 123 commits continuou retornando `mergeable: true` e
+`rebaseable: false`, confirmando que a linearização sozinha não era suficiente.
+Por isso o histórico foi dividido em PRs sequenciais, cada uma abaixo do limite,
+sem squash e sem perder os commits.
 
 ## Dicas para evitar recorrência
 
 - Criar a branch de trabalho a partir de `origin/master` atualizado.
+- Manter cada PR de rebase com menos de 100 commits; para históricos maiores,
+  dividir em PRs sequenciais e preservar a ordem dos commits.
 - Antes de publicar a branch, usar `git fetch origin` e rebasear a branch
   privada sobre `origin/master`.
 - Evitar fazer merge de `master` dentro da branch que será usada como origem de
