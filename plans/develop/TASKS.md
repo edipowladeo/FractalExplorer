@@ -84,7 +84,7 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 - **Objetivo:** transformar o spike GPU validado em apenas mais um destino de
   renderização, preservando um único caminho comum para configuração, janela,
   input, canvas, tiles, overlays, instrumentação e encerramento.
-- **Plano:** ver [plano de implementação de T029](task-descriptions/T029-gpu-textures-shaders.md).
+- **Plano:** ver [plano de implementação de T029](../renderer-gpu/T029-gpu-textures-shaders.md).
 - **Dependências:** T003, T005, T006 e T007; a primeira fatia pode reutilizar o
   processador CPU e os tiles atuais, migrando inicialmente apenas a composição.
 - **Decisão arquitetural:** `RenderTarget` (apresentação) e `TileProcessor`
@@ -298,7 +298,7 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 
 ### T026 — Investigar e melhorar a precisão para zoom profundo
 
-- **Critério de aceitação:** a câmera, camadas e tiles preservam coordenadas e passo suficientes para zoom profundo; copiar uma localização e restaurá-la na mesma versão mantém a mesma visão. Ver [diretriz de precisão](task-descriptions/T026-deep-zoom-precision.md).
+- **Critério de aceitação:** a câmera, camadas e tiles preservam coordenadas e passo suficientes para zoom profundo; copiar uma localização e restaurá-la na mesma versão mantém a mesma visão. Ver [diretriz de precisão](../multiprecisao/T026-deep-zoom-precision.md).
 - **Atualização:** o zoom inicial da câmera foi separado da escala visual da camada semente. A camada permanece em escala configurada (`8` por padrão), enquanto o `delta` é ajustado para representar o zoom inicial profundo; isso evita converter `2^48` em tamanho de tile e elimina o overflow em `ensure_screen_coverage`.
 - **RED/GREEN/REFACTOR:** `deep_starting_zoom_keeps_seed_layer_screen_size_bounded` falhou antes da função de parâmetros existir e passou após a separação; `cargo fmt -- --check`, `git diff --check` e `cargo test --bin sprite-demo` passaram com 2 testes.
 
@@ -354,7 +354,7 @@ Estas decisões definem a primeira fatia vertical, mas não antecipam a implemen
 ### T035 — Integrar Config UI e renderer GPU em runtime único
 
 - Resolver a limitação documentada em
-  [T035-gpu-config-ui-runtime.md](task-descriptions/T035-gpu-config-ui-runtime.md).
+  [T035-gpu-config-ui-runtime.md](../renderer-gpu/T035-gpu-config-ui-runtime.md).
 - Manter `winit::EventLoop` na thread principal e permitir configuração ao vivo
   no modo GPU sem abrir um segundo event loop em thread secundária.
 - Promover para `TODO` somente quando a implementação for explicitamente

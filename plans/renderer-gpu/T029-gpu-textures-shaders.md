@@ -503,7 +503,7 @@ O objetivo é manter a maior parte da migração rápida, determinística e
 reproduzível. HITL não deve substituir testes de contrato nem ser usado para
 validar lógica que pode ser exercitada por fakes, mocks ou golden data.
 
-Cada passo registra no `TASKS.md` o teste que falhou no RED, os testes GREEN e
+Cada passo registra em `../develop/TASKS.md` o teste que falhou no RED, os testes GREEN e
 o refactor realizado. Verificações pesadas e benchmarks só serão executados por
 solicitação explícita.
 

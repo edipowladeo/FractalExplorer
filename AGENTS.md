@@ -24,12 +24,12 @@ Este é o único checkbox de HITL do repositório e é controlado exclusivamente
 2. Se a estratégia de testes não for óbvia, discutir a estratégia com o usuário antes de implementar.
 3. Uma tarefa pode ser considerada concluída localmente depois de: testes em estado **GREEN**, refactor realizado e commit criado.
 4. Mover a tarefa para `DONE` imediatamente após todas as condições locais do item anterior serem atendidas.
-5. O push para o remoto deve ser tentado quando autorizado e disponível, mas não bloqueia a conclusão local nem a movimentação para `DONE`. Se não puder ser enviado, registrar o motivo no `TASKS.md`.
+5. O push para o remoto deve ser tentado quando autorizado e disponível, mas não bloqueia a conclusão local nem a movimentação para `DONE`. Se não puder ser enviado, registrar o motivo em `plans/develop/TASKS.md`.
 
 ## Ordem e seleção de tarefas
 
-1. Instruções dadas diretamente pelo usuário devem ser implementadas fora do fluxo de `TASKS.md`.
-2. Só criar ou promover uma tarefa em `TASKS.md` quando o usuário pedir explicitamente.
+1. Instruções dadas diretamente pelo usuário devem ser implementadas fora do fluxo de `plans/develop/TASKS.md`.
+2. Só criar ou promover uma tarefa em `plans/develop/TASKS.md` quando o usuário pedir explicitamente.
 3. Para tarefas explicitamente criadas ou promovidas, nunca selecionar diretamente de `BACKLOG`.
 4. Para tarefas explicitamente criadas ou promovidas, sempre atuar na primeira tarefa listada em `TODO`.
 5. Antes de iniciar uma tarefa explicitamente criada ou promovida, analisar as demais tarefas em `TODO` e confirmar com o usuário se alguma deve ser agrupada com ela. Não iniciar a implementação até essa confirmação quando houver um agrupamento plausível.
@@ -41,7 +41,7 @@ Este é o único checkbox de HITL do repositório e é controlado exclusivamente
 
 1. Escrever testes ao longo da implementação e executar os testes unitários rápidos durante os ciclos RED e GREEN.
 2. Não executar verificações pesadas, benchmarks ou validações demoradas sem solicitação explícita do usuário.
-3. Registrar no `TASKS.md` quais testes unitários foram executados e quais verificações manuais ficaram a cargo do usuário.
+3. Registrar em `plans/develop/TASKS.md` quais testes unitários foram executados e quais verificações manuais ficaram a cargo do usuário.
 
 ## Execução da aplicação na sessão
 
@@ -56,7 +56,7 @@ Esse procedimento não depende da configuração de depuração do VS Code nem d
 
 ## Atualização da lista
 
-- Usar `TASKS.md` como fonte da fila de trabalho.
+- Usar `plans/develop/TASKS.md` como fonte da fila de trabalho.
 - `TODO` contém apenas a fila ativa e ordenada.
 - `BACKLOG` contém ideias ou tarefas ainda não promovidas para execução.
 - `DONE` contém somente tarefas com testes GREEN, refactor e commit confirmados. O estado de publicação remota deve ser registrado separadamente quando o push ainda não tiver sido enviado.
