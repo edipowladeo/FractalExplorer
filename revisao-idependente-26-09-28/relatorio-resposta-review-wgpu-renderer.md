@@ -6,8 +6,8 @@ O arquivo `review-wgpu-renderer.md` foi recebido de `C:\Users\edipo\Downloads` e
 migrado para a raiz deste worktree (`gpu-renderer`). Este relatório cruza cada
 um dos sete pontos do review com:
 
-- `task-descriptions/T029-gpu-textures-shaders.md`;
-- o estado registrado em `TASKS.md`;
+- `plans/renderer-gpu/T029-gpu-textures-shaders.md`;
+- o estado registrado em `plans/develop/TASKS.md`;
 - a implementação atual em `src/render/graphics/wgpu.rs`,
   `src/render/gpu.rs` e `src/gpu_window.rs`.
 
@@ -284,8 +284,8 @@ ser necessário.
 ## Evidências consultadas
 
 - `review-wgpu-renderer.md` — review externo recebido;
-- `task-descriptions/T029-gpu-textures-shaders.md` — plano incremental e gates;
-- `TASKS.md` — checkpoint atual do T029 e verificações registradas;
+- `plans/renderer-gpu/T029-gpu-textures-shaders.md` — plano incremental e gates;
+- `plans/develop/TASKS.md` — checkpoint atual do T029 e verificações registradas;
 - `src/render/graphics/wgpu.rs` — `WgpuContext`, `WgpuGraphicsDevice`,
   validação, `draw` e adaptação de vértices;
 - `src/render/gpu.rs` — integração do target GPU ao contrato comum;

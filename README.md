@@ -47,7 +47,7 @@ Para limpar os artefatos de compilação:
 cargo clean
 ```
 
-O protótipo é acompanhado pela `T001` em [TASKS.md](TASKS.md) e permanece em `TODO` até que testes, refactor e verificação visual sejam concluídos.
+O protótipo é acompanhado pela `T001` em [TASKS.md](plans/develop/TASKS.md) e permanece em `TODO` até que testes, refactor e verificação visual sejam concluídos.
 
 ## Profiling com Tracy
 
