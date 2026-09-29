@@ -160,7 +160,7 @@ Criar um pipeline de texto que:
 O buffer deve ser separado do buffer dos tiles para que o texto não force
 recriação ou reupload das texturas de fractais.
 
-### 6. Implementar o caminho CPU e o fallback
+### 6. Implementar o caminho CPU e o fallback — CONCLUÍDO
 
 Adicionar suporte equivalente no renderer CPU ou, enquanto ele não existir,
 um fallback controlado para o caminho de imagem antigo. O fallback deve ser
@@ -168,6 +168,15 @@ explícito e não deve ser usado pelo backend GPU otimizado.
 
 Isso preserva testes headless e reduz o risco de quebrar configurações sem
 janela ou sem pipeline de texto.
+
+Implementado no `CpuRenderTarget`: o atlas lógico persistente é usado para
+layout e composição alfa dos placements diretamente no framebuffer, incluindo
+escala, clipping ao viewport e sobreposição sobre tiles. O backend CPU não
+converte texto em `ImageUpdate`.
+
+Verificação: RED confirmou que o texto era ignorado; GREEN e REFACTOR passaram
+nos testes do renderer CPU e na suíte completa. A validação visual permanece
+reservada ao HITL final.
 
 ### 7. Tratar o ciclo de vida do device
 
