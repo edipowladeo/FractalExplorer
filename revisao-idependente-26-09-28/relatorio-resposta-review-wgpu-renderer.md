@@ -50,26 +50,24 @@ GPU cria `GpuRenderTarget<WgpuGraphicsDevice>` e submete o frame comum por
 no caminho novo; não devem ser reintroduzidos como parâmetros específicos do
 `encode_frame`.
 
-### Lacuna ainda aberta
+### Decisão incorporada ao plano
 
-`encode_frame` continua existindo e mantém `envelope`, `overlay` e callback
-`report_stage`. O caminho novo (`WgpuGraphicsDevice::draw`) executa composição
-e apresentação, mas não usa o mesmo callback detalhado de estágios. O runtime
-registra eventos agregados do destino GPU, porém a medição fina de início/fim
-de composição, apresentação e codificação ainda não está simétrica.
+`OverlayPrimitive` é a representação definitiva de envelope, texto e ferramentas
+de debug. O caminho novo (`WgpuGraphicsDevice::draw`) deve ser mantido como a
+única composição do frame; os parâmetros equivalentes de `encode_frame` serão
+removidos junto com o caminho legado.
 
 Isso deve ser tratado como paridade de observabilidade, não como motivo para
-duplicar o modelo de camadas. A solução preferida é expor eventos/métricas na
-fronteira do destino GPU ou em um hook de instrumentação portável e fazer o
-adaptador WGPU reportá-los.
+duplicar o modelo de camadas. O plano agora exige telemetria detalhada na
+fronteira do destino GPU, com avaliação explícita de custo/complexidade e
+possibilidade de desativação ou remoção em build de release.
 
-### Decisão solicitada
+### Decisão registrada
 
-Confirmar se `envelope` e `overlay` do `encode_frame` estão definitivamente
-substituídos por `OverlayPrimitive` no contrato comum. Se sim, o critério do
-Passo 7 deve ser: remover os parâmetros e o caminho antigo depois que a
-telemetria equivalente estiver coberta por testes. Se não, deve ser descrito
-qual comportamento adicional precisa permanecer.
+`envelope` e `overlay` do `encode_frame` estão definitivamente substituídos por
+`OverlayPrimitive` no contrato comum. O plano também passa a incluir um
+rasterizador de texto otimizado por renderer, reaproveitando do contrato comum
+posição e conteúdo, ou uma lista de strings.
 
 ## 1b. Risco de duas identidades de textura
 
@@ -216,6 +214,12 @@ Adicionar ao Passo 6 ou ao início do Passo 8:
 A decisão entre ampliar `DeviceError` e criar `WgpuContextError` deve respeitar
 a regra de que tipos WGPU não atravessam o adaptador.
 
+### Decisão registrada
+
+Adotar `WgpuContextError`, com um campo genérico para preservar a causa
+específica como texto ou objeto pequeno quando isso for útil. A API pública de
+`WgpuContext` não deve continuar expondo `Result<_, String>`.
+
 ## 7. Vértices acoplados a tipos legados
 
 ### Evidência atual
@@ -270,21 +274,12 @@ somente posição, tamanho, viewport e eventualmente opacidade. Então:
 2. Confirmar que o fallback não executa os dois caminhos para o mesmo frame.
 3. Validar a preservação do estado lógico e a reconstrução de recursos.
 
-## Lacunas que precisam de decisão do usuário
+## Estado das decisões
 
-1. **Camadas extras:** `envelope` e `overlay` do legado estão definitivamente
-   substituídos pelo `OverlayPrimitive` do frame comum?
-2. **Coexistência:** o caminho legado é apenas fallback temporário, sem
-   execução concorrente sobre o mesmo conteúdo?
-3. **Telemetria:** o nível detalhado de estágios (`composition started/finished`,
-   `presentation started/finished`, `command encoding finished`) é requisito
-   obrigatório do caminho novo, ou os eventos agregados de submissão/apresentação
-   são suficientes?
-4. **Tipagem de erros:** prefere ampliar `DeviceError` ou introduzir um erro
-   específico do contexto (`WgpuContextError`) convertido na fronteira?
-5. **Prioridade:** os itens 4–7 devem entrar no fechamento do T029 antes de
-   qualquer trabalho novo, ou algum deles pode ser promovido para tarefa
-   independente?
+As questões de representação de overlays/envelope, coexistência dos caminhos,
+nível de telemetria, tipagem de erros e prioridade foram respondidas e
+incorporadas ao plano T029. O arquivo separado de perguntas abertas deixou de
+ser necessário.
 
 ## Evidências consultadas
 
