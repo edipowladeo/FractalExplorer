@@ -69,24 +69,139 @@ renderer, mas mistura dois sistemas de composição e não é adequado enquanto 
 overlay precisa acompanhar exatamente o frame GPU, o viewport e o backend
 atual.
 
-## Direção proposta
+## Recomendação registrada
 
-Começar por C, com uma abstração de comandos que permita evoluir para A:
+Implementar primeiro atlas persistente + quads de glifos gerados no backend
+GPU, mantendo a API de texto independente do backend. Deixar instancing como
+uma otimização interna posterior, ativada somente se as métricas mostrarem que
+o upload ou a geração dos vértices é relevante.
 
-1. Introduzir `TextOverlay`/`TextRun` no contrato de renderização, contendo
-   texto ou glifos, posição, dimensões, cor e camada.
-2. Manter o atlas bitmap persistente no estado de `GpuWindow`/backend, com os
-   glifos atualmente suportados por `renderer::glyph`.
-3. Converter strings em uma lista compacta de instâncias (índice do glifo e
-   posição), sem produzir RGBA por linha.
-4. Criar um pipeline de texto que amostre o atlas e desenhe todas as
-   instâncias dos overlays em lote.
-5. Reutilizar buffers com capacidade crescente e escrever apenas a região
-   necessária a cada frame.
-6. Manter `OverlayPrimitive::Image` para envelopes e outros bitmaps; texto não
-   deve mais passar pelo caminho de `ImageUpdate`.
-7. Adicionar fallback temporário para o caminho antigo quando o backend não
-   oferecer o pipeline de texto.
+Essa ordem foi escolhida porque:
+
+- o maior ganho vem de eliminar a rasterização RGBA e o `ImageUpdate` por
+  linha, não de eliminar a duplicação de vértices;
+- quads são mais simples de integrar ao pipeline existente de vértices e
+  texturas;
+- quads são mais fáceis de portar para o renderer CPU e outros backends;
+- trocar a fonte depende principalmente do atlas e das métricas dos glifos,
+  não de quads versus instâncias;
+- a API pode ser preservada se o backend GPU migrar de quads para instâncias
+  no futuro.
+
+Instancing permanece como a alternativa de maior eficiência para muitos
+caracteres. A eventual migração deve trocar somente a representação interna
+de `TextRun`, sem alterar layout, fonte ou chamadas dos overlays.
+
+## Passos completos de implementação
+
+### 1. Definir o contrato de texto
+
+Introduzir no módulo de renderização tipos independentes de GPU, por exemplo:
+
+- `GlyphId` ou índice de glifo;
+- `GlyphMetrics`, com UV, tamanho, avanço e offset;
+- `TextRun`/`TextOverlay`, com texto ou glifos, posição, cor, escala e camada;
+- uma coleção de `GlyphPlacement` pronta para ser desenhada.
+
+O contrato não deve expor `wgpu`, bind groups, vertex buffers ou instancing.
+Também deve permitir que o renderer CPU trate cada placement como um quad.
+
+### 2. Isolar a fonte e o atlas
+
+Criar uma estrutura de atlas persistente contendo:
+
+- pixels ou textura do atlas;
+- métricas por glifo;
+- mapeamento de caractere para `GlyphId`;
+- avanço horizontal e offsets de cada glifo;
+- fallback para caractere desconhecido.
+
+Na primeira versão, reutilizar a fonte bitmap já fornecida por
+`renderer::glyph`. O conjunto inicial pode continuar limitado aos caracteres
+suportados hoje. A API deve permitir substituir o atlas sem alterar o
+pipeline de desenho.
+
+### 3. Implementar o layout CPU
+
+Converter cada string em placements:
+
+1. mapear o caractere para um `GlyphId`;
+2. ignorar ou substituir caracteres sem glifo;
+3. posicionar o glifo usando avanço e offsets da fonte;
+4. tratar quebra de linha;
+5. calcular dimensões do `TextRun`;
+6. produzir o retângulo de destino e o retângulo UV.
+
+O layout deve ser testável sem GPU e não deve criar um bitmap RGBA.
+
+### 4. Adicionar a preparação de texto aos overlays
+
+Substituir gradualmente `append_text_overlay_line` para produzir um
+`TextRun`, em vez de chamar `debug_overlay_upload`.
+
+Nesta etapa:
+
+- `OverlayPrimitive::Image` continua sendo usado para envelopes e bitmaps;
+- texto deixa de gerar `ImageUpdate`;
+- todas as linhas podem ser agregadas em uma lista de placements;
+- a ordem das camadas e o posicionamento atuais devem ser preservados.
+
+### 5. Implementar o backend GPU com quads
+
+Criar um pipeline de texto que:
+
+1. mantém o atlas como textura persistente;
+2. usa um sampler apropriado para a fonte bitmap;
+3. gera seis vértices por glifo, com posição e UV;
+4. reutiliza um vertex buffer com capacidade crescente;
+5. escreve somente os vértices necessários ao frame;
+6. executa uma chamada de desenho para todos os placements do overlay.
+
+O buffer deve ser separado do buffer dos tiles para que o texto não force
+recriação ou reupload das texturas de fractais.
+
+### 6. Implementar o caminho CPU e o fallback
+
+Adicionar suporte equivalente no renderer CPU ou, enquanto ele não existir,
+um fallback controlado para o caminho de imagem antigo. O fallback deve ser
+explícito e não deve ser usado pelo backend GPU otimizado.
+
+Isso preserva testes headless e reduz o risco de quebrar configurações sem
+janela ou sem pipeline de texto.
+
+### 7. Tratar o ciclo de vida do device
+
+Garantir que o atlas e o pipeline sejam recriados quando o device ou a
+surface forem recriados. O estado lógico da fonte deve ficar separado do
+recurso GPU para que a textura possa ser reconstruída sem relayout do texto.
+
+### 8. Adicionar métricas
+
+Registrar separadamente:
+
+- caracteres/placements preparados;
+- bytes de vértices enviados;
+- uploads do atlas;
+- uploads do buffer de texto;
+- draw calls de texto;
+- tempo de layout;
+- tempo de preparação do pipeline de texto.
+
+As métricas devem permitir comparar o caminho antigo, quads e uma futura
+implementação com instancing.
+
+### 9. Avaliar instancing
+
+Depois dos quads estarem estáveis, medir com overlays representativos. Migrar
+para instancing somente se houver evidência de que:
+
+- o upload do vertex buffer é relevante;
+- a geração dos seis vértices por glifo domina a preparação;
+- o número de caracteres é alto o suficiente para justificar a complexidade.
+
+Na migração, manter o mesmo `TextRun`, atlas, layout e testes. Alterar apenas
+o adaptador GPU para enviar uma instância por glifo e reutilizar um quad
+unitário.
 
 ## Sequência TDD
 
