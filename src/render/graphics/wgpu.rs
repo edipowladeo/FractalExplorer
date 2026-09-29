@@ -8,6 +8,8 @@ use crate::render::device::{
 };
 use crate::render::ImageUpdate;
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use wgpu::util::DeviceExt;
@@ -374,6 +376,37 @@ pub fn surface_load_op(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WgpuContextError {
+    operation: &'static str,
+    message: String,
+}
+
+impl WgpuContextError {
+    pub fn new(operation: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            operation,
+            message: message.into(),
+        }
+    }
+
+    pub fn operation(&self) -> &'static str {
+        self.operation
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl fmt::Display for WgpuContextError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.operation, self.message)
+    }
+}
+
+impl Error for WgpuContextError {}
+
 /// Owns the selected adapter, device, queue, and instance for the `wgpu` API.
 pub struct WgpuContext {
     pub instance: wgpu::Instance,
@@ -388,14 +421,14 @@ impl WgpuContext {
         (info.backend, info.name, info.device_type)
     }
 
-    pub fn poll_device(&self) -> Result<String, String> {
+    pub fn poll_device(&self) -> Result<String, WgpuContextError> {
         self.device
             .poll(wgpu::PollType::Poll)
             .map(|status| format!("{status:?}"))
-            .map_err(|error| error.to_string())
+            .map_err(|error| WgpuContextError::new("poll_device", error.to_string()))
     }
 
-    pub async fn initialize(gpu_backend: GpuBackend) -> Result<Self, String> {
+    pub async fn initialize(gpu_backend: GpuBackend) -> Result<Self, WgpuContextError> {
         let backends = match gpu_backend {
             GpuBackend::Auto => wgpu::Backends::all(),
             GpuBackend::Gl => wgpu::Backends::GL,
@@ -407,7 +440,7 @@ impl WgpuContext {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions::default())
             .await
-            .map_err(|error| format!("GPU adapter unavailable: {error}"))?;
+            .map_err(|error| WgpuContextError::new("request_adapter", error.to_string()))?;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 // Rendering uses vertex/fragment shaders. Keep the adapter's
@@ -416,7 +449,7 @@ impl WgpuContext {
                 ..Default::default()
             })
             .await
-            .map_err(|error| format!("GPU device unavailable: {error}"))?;
+            .map_err(|error| WgpuContextError::new("request_device", error.to_string()))?;
         Ok(Self {
             instance,
             adapter,
@@ -430,24 +463,23 @@ impl WgpuContext {
         window: std::sync::Arc<winit::window::Window>,
         width: u32,
         height: u32,
-    ) -> Result<WgpuSurface<'static>, String> {
+    ) -> Result<WgpuSurface<'static>, WgpuContextError> {
         let surface = self
             .instance
             .create_surface(window)
-            .map_err(|error| format!("GPU surface unavailable: {error}"))?;
+            .map_err(|error| WgpuContextError::new("create_surface", error.to_string()))?;
         let capabilities = surface.get_capabilities(&self.adapter);
         let format = capabilities
             .formats
             .first()
             .copied()
-            .ok_or_else(|| "GPU surface has no supported formats".to_string())?;
-        let present_mode = select_present_mode(&capabilities.present_modes)
-            .ok_or_else(|| "GPU surface has no supported present modes".to_string())?;
-        let alpha_mode = capabilities
-            .alpha_modes
-            .first()
-            .copied()
-            .ok_or_else(|| "GPU surface has no supported alpha modes".to_string())?;
+            .ok_or_else(|| WgpuContextError::new("surface_format", "no supported formats"))?;
+        let present_mode = select_present_mode(&capabilities.present_modes).ok_or_else(|| {
+            WgpuContextError::new("surface_present_mode", "no supported present modes")
+        })?;
+        let alpha_mode = capabilities.alpha_modes.first().copied().ok_or_else(|| {
+            WgpuContextError::new("surface_alpha_mode", "no supported alpha modes")
+        })?;
         let configuration = wgpu::SurfaceConfiguration {
             usage: surface_usage(capabilities.usages),
             format,
@@ -764,6 +796,15 @@ struct WgpuTexture {
 }
 
 /// Owns concrete `wgpu` resources behind stable, backend-independent handles.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WgpuSubmissionMetrics {
+    pub surface_acquire: Duration,
+    pub composition_encoding: Duration,
+    pub presentation_encoding: Duration,
+    pub command_encoding: Duration,
+    pub presentation: Duration,
+}
+
 pub struct WgpuGraphicsDevice {
     context: Arc<WgpuContext>,
     surface: Arc<Mutex<WgpuSurface<'static>>>,
@@ -776,6 +817,7 @@ pub struct WgpuGraphicsDevice {
     composition: Option<WgpuCompositionTexture>,
     preserve_previous_frame: bool,
     surface_initialized: bool,
+    last_submission_metrics: Option<WgpuSubmissionMetrics>,
 }
 
 impl WgpuGraphicsDevice {
@@ -800,6 +842,7 @@ impl WgpuGraphicsDevice {
             composition: None,
             preserve_previous_frame: false,
             surface_initialized: false,
+            last_submission_metrics: None,
         })
     }
 
@@ -820,6 +863,10 @@ impl WgpuGraphicsDevice {
             .lock()
             .map(|surface| surface.size())
             .map_err(|_| DeviceError::InvalidResource)
+    }
+
+    pub fn take_submission_metrics(&mut self) -> Option<WgpuSubmissionMetrics> {
+        self.last_submission_metrics.take()
     }
 
     fn draw(&mut self, commands: &CommandList) -> Result<(), DeviceError> {
@@ -865,6 +912,7 @@ impl WgpuGraphicsDevice {
         self.vertex_ring
             .write_active(&self.context, bytemuck::cast_slice(&vertices));
 
+        let acquire_started = Instant::now();
         let frame = match surface.acquire() {
             WgpuSurfaceAcquire::Ready(frame) | WgpuSurfaceAcquire::Suboptimal(frame) => frame,
             WgpuSurfaceAcquire::Outdated | WgpuSurfaceAcquire::Lost => {
@@ -880,6 +928,7 @@ impl WgpuGraphicsDevice {
             | WgpuSurfaceAcquire::Occluded
             | WgpuSurfaceAcquire::Validation => return Err(DeviceError::InvalidResource),
         };
+        let surface_acquire = acquire_started.elapsed();
         let view = frame.create_view();
         let mut encoder =
             self.context
@@ -887,6 +936,7 @@ impl WgpuGraphicsDevice {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("render-target-command-encoder"),
                 });
+        let composition_started = Instant::now();
         {
             let target = self
                 .composition
@@ -926,6 +976,8 @@ impl WgpuGraphicsDevice {
                 }
             }
         }
+        let composition_encoding = composition_started.elapsed();
+        let presentation_encoding_started = Instant::now();
         if let Some(composition) = &self.composition {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("render-target-present-pass"),
@@ -948,8 +1000,20 @@ impl WgpuGraphicsDevice {
             pass.set_vertex_buffer(0, composition.present_vertex_buffer().slice(..));
             pass.draw(0..6, 0..1);
         }
+        let presentation_encoding = presentation_encoding_started.elapsed();
+        let command_encoding_started = Instant::now();
         self.context.queue.submit(Some(encoder.finish()));
+        let command_encoding = command_encoding_started.elapsed();
+        let presentation_started = Instant::now();
         frame.present(&self.context);
+        let presentation = presentation_started.elapsed();
+        self.last_submission_metrics = Some(WgpuSubmissionMetrics {
+            surface_acquire,
+            composition_encoding,
+            presentation_encoding,
+            command_encoding,
+            presentation,
+        });
         self.surface_initialized = true;
         Ok(())
     }
@@ -1399,7 +1463,7 @@ mod tests {
     use super::{
         next_vertex_buffer_slot, render_vertices_for_commands, select_present_mode,
         surface_load_op, surface_usage, validate_commands, vertex_buffer_capacity,
-        vertex_buffer_needs_recreation,
+        vertex_buffer_needs_recreation, WgpuContextError,
     };
     use crate::render::device::{CommandList, DeviceError, TextureHandle};
 
@@ -1506,5 +1570,14 @@ mod tests {
 
         assert_eq!(vertices.len(), 6);
         assert!(vertices.iter().all(|vertex| vertex.opacity == 0.375));
+    }
+
+    #[test]
+    fn context_error_preserves_operation_and_specific_cause() {
+        let error = WgpuContextError::new("request_device", "adapter rejected limits");
+
+        assert_eq!(error.operation(), "request_device");
+        assert_eq!(error.message(), "adapter rejected limits");
+        assert_eq!(error.to_string(), "request_device: adapter rejected limits");
     }
 }
