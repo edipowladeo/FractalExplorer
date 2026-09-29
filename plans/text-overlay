@@ -178,11 +178,19 @@ Verificação: RED confirmou que o texto era ignorado; GREEN e REFACTOR passaram
 nos testes do renderer CPU e na suíte completa. A validação visual permanece
 reservada ao HITL final.
 
-### 7. Tratar o ciclo de vida do device
+### 7. Tratar o ciclo de vida do device — CONCLUÍDO
 
 Garantir que o atlas e o pipeline sejam recriados quando o device ou a
 surface forem recriados. O estado lógico da fonte deve ficar separado do
 recurso GPU para que a textura possa ser reconstruída sem relayout do texto.
+
+Implementado no fluxo de `recover`: o recurso GPU do atlas é destruído e
+invalidado, enquanto o `FontAtlas` lógico permanece no target. O próximo frame
+textual recria a textura e faz um único upload, sem alterar o layout. Resize
+normal da surface não invalida o atlas, pois a textura continua válida.
+
+Verificação: teste de recuperação confirmou destruição do recurso antigo e
+novo `WriteTexture` no frame seguinte.
 
 ### 8. Adicionar métricas
 
