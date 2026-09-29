@@ -3,6 +3,8 @@ pub mod device;
 pub mod gpu;
 pub mod graphics;
 
+use crate::geometry::ScreenPoint;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ImageId(u64);
 
@@ -83,6 +85,161 @@ impl UvRect {
         right: 1.0,
         bottom: 1.0,
     };
+}
+
+/// Stable identifier for a glyph in a font atlas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GlyphId(u16);
+
+impl GlyphId {
+    pub const fn new(value: u16) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u16 {
+        self.0
+    }
+}
+
+/// Backend-independent metrics describing one glyph in an atlas.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlyphMetrics {
+    source: UvRect,
+    size: (u32, u32),
+    bearing: (i32, i32),
+    advance: i32,
+}
+
+impl GlyphMetrics {
+    pub const fn new(source: UvRect, size: (u32, u32), bearing: (i32, i32), advance: i32) -> Self {
+        Self {
+            source,
+            size,
+            bearing,
+            advance,
+        }
+    }
+
+    pub const fn source(self) -> UvRect {
+        self.source
+    }
+
+    pub const fn size(self) -> (u32, u32) {
+        self.size
+    }
+
+    pub const fn bearing(self) -> (i32, i32) {
+        self.bearing
+    }
+
+    pub const fn advance(self) -> i32 {
+        self.advance
+    }
+}
+
+/// A backend-independent request to lay out one piece of text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextRun {
+    text: String,
+    origin: ScreenPoint,
+    color: [u8; 4],
+    scale: u32,
+    layer: u32,
+}
+
+impl TextRun {
+    pub fn new(text: impl Into<String>, origin: ScreenPoint) -> Self {
+        Self {
+            text: text.into(),
+            origin,
+            color: [255, 255, 255, 255],
+            scale: 1,
+            layer: 0,
+        }
+    }
+
+    pub fn with_color(mut self, color: [u8; 4]) -> Self {
+        self.color = color;
+        self
+    }
+
+    pub fn with_scale(mut self, scale: u32) -> Self {
+        self.scale = scale.max(1);
+        self
+    }
+
+    pub fn with_layer(mut self, layer: u32) -> Self {
+        self.layer = layer;
+        self
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub const fn origin(&self) -> ScreenPoint {
+        self.origin
+    }
+
+    pub const fn color(&self) -> [u8; 4] {
+        self.color
+    }
+
+    pub const fn scale(&self) -> u32 {
+        self.scale
+    }
+
+    pub const fn layer(&self) -> u32 {
+        self.layer
+    }
+}
+
+/// One laid-out glyph ready for a backend to draw.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlyphPlacement {
+    glyph: GlyphId,
+    destination: Rect,
+    source: UvRect,
+    color: [u8; 4],
+    layer: u32,
+}
+
+impl GlyphPlacement {
+    pub const fn new(
+        glyph: GlyphId,
+        destination: Rect,
+        source: UvRect,
+        color: [u8; 4],
+        layer: u32,
+    ) -> Self {
+        Self {
+            glyph,
+            destination,
+            source,
+            color,
+            layer,
+        }
+    }
+
+    pub const fn glyph(self) -> GlyphId {
+        self.glyph
+    }
+
+    pub const fn destination(self) -> Rect {
+        self.destination
+    }
+
+    pub const fn source(self) -> UvRect {
+        self.source
+    }
+
+    pub const fn color(self) -> [u8; 4] {
+        self.color
+    }
+
+    pub const fn layer(self) -> u32 {
+        self.layer
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -454,10 +611,12 @@ impl FrameBuilder {
 #[cfg(test)]
 mod tests {
     use super::{
-        FrameBuilder, FrameOutcome, ImageId, ImageRevision, ImageUpdate, PreparedFrame, Rect,
-        RenderCapabilities, RenderError, RenderFrame, RenderTarget, RenderTargetFactory,
-        RenderTargetPipeline, RenderTargetSession, SurfaceFailure, TileDraw, Viewport,
+        FrameBuilder, FrameOutcome, GlyphId, GlyphMetrics, GlyphPlacement, ImageId, ImageRevision,
+        ImageUpdate, PreparedFrame, Rect, RenderCapabilities, RenderError, RenderFrame,
+        RenderTarget, RenderTargetFactory, RenderTargetPipeline, RenderTargetSession,
+        SurfaceFailure, TextRun, TileDraw, UvRect, Viewport,
     };
+    use crate::geometry::ScreenPoint;
 
     #[derive(Default)]
     struct RecordingTarget {
@@ -697,5 +856,48 @@ mod tests {
         assert_eq!(first.viewport(), Viewport::new(320, 200));
         assert!(first.tiles().is_empty());
         assert_eq!(second.tiles().len(), 1);
+    }
+
+    #[test]
+    fn text_run_keeps_backend_independent_layout_configuration() {
+        let run = TextRun::new("FPS: 60", ScreenPoint::new(4, 8))
+            .with_color([10, 20, 30, 255])
+            .with_scale(2)
+            .with_layer(7);
+
+        assert_eq!(run.text(), "FPS: 60");
+        assert_eq!(run.origin(), ScreenPoint::new(4, 8));
+        assert_eq!(run.color(), [10, 20, 30, 255]);
+        assert_eq!(run.scale(), 2);
+        assert_eq!(run.layer(), 7);
+    }
+
+    #[test]
+    fn glyph_contract_keeps_metrics_and_placement_separate() {
+        let source = UvRect {
+            left: 0.1,
+            top: 0.2,
+            right: 0.3,
+            bottom: 0.4,
+        };
+        let metrics = GlyphMetrics::new(source, (5, 7), (1, -2), 6);
+        let placement = GlyphPlacement::new(
+            GlyphId::new(12),
+            Rect::new(4, 8, 5, 7),
+            source,
+            [255, 255, 255, 255],
+            7,
+        );
+
+        assert_eq!(GlyphId::new(12).value(), 12);
+        assert_eq!(metrics.source(), source);
+        assert_eq!(metrics.size(), (5, 7));
+        assert_eq!(metrics.bearing(), (1, -2));
+        assert_eq!(metrics.advance(), 6);
+        assert_eq!(placement.glyph(), GlyphId::new(12));
+        assert_eq!(placement.destination(), Rect::new(4, 8, 5, 7));
+        assert_eq!(placement.source(), source);
+        assert_eq!(placement.color(), [255, 255, 255, 255]);
+        assert_eq!(placement.layer(), 7);
     }
 }
