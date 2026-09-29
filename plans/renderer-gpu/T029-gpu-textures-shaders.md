@@ -462,21 +462,18 @@ backend real quando a plataforma permitir provocar ou observar essa falha.
 **Observação:** este passo prepara a arquitetura; implementar o kernel GPGPU
 continua sendo tarefa própria e usa a suíte de conformidade.
 
+### Trabalho adiado — backend Metal (antigo Passo 10)
+
 As quatro combinações devem ser cobertas primeiro com fake processor e fake
 target. Execução GPGPU real e medições de transferência são validações de
 hardware opcionais, não critérios para os testes unitários.
 
 ### Passo 10 — Provar a substituição com Metal
 
-- Compilar o backend `wgpu`/Metal em macOS sem mudanças no domínio.
-- Se necessário, implementar `MetalGraphicsDevice` nativo usando os mesmos
-  handles, descritores e command lists.
-- Implementar Metal compute separadamente como `TileProcessor`.
-- Manter interop/zero-copy como capability opcional, nunca como requisito do
-  frame lógico.
-
-**Critério:** adicionar Metal exige novos adaptadores e configuração, mas não
-alterações no canvas, controlador, frame builder, overlays ou Config UI.
+Este trabalho foi movido para o `BACKLOG` como T036. Não é requisito para
+concluir os passos 0–9 de T029: no momento não há uma máquina Mac disponível
+para compilar e validar o backend no macOS. A retomada depende de acesso a uma
+máquina Mac com toolchain Apple instalado.
 
 Compilação, contratos e seleção podem ser verificados sem hardware Metal; a
 execução visual e a integração com o device Metal exigem HITL em macOS.
@@ -503,7 +500,7 @@ O objetivo é manter a maior parte da migração rápida, determinística e
 reproduzível. HITL não deve substituir testes de contrato nem ser usado para
 validar lógica que pode ser exercitada por fakes, mocks ou golden data.
 
-Cada passo registra no `TASKS.md` o teste que falhou no RED, os testes GREEN e
+Cada passo registra em `../develop/TASKS.md` o teste que falhou no RED, os testes GREEN e
 o refactor realizado. Verificações pesadas e benchmarks só serão executados por
 solicitação explícita.
 
